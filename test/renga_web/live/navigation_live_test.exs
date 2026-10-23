@@ -100,6 +100,7 @@ defmodule RengaWeb.NavigationLiveTest do
              "/settings/teams",
              "/settings/scim",
              "/settings/triage-rules",
+             "/settings/identity-providers",
              "/settings/limits",
              "/organizations",
              "/settings/appearance",

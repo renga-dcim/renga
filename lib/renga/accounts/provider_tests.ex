@@ -1,10 +1,10 @@
 defmodule Renga.Accounts.ProviderTests do
   @moduledoc """
   Test sign-ins of a pending provider revision (RFD 15, "Storage and
-  changes"). An operator or administrator creates a test with
-  `IdentityProviders.create_test/2` and opens its single-use link; Renga
-  sends the browser to the provider with the pending revision's settings,
-  and a successful callback activates exactly that revision.
+  changes"). An operator, administrator, or organization owner creates a
+  test with `IdentityProviders.create_test/2` and opens its single-use
+  link; Renga sends the browser to the provider with the pending revision's
+  settings, and a successful callback activates exactly that revision.
 
   A test never signs anyone in. Its callback validates the ID token and
   activates the revision, and that is all: it creates no session, links no
@@ -25,10 +25,14 @@ defmodule Renga.Accounts.ProviderTests do
   @doc """
   Opens a test from its link: claims the token, which works once, and
   returns the provider's authorization URL for the pending revision.
-  `redirect_uri` builds the callback URL from the provider's ID.
+  `redirect_uri` builds the callback URL from the provider's ID. An
+  organization provider's link opens only for the owner who created it,
+  signed in as `tester`.
   """
-  def start(token, redirect_uri) when is_binary(token) and is_function(redirect_uri, 1) do
-    with {:ok, test} <- claim(token),
+  def start(token, redirect_uri, tester \\ nil)
+      when is_binary(token) and is_function(redirect_uri, 1) do
+    with :ok <- check_tester(token, tester),
+         {:ok, test} <- claim(token),
          {:ok, provider, revision} <- pending(test),
          {:ok, url, attempt} <- OIDC.authorize(provider, revision, redirect_uri.(provider.id)) do
       test
@@ -40,6 +44,35 @@ defmodule Renga.Accounts.ProviderTests do
       |> Repo.update!()
 
       {:ok, url}
+    end
+  end
+
+  # Refuses someone else's link before claiming it, so they cannot spend it;
+  # activation checks the owner again.
+  defp check_tester(token, tester) do
+    IdentityProviderTest
+    |> where(token_hash: ^hash(token))
+    |> join(:inner, [test], provider in IdentityProvider, on: provider.id == test.provider_id)
+    |> select([test, provider], {provider.organization_id, test.actor_user_id})
+    |> Repo.one()
+    |> case do
+      {organization_id, actor_user_id} when is_binary(organization_id) ->
+        if match?(%{id: ^actor_user_id}, tester), do: :ok, else: {:error, :forbidden}
+
+      _deployment_or_unknown ->
+        :ok
+    end
+  end
+
+  @doc "The provider a test link was made for, or nil, whatever became of the test."
+  def provider_for_token(token) when is_binary(token) do
+    IdentityProviderTest
+    |> where(token_hash: ^hash(token))
+    |> select([test], test.provider_id)
+    |> Repo.one()
+    |> case do
+      nil -> nil
+      id -> IdentityProviders.get_any(id)
     end
   end
 
@@ -57,15 +90,22 @@ defmodule Renga.Accounts.ProviderTests do
 
   @doc """
   Finishes `test` from the provider's callback: validates the ID token with
-  the pending revision, then activates it. Returns the activated provider.
+  the pending revision, then activates it for `tester`, the signed-in user
+  if any (`IdentityProviders.activate_tested/2`). Returns the activated
+  provider.
   """
-  def finish(%IdentityProviderTest{} = test, %{"provider" => id} = params, redirect_uri) do
+  def finish(
+        %IdentityProviderTest{} = test,
+        %{"provider" => id} = params,
+        redirect_uri,
+        tester \\ nil
+      ) do
     with true <- id == test.provider_id || {:error, :provider_mismatch},
          {:ok, test} <- spend_state(test),
          {:ok, provider, revision} <- pending(test),
          attempt = %{"nonce" => test.nonce, "verifier" => test.verifier},
          {:ok, _validated} <- OIDC.exchange(provider, revision, attempt, params, redirect_uri) do
-      IdentityProviders.activate_tested(test)
+      IdentityProviders.activate_tested(test, tester)
     end
   end
 
@@ -105,8 +145,10 @@ defmodule Renga.Accounts.ProviderTests do
     end
   end
 
+  # A test belongs to the deployment's or an organization's provider,
+  # whichever scope created it.
   defp pending(%IdentityProviderTest{provider_id: id, revision: number}) do
-    case IdentityProviders.get(id) do
+    case IdentityProviders.get_any(id) do
       %IdentityProvider{pending_revision: ^number} = provider ->
         {:ok, provider, IdentityProviders.revision(provider, number)}
 

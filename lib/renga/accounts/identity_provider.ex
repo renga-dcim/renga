@@ -35,10 +35,43 @@ defmodule Renga.Accounts.IdentityProvider do
   def kinds, do: @kinds
   def icons, do: @icons
 
-  @doc "A changeset for a new provider: its permanent identity and display fields."
-  def create_changeset(provider, attrs) do
+  @doc """
+  A changeset for a new provider: its permanent identity and display fields.
+  With `organization_id`, it is that organization's provider (RFD 15,
+  "Organization providers"): always OpenID Connect over https, and never
+  hidden, since its people reach it from the organization's sign-in link.
+  """
+  def create_changeset(provider, attrs, organization_id \\ nil)
+
+  def create_changeset(provider, attrs, nil) do
     provider
     |> cast(attrs, [:id, :kind, :issuer, :display_name, :icon, :hidden])
+    |> identity_validations()
+  end
+
+  def create_changeset(provider, attrs, organization_id) do
+    provider
+    |> cast(attrs, [:id, :kind, :issuer, :display_name, :icon])
+    |> put_change(:organization_id, organization_id)
+    |> put_change(:hidden, false)
+    |> validate_inclusion(:kind, ["oidc"], message: "must be OpenID Connect for an organization")
+    |> identity_validations()
+    |> validate_https_issuer()
+  end
+
+  # The loopback http issuer allowed for local development is never an
+  # organization's.
+  defp validate_https_issuer(changeset) do
+    issuer = get_field(changeset, :issuer)
+
+    if is_binary(issuer) and not Keyword.has_key?(changeset.errors, :issuer) and
+         not match?(%URI{scheme: "https"}, URI.parse(issuer)),
+       do: add_error(changeset, :issuer, "must be an https URL"),
+       else: changeset
+  end
+
+  defp identity_validations(changeset) do
+    changeset
     |> validate_required([:id, :kind, :display_name])
     |> update_change(:id, &String.downcase/1)
     |> validate_format(:id, @id_format,
@@ -51,9 +84,16 @@ defmodule Renga.Accounts.IdentityProvider do
   end
 
   @doc "A changeset for the fields that change without a new revision."
-  def display_changeset(provider, attrs) do
+  def display_changeset(%__MODULE__{organization_id: nil} = provider, attrs) do
     provider
     |> cast(attrs, [:display_name, :icon, :hidden])
+    |> validate_required([:display_name])
+    |> display_validations()
+  end
+
+  def display_changeset(provider, attrs) do
+    provider
+    |> cast(attrs, [:display_name, :icon])
     |> validate_required([:display_name])
     |> display_validations()
   end

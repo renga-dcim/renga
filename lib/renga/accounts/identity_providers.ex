@@ -1,8 +1,11 @@
 defmodule Renga.Accounts.IdentityProviders do
   @moduledoc """
-  Deployment identity providers stored in the database (RFD 15, "Storage and
+  Identity providers stored in the database (RFD 15, "Storage and
   changes"). Release commands and the operator API (RFD 22) both manage
-  providers through this module, so there is one store and one set of rules.
+  deployment providers through this module, and
+  `Renga.Accounts.OrganizationProviders` manages an organization's providers
+  through it after checking the owner may, so there is one store and one set
+  of rules.
 
   A provider's authentication settings change only through revisions: an edit
   writes a pending revision while the active one stays in use, and only a
@@ -16,6 +19,12 @@ defmodule Renga.Accounts.IdentityProviders do
 
   An actor is `{:user, %User{}}` or `{:operator, name}`, where `name` says who
   ran a release command or which operator token called the API.
+
+  Each change locks the provider it was given within that provider's scope,
+  so a function called with a deployment provider never changes an
+  organization's, and the other way round. An organization provider's
+  changes are also recorded in the organization's Activity; they never count
+  toward the deployment's last way to sign in.
   """
 
   import Ecto.Query
@@ -26,6 +35,7 @@ defmodule Renga.Accounts.IdentityProviders do
   alias Renga.Accounts.IdentityProviderTest
   alias Renga.Accounts.SignInPolicy
   alias Renga.Accounts.User
+  alias Renga.Inventory.ChangeEvent
   alias Renga.Repo
   alias Renga.Vault
 
@@ -51,6 +61,26 @@ defmodule Renga.Accounts.IdentityProviders do
 
   @doc "A deployment provider by ID, or nil when there is none or it was removed."
   def get(id) when is_binary(id), do: Repo.get(deployment(), id)
+
+  @doc """
+  A provider of either scope by ID, or nil. Only for paths that act on a
+  provider already chosen through a scoped lookup, such as a test sign-in
+  whose test an operator or owner created.
+  """
+  def get_any(id) when is_binary(id),
+    do: Repo.one(from p in IdentityProvider, where: p.id == ^id and is_nil(p.removed_at))
+
+  @doc "An organization's providers that have not been removed, by display name."
+  def list_for_organization(organization_id) when is_binary(organization_id) do
+    organization_id
+    |> organization()
+    |> order_by([provider], asc: provider.display_name, asc: provider.id)
+    |> Repo.all()
+  end
+
+  @doc "One of an organization's providers by ID, or nil."
+  def get_for_organization(organization_id, id) when is_binary(organization_id) and is_binary(id),
+    do: Repo.get(organization(organization_id), id)
 
   @doc "A provider's revision by number."
   def revision(%IdentityProvider{id: id}, number) when is_integer(number),
@@ -80,11 +110,14 @@ defmodule Renga.Accounts.IdentityProviders do
   end
 
   @doc """
-  Adds a deployment provider. Its settings become revision 1, pending until
-  a test sign-in activates it, so a new provider takes no sign-ins yet.
+  Adds a deployment provider, or with `organization_id:` an organization's.
+  Its settings become revision 1, pending until a test sign-in activates
+  it, so a new provider takes no sign-ins yet.
   """
-  def create(attrs, actor) do
-    provider_changeset = IdentityProvider.create_changeset(%IdentityProvider{}, attrs)
+  def create(attrs, actor, opts \\ []) do
+    provider_changeset =
+      IdentityProvider.create_changeset(%IdentityProvider{}, attrs, opts[:organization_id])
+
     kind = Ecto.Changeset.get_field(provider_changeset, :kind)
     revision_changeset = Revision.changeset(%Revision{}, attrs, kind)
 
@@ -108,8 +141,8 @@ defmodule Renga.Accounts.IdentityProviders do
   end
 
   @doc "Changes the display name, icon, or whether the sign-in page hides the provider."
-  def update_display(%IdentityProvider{id: id}, attrs, actor) do
-    change_provider(id, fn provider ->
+  def update_display(%IdentityProvider{} = provider, attrs, actor) do
+    change_provider(provider, fn provider ->
       changeset = IdentityProvider.display_changeset(provider, attrs)
 
       case changed_fields(changeset) do
@@ -126,8 +159,8 @@ defmodule Renga.Accounts.IdentityProviders do
   keeps the saved one. Returns `{:error, :no_changes}` when `attrs` change
   nothing.
   """
-  def propose_revision(%IdentityProvider{id: id}, attrs, actor) do
-    change_provider(id, &propose(&1, attrs, actor))
+  def propose_revision(%IdentityProvider{} = provider, attrs, actor) do
+    change_provider(provider, &propose(&1, attrs, actor))
   end
 
   defp propose(provider, attrs, actor) do
@@ -149,8 +182,8 @@ defmodule Renga.Accounts.IdentityProviders do
   end
 
   @doc "Discards the pending revision, leaving the active one in use."
-  def discard_pending(%IdentityProvider{id: id}, actor) do
-    change_provider(id, fn
+  def discard_pending(%IdentityProvider{} = provider, actor) do
+    change_provider(provider, fn
       %IdentityProvider{pending_revision: nil} ->
         {:error, :nothing_pending}
 
@@ -169,13 +202,13 @@ defmodule Renga.Accounts.IdentityProviders do
   @doc """
   Starts a test sign-in of the pending revision for `actor`. Returns
   `{:ok, {token, test}}`; the token opens the test once, within 15 minutes.
-  Only a successful test activates a revision (`activate_tested/1`).
+  Only a successful test activates a revision (`activate_tested/2`).
   """
-  def create_test(%IdentityProvider{id: id}, actor) do
+  def create_test(%IdentityProvider{id: id} = provider, actor) do
     token = Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
 
     serialized(fn ->
-      with {:ok, provider} <- lock(id),
+      with {:ok, provider} <- lock(provider),
            number when is_integer(number) <-
              provider.pending_revision || {:error, :nothing_pending} do
         test =
@@ -198,10 +231,13 @@ defmodule Renga.Accounts.IdentityProviders do
   transaction that marks the test used. Refused when the test was used or
   expired, or when another edit replaced the revision it tested.
   """
-  def activate_tested(%IdentityProviderTest{id: test_id}) do
+  def activate_tested(%IdentityProviderTest{id: test_id}, tester \\ nil) do
     serialized(fn ->
       with {:ok, test} <- lock_test(test_id),
-           {:ok, provider} <- lock(test.provider_id),
+           # The test was created through a scoped lookup; its provider is
+           # whichever scope that was.
+           {:ok, provider} <- lock_any(test.provider_id),
+           :ok <- authorize_tester(provider, test, tester),
            :ok <- still_pending(provider, test) do
         test |> Ecto.Changeset.change(completed_at: Renga.Time.utc_now_ms()) |> Repo.update!()
 
@@ -226,6 +262,24 @@ defmodule Renga.Accounts.IdentityProviders do
     end
   end
 
+  # A deployment provider's test is the operator's or an administrator's
+  # bearer link and works without a session, as recovery needs. An
+  # organization's provider activates only for the owner who created the
+  # test, signed in, and still an owner now.
+  defp authorize_tester(%IdentityProvider{organization_id: nil}, _test, _tester), do: :ok
+
+  defp authorize_tester(
+         %IdentityProvider{organization_id: organization_id},
+         %IdentityProviderTest{actor_user_id: user_id},
+         %User{id: user_id} = tester
+       ) do
+    tester
+    |> Renga.Accounts.scope_for_user(organization_id)
+    |> Renga.Accounts.OrganizationProviders.authorize_owner!()
+  end
+
+  defp authorize_tester(_provider, _test, _tester), do: {:error, :forbidden}
+
   defp still_pending(%IdentityProvider{pending_revision: number}, %IdentityProviderTest{
          revision: number
        }),
@@ -234,21 +288,21 @@ defmodule Renga.Accounts.IdentityProviders do
   defp still_pending(_provider, _test), do: {:error, :revision_changed}
 
   @doc "Turns sign-in through the provider back on."
-  def enable(%IdentityProvider{id: id}, actor), do: set_enabled(id, true, actor)
+  def enable(%IdentityProvider{} = provider, actor), do: set_enabled(provider, true, actor)
 
   @doc """
   Turns sign-in through the provider off. Refused with
   `{:error, :last_sign_in_method}` when it is the deployment's last way to
   sign in.
   """
-  def disable(%IdentityProvider{id: id}, actor), do: set_enabled(id, false, actor)
+  def disable(%IdentityProvider{} = provider, actor), do: set_enabled(provider, false, actor)
 
-  defp set_enabled(id, enabled, actor) do
-    Renga.Scim.Grants.announcing(fn -> set_enabled!(id, enabled, actor) end)
+  defp set_enabled(provider, enabled, actor) do
+    Renga.Scim.Grants.announcing(fn -> set_enabled!(provider, enabled, actor) end)
   end
 
-  defp set_enabled!(id, enabled, actor) do
-    change_provider(id, fn
+  defp set_enabled!(provider, enabled, actor) do
+    change_provider(provider, fn
       %IdentityProvider{enabled: ^enabled} = provider ->
         {:ok, provider}
 
@@ -265,12 +319,12 @@ defmodule Renga.Accounts.IdentityProviders do
   secrets, and the change is refused when the provider is the deployment's
   last way to sign in.
   """
-  def remove(%IdentityProvider{id: id}, actor) do
-    Renga.Scim.Grants.announcing(fn -> remove!(id, actor) end)
+  def remove(%IdentityProvider{} = provider, actor) do
+    Renga.Scim.Grants.announcing(fn -> remove!(provider, actor) end)
   end
 
-  defp remove!(id, actor) do
-    change_provider(id, fn provider ->
+  defp remove!(%IdentityProvider{id: id} = provider, actor) do
+    change_provider(provider, fn provider ->
       Repo.update_all(where(Revision, provider_id: ^id),
         set: [client_secret_ciphertext: nil, client_secret_key_id: nil]
       )
@@ -366,9 +420,31 @@ defmodule Renga.Accounts.IdentityProviders do
     |> where([provider], is_nil(provider.removed_at))
   end
 
+  defp organization(organization_id) do
+    IdentityProvider
+    |> where([provider], provider.organization_id == ^organization_id)
+    |> where([provider], is_nil(provider.removed_at))
+  end
+
   defp usable_deployment do
     deployment()
     |> where([provider], provider.enabled and not is_nil(provider.active_revision))
+  end
+
+  @doc """
+  Runs `fun` in a provider-change transaction, holding the lock every
+  provider change takes first and, when `provider` is given, its row lock
+  in its own scope. For a caller that authorizes the change inside the
+  same transaction: its organization locks then come after the
+  provider's, in the order SCIM takes them (RFD 16), so neither waits on
+  the other. `fun` returns `{:ok, result}` or `{:error, reason}`.
+  """
+  def locked(nil, fun), do: serialized(fun)
+
+  def locked(%IdentityProvider{} = provider, fun) do
+    serialized(fn ->
+      with {:ok, _provider} <- lock(provider), do: fun.()
+    end)
   end
 
   # Runs a change under the provider lock, then refuses it if it took away
@@ -401,12 +477,16 @@ defmodule Renga.Accounts.IdentityProviders do
 
   defp scim_changed(error), do: error
 
-  # Runs `fun` on the locked, current copy of the provider.
-  defp change_provider(id, fun) do
+  # Runs `fun` on the locked, current copy of the provider, in the scope of
+  # the copy it was given. An ID alone names a deployment provider.
+  defp change_provider(%IdentityProvider{} = provider, fun) do
     serialized(fn ->
-      with {:ok, provider} <- lock(id), do: fun.(provider)
+      with {:ok, provider} <- lock(provider), do: fun.(provider)
     end)
   end
+
+  defp change_provider(id, fun) when is_binary(id),
+    do: change_provider(%IdentityProvider{id: id, organization_id: nil}, fun)
 
   # Saves a provider change with the next version and records it.
   defp save(changeset, kind, actor, opts \\ []) do
@@ -416,8 +496,17 @@ defmodule Renga.Accounts.IdentityProviders do
     end
   end
 
-  defp lock(id) do
-    case Repo.one(from(provider in deployment(), where: provider.id == ^id, lock: "FOR UPDATE")) do
+  defp lock(%IdentityProvider{id: id, organization_id: nil}),
+    do: lock_query(where(deployment(), id: ^id))
+
+  defp lock(%IdentityProvider{id: id, organization_id: organization_id}),
+    do: lock_query(where(organization(organization_id), id: ^id))
+
+  defp lock_any(id),
+    do: lock_query(from(p in IdentityProvider, where: p.id == ^id and is_nil(p.removed_at)))
+
+  defp lock_query(query) do
+    case Repo.one(lock(query, "FOR UPDATE")) do
       nil -> {:error, :not_found}
       provider -> {:ok, provider}
     end
@@ -495,6 +584,36 @@ defmodule Renga.Accounts.IdentityProviders do
       actor: actor_label(actor),
       actor_user_id: actor_user_id(actor)
     })
+
+    record_activity(provider, kind, actor, opts)
+  end
+
+  # An organization's provider changes show in that organization's
+  # Activity too, with the fields that changed and never a secret.
+  defp record_activity(%IdentityProvider{organization_id: nil}, _kind, _actor, _opts), do: :ok
+
+  defp record_activity(
+         %IdentityProvider{organization_id: organization_id} = provider,
+         kind,
+         actor,
+         opts
+       ) do
+    %ChangeEvent{organization_id: organization_id, actor_user_id: actor_user_id(actor)}
+    |> ChangeEvent.changeset(%{
+      kind: "identity_provider_changed",
+      field: provider.id,
+      metadata: %{
+        "provider" => provider.id,
+        "name" => provider.display_name,
+        "change" => kind,
+        "revision" => opts[:revision],
+        "changed" => Keyword.get(opts, :changed, [])
+      },
+      occurred_at: Renga.Time.utc_now_ms()
+    })
+    |> Repo.insert!()
+
+    :ok
   end
 
   defp actor_label({:user, %User{email: email}}), do: email

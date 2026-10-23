@@ -100,14 +100,14 @@ defmodule RengaWeb.UserProviderController do
   signing anyone in.
   """
   def test(conn, %{"token" => token}) do
-    case ProviderTests.start(token, &callback_url/1) do
+    case ProviderTests.start(token, &callback_url/1, current_user(conn)) do
       {:ok, url} ->
         redirect(conn, external: url)
 
       {:error, reason} ->
         conn
         |> put_flash(:error, test_message({:error, reason}))
-        |> redirect(to: ~p"/users/log-in")
+        |> redirect(to: after_test_path(ProviderTests.provider_for_token(token)))
     end
   end
 
@@ -121,14 +121,14 @@ defmodule RengaWeb.UserProviderController do
   # A test only validates and activates the revision. It leaves the browser
   # session as it was: nobody is signed in or out.
   defp finish_test(conn, test, %{"provider" => id} = params) do
-    case ProviderTests.finish(test, params, callback_url(id)) do
+    case ProviderTests.finish(test, params, callback_url(id), current_user(conn)) do
       {:ok, provider} ->
         conn
         |> put_flash(
           :info,
           "The test sign-in worked, and #{provider.display_name} now uses revision #{provider.active_revision}."
         )
-        |> redirect(to: ~p"/users/log-in")
+        |> redirect(to: after_test_path(provider))
 
       error ->
         # Only the reason: never the test's secrets, a token, or a changeset.
@@ -136,9 +136,18 @@ defmodule RengaWeb.UserProviderController do
 
         conn
         |> put_flash(:error, test_message(error))
-        |> redirect(to: ~p"/users/log-in")
+        |> redirect(to: after_test_path(IdentityProviders.get_any(id)))
     end
   end
+
+  defp current_user(%{assigns: %{current_scope: %{user: user}}}), do: user
+  defp current_user(_conn), do: nil
+
+  # An owner testing their organization's provider goes back to its page.
+  defp after_test_path(%{organization_id: organization_id}) when is_binary(organization_id),
+    do: ~p"/settings/identity-providers"
+
+  defp after_test_path(_deployment_or_unknown), do: ~p"/users/log-in"
 
   defp finish_sign_in(conn, params) do
     attempt = get_session(conn, @attempt_key)
@@ -269,6 +278,9 @@ defmodule RengaWeb.UserProviderController do
 
   defp test_message({:error, :test_expired}),
     do: "That test link has expired or was already used. Create a new test."
+
+  defp test_message({:error, :forbidden}),
+    do: "Only the owner who created this test can finish it, while signed in."
 
   defp test_message({:error, :revision_changed}),
     do: "The provider's settings changed since this test was created. Test the new settings."
