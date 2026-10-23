@@ -153,6 +153,17 @@ defmodule Renga.Jobs.QueryPayloadTest do
              Jobs.get_job(context.admin, refused.id)
   end
 
+  test "a job's events cannot be preloaded around the withholding", context do
+    job = run(context, @packages, %{"name" => "ssl"}, {:succeeded, @packages_result})
+
+    for preload <- [[:events], [events: :job], [resource: :claims]] do
+      assert_raise ArgumentError, fn -> Jobs.get_job(context.admin, job.id, preload: preload) end
+    end
+
+    assert %{payload_hidden: true, agent: %{id: _}} =
+             Jobs.get_job(context.admin, job.id, preload: [:resource, :agent, :requested_by_user])
+  end
+
   test "Activity carries only the summary of a sensitive job", context do
     run(context, @packages, %{"name" => "ssl"}, {:failed, "rpmdb open failed"})
 

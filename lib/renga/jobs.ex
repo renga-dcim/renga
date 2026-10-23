@@ -56,17 +56,28 @@ defmodule Renga.Jobs do
   # agent's reports. What the job is, where it ran, who asked, and how it
   # stands stay visible. Having requested the job grants nothing.
 
+  # The associations a read may preload: metadata only. A job's events carry
+  # the agent's reports, so they are read through `list_events/2`, which
+  # withholds them; preloading them here would bypass that.
+  @metadata_preloads [:resource, :agent, :requested_by_user, :target_binding]
+
   @doc """
   Fetches a job in the scope's organization, or nil, with its payload
-  withheld unless the scope may read it. `:preload` loads associations,
-  such as `[:resource, :agent, :requested_by_user]`.
+  withheld unless the scope may read it. `:preload` loads metadata
+  associations, any of `[:resource, :agent, :requested_by_user,
+  :target_binding]`; read events with `list_events/2`.
   """
   def get_job(%Scope{organization_id: organization_id} = scope, id, opts \\ []) do
+    preloads = Keyword.get(opts, :preload, [])
+
+    unless is_list(preloads) and preloads -- @metadata_preloads == [],
+      do: raise(ArgumentError, "get_job/3 preloads only #{inspect(@metadata_preloads)}")
+
     case Ecto.UUID.cast(id) do
       {:ok, id} ->
         Job
         |> Repo.get_by(id: id, organization_id: organization_id)
-        |> Repo.preload(Keyword.get(opts, :preload, []))
+        |> Repo.preload(preloads)
         |> withhold_payload(readable_payloads(scope))
 
       :error ->
