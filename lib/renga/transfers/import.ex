@@ -300,10 +300,15 @@ defmodule Renga.Transfers.Import do
     })
   end
 
-  # The destination keeps its own name and slug.
+  # The destination keeps its own name and slug. Opting into
+  # guest-without-VM findings only adds findings, so it applies as is.
   defp update_organization!(organization, record, settings) do
     organization
-    |> Ecto.Changeset.cast(record, [:default_accent, :default_power_factor])
+    |> Ecto.Changeset.cast(record, [
+      :default_accent,
+      :default_power_factor,
+      :guest_without_vm_findings
+    ])
     |> Ecto.Changeset.put_change(:settings, settings)
     |> Repo.update!()
   end

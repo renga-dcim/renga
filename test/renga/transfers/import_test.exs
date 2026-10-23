@@ -306,6 +306,7 @@ defmodule Renga.Transfers.ImportTest do
     source =
       context.source
       |> Ecto.Changeset.change(
+        guest_without_vm_findings: true,
         settings: %{
           "jobs" => %{"allowed_capabilities" => [@collect, operate], "retention_days" => 30},
           "unknown" => true
@@ -326,6 +327,7 @@ defmodule Renga.Transfers.ImportTest do
     target = Repo.get!(Organization, target.id)
     assert Jobs.Settings.allowed_capabilities(target) == [@collect]
     assert Jobs.Settings.retention_days(target) == 30
+    assert target.guest_without_vm_findings
   end
 
   # Rewrites the archive at `path` with `type`'s records sorted by `key`.
