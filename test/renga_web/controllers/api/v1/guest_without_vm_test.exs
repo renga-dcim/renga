@@ -15,6 +15,7 @@ defmodule RengaWeb.Api.V1.GuestWithoutVmTest do
   alias Renga.Inventory.AgentLease
   alias Renga.Inventory.CollectorFinding
   alias Renga.Inventory.CollectorFindings
+  alias Renga.Inventory.CollectorFindingsWorker
   alias Renga.Repo
 
   @guest_installation "0d7c8f4e-2a1b-4c3d-9e8f-7a6b5c4d3e2f"
@@ -80,12 +81,19 @@ defmodule RengaWeb.Api.V1.GuestWithoutVmTest do
       )
 
     no_uuid = guest!(token, uuid: nil, installation_id: Ecto.UUID.generate())
+
+    unset_uuids =
+      for uuid <- ~w(00000000-0000-0000-0000-000000000000 ffffffff-ffff-ffff-ffff-ffffffffffff) do
+        guest!(token, uuid: uuid, installation_id: Ecto.UUID.generate())
+      end
+
     guest_id = guest!(token)
 
     refresh!(scope)
     assert open_findings(bare_metal) == []
     assert open_findings(vmware) == []
     assert open_findings(no_uuid) == []
+    assert Enum.all?(unset_uuids, &(open_findings(&1) == []))
     assert [_finding] = open_findings(guest_id)
 
     # The guest's agent disconnects.
@@ -97,6 +105,29 @@ defmodule RengaWeb.Api.V1.GuestWithoutVmTest do
 
     refresh!(scope)
     assert open_findings(guest_id) == []
+  end
+
+  test "a heartbeat-only reconnection reopens the finding on the next sweep", %{
+    scope: scope,
+    token: token
+  } do
+    {:ok, true} = CollectorFindings.set_guest_without_vm_findings(scope, true)
+    guest_id = guest!(token)
+    assert [_finding] = open_findings(guest_id)
+
+    agent = Repo.get_by!(Renga.Inventory.Agent, installation_id: @guest_installation)
+    expired_at = DateTime.add(Renga.Time.utc_now_ms(), -1, :second)
+
+    Repo.update_all(from(lease in AgentLease, where: lease.agent_id == ^agent.id),
+      set: [renewed_at: DateTime.add(expired_at, -90, :second), expires_at: expired_at]
+    )
+
+    assert [{:ok, _}] = CollectorFindingsWorker.sweep()
+    assert open_findings(guest_id) == []
+
+    check_in!(token, @guest_installation)
+    assert [{:ok, _}] = CollectorFindingsWorker.sweep()
+    assert [_finding] = open_findings(guest_id)
   end
 
   describe "Collectors page" do

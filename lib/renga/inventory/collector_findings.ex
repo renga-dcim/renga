@@ -118,9 +118,15 @@ defmodule Renga.Inventory.CollectorFindings do
       |> where([finding], finding.status == "open" and finding.kind in ^@timed_kinds)
       |> select([finding], finding.organization_id)
 
+    opted_in =
+      Organization
+      |> where([organization], organization.guest_without_vm_findings)
+      |> select([organization], organization.id)
+
     CollectorTarget
     |> select([target], target.organization_id)
     |> union(^with_findings)
+    |> union(^opted_in)
     |> subquery()
     |> join(:inner, [row], organization in Organization,
       on: organization.id == row.organization_id

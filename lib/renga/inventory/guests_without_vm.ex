@@ -38,6 +38,7 @@ defmodule Renga.Inventory.GuestsWithoutVm do
 
   @kind "guest_without_vm"
   @libvirt_providers ~w(kvm qemu)
+  @unset_uuids ~w(00000000-0000-0000-0000-000000000000 ffffffff-ffff-ffff-ffff-ffffffffffff)
 
   @doc "Whether the organization opted in to the finding."
   def enabled?(%Scope{organization_id: organization_id}) do
@@ -97,6 +98,7 @@ defmodule Renga.Inventory.GuestsWithoutVm do
     )
     |> where([identifier], identifier.organization_id == ^scope.organization_id)
     |> where([identifier], identifier.kind == "dmi_uuid")
+    |> where([identifier], identifier.normalized_value not in ^@unset_uuids)
     |> where([_identifier, _claim, source], source.kind == "host_agent")
     |> where([identifier], identifier.resource_id not in subquery(with_domain))
     |> only(resource_ids)
