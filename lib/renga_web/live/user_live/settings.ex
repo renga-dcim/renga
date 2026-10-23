@@ -969,6 +969,9 @@ defmodule RengaWeb.UserLive.Settings do
            to_form(changeset, as: "email_initialization", action: :insert)
          )}
 
+      {:error, :rate_limited} ->
+        {:noreply, put_flash(socket, :error, "Too many codes were sent. Try again in an hour.")}
+
       {:error, _reason} ->
         {:noreply, put_flash(socket, :error, "The code could not be sent.")}
     end

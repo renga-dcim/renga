@@ -58,7 +58,10 @@ defmodule Renga.Accounts.EmailInitializationTest do
     assert stored.confirmed_at
 
     assert [%SecurityEvent{kind: "email_initialized"}] =
-             Repo.all(from e in SecurityEvent, where: e.user_id == ^user.id)
+             Repo.all(
+               from e in SecurityEvent,
+                 where: e.user_id == ^user.id and e.kind != "email_initialization_code_sent"
+             )
   end
 
   test "grants only the first password or factor, even to the scoped session", %{
@@ -153,6 +156,32 @@ defmodule Renga.Accounts.EmailInitializationTest do
     assert {:error, :email_in_use} = Recheck.verify_email_initialization_code(user, token, code)
     assert Repo.get!(User, user.id).email == nil
     refute Recheck.authorized?(user, token, :set_password)
+  end
+
+  test "limits the codes an account sends and an address receives", %{
+    organization: organization,
+    user: user,
+    token: token
+  } do
+    # An address receives three codes an hour, whichever account asks.
+    for _ <- 1..3, do: code(user, token, "target@example.com")
+
+    assert {:error, :rate_limited} =
+             Recheck.deliver_email_initialization_code(user, token, "Target@Example.com")
+
+    {other_token, other} = scoped_session(Repo.insert!(%User{}), organization)
+
+    assert {:error, :rate_limited} =
+             Recheck.deliver_email_initialization_code(other, other_token, "target@example.com")
+
+    # An account sends five, from any session and to any addresses.
+    {second_token, _same_user} = scoped_session(user, organization)
+    for n <- 1..2, do: code(user, second_token, "sam-#{n}@example.com")
+
+    assert {:error, :rate_limited} =
+             Recheck.deliver_email_initialization_code(user, second_token, "sam-3@example.com")
+
+    refute_received {:email, %{to: [{"", "sam-3@example.com"}]}}
   end
 
   test "refuses an address someone registered after the code went out", %{

@@ -32,6 +32,7 @@ defmodule Renga.Accounts.Recheck do
   alias Renga.Accounts.MFA
   alias Renga.Accounts.OIDC
   alias Renga.Accounts.Passkeys
+  alias Renga.Accounts.SecurityEvent
   alias Renga.Accounts.SecurityLog
   alias Renga.Accounts.User
   alias Renga.Accounts.UserIdentity
@@ -43,6 +44,8 @@ defmodule Renga.Accounts.Recheck do
   @max_code_attempts 5
   # Unambiguous characters, so a code read off a phone screen types back in.
   @code_alphabet ~c"ABCDEFGHJKMNPQRSTVWXYZ23456789"
+  @max_initialization_codes_per_account 5
+  @max_initialization_codes_per_address 3
   @code_length 10
 
   @typedoc "A change the re-check guards."
@@ -354,6 +357,12 @@ defmodule Renga.Accounts.Recheck do
   and is refused only once that code proves the mailbox
   (`verify_email_initialization_code/3`): refusing it here would let anyone
   holding such an account learn which addresses have Renga accounts.
+
+  Each account may send `#{@max_initialization_codes_per_account}` codes an
+  hour, and each address receive `#{@max_initialization_codes_per_address}`,
+  whatever session or account asks: `{:error, :rate_limited}` past that.
+  The limit on each challenge's wrong attempts stops guessing; this one
+  stops the account from using Renga to mail arbitrary addresses.
   """
   def deliver_email_initialization_code(%User{} = user, session_token, email)
       when is_binary(email) do
@@ -363,28 +372,74 @@ defmodule Renga.Accounts.Recheck do
          {:ok, %User{email: email}} <-
            current
            |> User.email_changeset(%{email: email}, validate_unique: false)
-           |> Ecto.Changeset.apply_action(:insert) do
-      code = generate_code()
-
-      Repo.insert!(
-        %AccountChallenge{
-          user_id: user.id,
-          session_token_id: session.id,
-          purpose: "email_initialization",
-          code_hash: hash_code(code),
-          sent_to: email,
-          expires_at: expires_at()
-        },
-        on_conflict: {:replace, [:code_hash, :sent_to, :attempts, :expires_at, :inserted_at]},
-        conflict_target: [:session_token_id, :purpose]
-      )
-
+           |> Ecto.Changeset.apply_action(:insert),
+         {:ok, code} <- issue_initialization_code(current, session, email) do
       UserNotifier.deliver_email_initialization_code(email, format_code(code))
     else
       :error -> {:error, :no_session}
       {:error, %Ecto.Changeset{}} = error -> error
+      {:error, :rate_limited} = error -> error
       _has_email_or_methods -> {:error, :not_available}
     end
+  end
+
+  # Counts and records the send under the account's row lock and a lock on
+  # the address, so concurrent requests, from one account or from several,
+  # can't each slip under a limit.
+  defp issue_initialization_code(user, session, email) do
+    Repo.transact(fn ->
+      Repo.one!(from u in User, where: u.id == ^user.id, select: u.id, lock: "FOR UPDATE")
+
+      Repo.query!(
+        "SELECT pg_advisory_xact_lock(hashtext('renga.email_initialization'), hashtext($1))",
+        [String.downcase(email)]
+      )
+
+      if initialization_codes_exhausted?(user, email) do
+        {:error, :rate_limited}
+      else
+        code = generate_code()
+
+        Repo.insert!(
+          %AccountChallenge{
+            user_id: user.id,
+            session_token_id: session.id,
+            purpose: "email_initialization",
+            code_hash: hash_code(code),
+            sent_to: email,
+            expires_at: expires_at()
+          },
+          on_conflict: {:replace, [:code_hash, :sent_to, :attempts, :expires_at, :inserted_at]},
+          conflict_target: [:session_token_id, :purpose]
+        )
+
+        SecurityLog.record(user, "email_initialization_code_sent", %{
+          "sent_to" => String.downcase(email)
+        })
+
+        {:ok, code}
+      end
+    end)
+  end
+
+  defp initialization_codes_exhausted?(user, email) do
+    since = DateTime.add(Renga.Time.utc_now_ms(), -1, :hour)
+
+    sent =
+      SecurityEvent
+      |> where(kind: "email_initialization_code_sent")
+      |> where([event], event.inserted_at > ^since)
+
+    Repo.aggregate(where(sent, user_id: ^user.id), :count) >=
+      @max_initialization_codes_per_account or
+      Repo.aggregate(
+        where(
+          sent,
+          [event],
+          fragment("?->>'sent_to'", event.metadata) == ^String.downcase(email)
+        ),
+        :count
+      ) >= @max_initialization_codes_per_address
   end
 
   @doc """
