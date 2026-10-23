@@ -1,11 +1,14 @@
 defmodule Renga.Accounts.ProviderMFATest do
   use Renga.DataCase, async: true
 
+  import Renga.AccountsFixtures
   import Renga.InventoryFixtures
 
   alias Renga.Accounts.IdentityProvider
   alias Renga.Accounts.IdentityProviders
+  alias Renga.Accounts.OrganizationProviders
   alias Renga.Accounts.ProviderMFA
+  alias Renga.Accounts.Scope
   alias Renga.Accounts.SessionMFA
 
   @operator {:operator, "release"}
@@ -30,8 +33,6 @@ defmodule Renga.Accounts.ProviderMFATest do
     provider
   end
 
-  # Organization providers have no store of their own yet, so these rows
-  # stand in for one.
   defp organization_provider(organization, attrs) do
     Repo.insert!(
       struct!(
@@ -101,6 +102,34 @@ defmodule Renga.Accounts.ProviderMFATest do
   end
 
   describe "organization providers" do
+    test "an owner marks a real organization provider", %{
+      organization: organization,
+      other: other
+    } do
+      user = user_fixture()
+      membership = organization_membership_fixture(user, organization, %{role: "owner"})
+      owner = Scope.for_membership(user, organization, membership)
+
+      {:ok, {provider, _revision}} =
+        OrganizationProviders.create(owner, %{
+          "id" => OrganizationProviders.new_id(),
+          "issuer" => "https://idp.example.com/",
+          "display_name" => "Company",
+          "client_id" => "renga",
+          "client_secret" => "s3cret"
+        })
+
+      assert {:ok, provider} =
+               OrganizationProviders.set_mfa_mark(owner, provider, %{
+                 "enforces_mfa" => true,
+                 "mfa_amr_combinations" => []
+               })
+
+      evidence = signed_in_through(provider)
+      assert ProviderMFA.satisfies?(evidence, organization.id)
+      refute ProviderMFA.satisfies?(evidence, other.id)
+    end
+
     test "a mark counts only for the owning organization, with and without amr", %{
       organization: organization,
       other: other

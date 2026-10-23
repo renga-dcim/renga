@@ -347,8 +347,8 @@ defmodule Renga.Accounts.IdentityProviders do
   recorded as its own event; changing only the combinations is an update.
   The mark applies at each member's next request, so nothing ends here.
   """
-  def set_mfa_mark(%IdentityProvider{id: id}, attrs, actor) do
-    change_provider(id, fn provider ->
+  def set_mfa_mark(%IdentityProvider{} = provider, attrs, actor) do
+    change_provider(provider, fn provider ->
       changeset = IdentityProvider.mfa_changeset(provider, attrs)
 
       if changeset.valid?,

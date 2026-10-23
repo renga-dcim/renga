@@ -88,6 +88,10 @@ defmodule Renga.Accounts.OrganizationProviders do
   def disable(%Scope{} = scope, %IdentityProvider{} = provider),
     do: change(scope, provider, &IdentityProviders.disable(&1, actor(scope)))
 
+  @doc "Sets whether the provider's authentication counts as MFA."
+  def set_mfa_mark(%Scope{} = scope, %IdentityProvider{} = provider, attrs),
+    do: change(scope, provider, &IdentityProviders.set_mfa_mark(&1, attrs, actor(scope)))
+
   @doc "Removes the provider; its ID is never reused."
   def remove(%Scope{} = scope, %IdentityProvider{} = provider),
     do: change(scope, provider, &IdentityProviders.remove(&1, actor(scope)))
