@@ -169,6 +169,43 @@ defmodule Renga.Scim.UserResourceTest do
                  UserResource.patch([op("remove", path)], @current)
       end
 
+      # A value filter must name the kept address to replace it; a type
+      # filter always does, since Renga keeps no type.
+      assert {:ok, %{email: "new@example.com"}} =
+               UserResource.patch(
+                 [op("replace", ~s(emails[value eq "Sam@Example.com"].value), "new@example.com")],
+                 @current
+               )
+
+      for current <- [@current, %{@current | email: nil}] do
+        assert {:error, {:no_target, _}} =
+                 UserResource.patch(
+                   [
+                     op(
+                       "replace",
+                       ~s(emails[value eq "other@example.com"].value),
+                       "x@example.com"
+                     )
+                   ],
+                   current
+                 )
+      end
+
+      assert {:ok, %{email: "new@example.com"}} =
+               UserResource.patch(
+                 [op("replace", ~s(emails[type eq "work"].value), "new@example.com")],
+                 %{@current | email: nil}
+               )
+
+      # A filter Renga cannot evaluate selects nothing rather than everything.
+      for operation <- [
+            op("remove", "emails[primary eq false]"),
+            op("remove", "emails[nonsense]"),
+            op("replace", ~s(emails[display eq "x"].value), "x@example.com")
+          ] do
+        assert {:error, {:invalid_filter, _}} = UserResource.patch([operation], @current)
+      end
+
       assert {:ok, %{formatted_name: nil, given_name: nil}} =
                UserResource.patch([op("remove", "name")], @current)
     end

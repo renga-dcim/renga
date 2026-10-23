@@ -24,7 +24,7 @@ defmodule Renga.Scim.UserResource do
   alias Renga.Scim.Path
 
   @core "urn:ietf:params:scim:schemas:core:2.0:User"
-  @value_filter ~r/^\s*value\s+eq\s+"((?:[^"\\]|\\.)*)"\s*$/i
+  @email_filter ~r/^\s*(value|type)\s+eq\s+"((?:[^"\\]|\\.)*)"\s*$/i
 
   @doc "Attributes for a new entry from a POST body."
   def create(resource) when is_map(resource) do
@@ -225,42 +225,29 @@ defmodule Renga.Scim.UserResource do
     end
   end
 
-  # Removing the address, or the one a filter names, clears it. Renga keeps
-  # no email type, so a type filter names the address it keeps; a value
-  # filter naming another address leaves it alone.
-  defp apply_path("remove", %{attribute: "emails", filter: filter, sub: sub}, _value, attrs)
-       when sub in [nil, "value"] do
-    if names_other_address?(filter, attrs.email),
-      do: {:ok, attrs},
-      else: {:ok, %{attrs | email: nil}}
-  end
-
-  # Removing a sub-attribute Renga does not keep, such as type, leaves the
-  # address.
-  defp apply_path("remove", %{attribute: "emails"}, _value, attrs), do: {:ok, attrs}
-
-  # emails[type eq "work"].value, as Entra sends it, sets the one address
-  # Renga keeps. Other sub-attributes, such as type, are not kept.
-  defp apply_path(_op, %{attribute: "emails", filter: filter, sub: sub}, value, attrs)
+  # A filtered path selects the one address Renga keeps by its value, or
+  # by type, as Entra replaces emails[type eq "work"].value: Renga keeps no
+  # type, so any type selects it. A value naming another address selects
+  # nothing, and no other filter can be evaluated.
+  defp apply_path(op, %{attribute: "emails", filter: filter, sub: sub}, value, attrs)
        when is_binary(filter) do
-    case sub do
-      "value" ->
-        with {:ok, email} <- optional("replace", value, "emails.value"),
-             do: {:ok, %{attrs | email: email}}
+    case email_selector(filter, attrs.email) do
+      :selected ->
+        apply_email(op, sub, value, attrs)
 
-      nil when is_map(value) ->
-        with {:ok, email} <- email([value]), do: {:ok, %{attrs | email: email}}
-
-      _other ->
+      :other when op == "remove" ->
         {:ok, attrs}
+
+      :other ->
+        {:error, {:no_target, "No email address matches #{filter}"}}
+
+      :unsupported ->
+        {:error, {:invalid_filter, ~s(Emails can only be filtered by value eq or type eq)}}
     end
   end
 
-  defp apply_path(_op, %{attribute: "emails", sub: nil}, value, attrs) do
-    with {:ok, email} <- email(List.wrap(value)), do: {:ok, %{attrs | email: email}}
-  end
-
-  defp apply_path(_op, %{attribute: "emails"}, _value, attrs), do: {:ok, attrs}
+  defp apply_path(op, %{attribute: "emails", sub: sub}, value, attrs),
+    do: apply_email(op, sub, value, attrs)
 
   defp apply_path(_op, %{attribute: "password"}, _value, _attrs), do: password_change()
 
@@ -328,14 +315,37 @@ defmodule Renga.Scim.UserResource do
 
   defp email(_emails), do: {:error, {:invalid_value, "emails must be a list"}}
 
-  defp names_other_address?(filter, email) when is_binary(filter) and is_binary(email) do
-    case Regex.run(@value_filter, filter) do
-      [_match, value] -> String.downcase(unescape(value)) != String.downcase(email)
-      nil -> false
-    end
+  # Removing the address or its value clears it; removing a sub-attribute
+  # Renga does not keep, such as type, leaves it.
+  defp apply_email("remove", sub, _value, attrs) when sub in [nil, "value"],
+    do: {:ok, %{attrs | email: nil}}
+
+  defp apply_email("remove", _sub, _value, attrs), do: {:ok, attrs}
+
+  defp apply_email(_op, "value", value, attrs) do
+    with {:ok, email} <- optional("replace", value, "emails.value"),
+         do: {:ok, %{attrs | email: email}}
   end
 
-  defp names_other_address?(_filter, _email), do: false
+  defp apply_email(_op, nil, value, attrs) do
+    with {:ok, email} <- email(List.wrap(value)), do: {:ok, %{attrs | email: email}}
+  end
+
+  defp apply_email(_op, _sub, _value, attrs), do: {:ok, attrs}
+
+  defp email_selector(filter, email) do
+    case Regex.run(@email_filter, filter) do
+      [_match, attribute, value] ->
+        cond do
+          String.downcase(attribute) == "type" -> :selected
+          String.downcase(unescape(value)) == String.downcase(email || "") -> :selected
+          true -> :other
+        end
+
+      nil ->
+        :unsupported
+    end
+  end
 
   defp unescape(value), do: Regex.replace(~r/\\(.)/, value, "\\1")
 
