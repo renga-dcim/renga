@@ -81,6 +81,8 @@ defmodule Renga.Transfers.RecordTypes do
      ~w(id source_id sync_run_id idempotency_key observed_at payload_digest payload inserted_at reported_from intake_api_key_id parent_observation_id resource_index)},
     {"placement_findings", :current,
      ~w(id resource_id kind status message details resolved_at inserted_at updated_at)},
+    {"power_findings", :current,
+     ~w(id resource_id kind resolution_key status message details last_observed_at resolved_at inserted_at updated_at)},
     {"power_ports", :current,
      ~w(id resource_id name label connector maximum_draw_w default_allocated_draw_w allocated_draw_w inserted_at updated_at retired_at default_power_factor power_factor)},
     {"resource_conditions", :current,
@@ -330,7 +332,14 @@ defmodule Renga.Transfers.RecordTypes do
       "provisioning through one of the deployment's identity providers, set up at the destination",
     "scim_tokens" => "credentials for the source deployment's SCIM endpoint",
     "scim_users" => "the identity provider's directory, pushed again to the destination",
-    "scim_groups" => "the identity provider's directory, pushed again to the destination"
+    "scim_groups" => "the identity provider's directory, pushed again to the destination",
+    "power_readings" => "current readings expire within minutes; collectors report them again",
+    "power_correlation_samples" =>
+      "a bounded window for connection suggestions, refilled as readings arrive",
+    "telemetry_batches" => "replay protection for the source's telemetry intake",
+    "telemetry_buckets" =>
+      "the telemetry store's chart history (RFD 10), which may live outside Postgres",
+    "telemetry_marks" => "the telemetry store's own bookkeeping"
   }
 
   @organization_fields ~w(name slug settings default_accent default_power_factor
