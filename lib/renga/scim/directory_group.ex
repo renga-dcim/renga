@@ -32,5 +32,9 @@ defmodule Renga.Scim.DirectoryGroup do
     # The columns are varchar(255), which counts code points, not graphemes.
     |> validate_length(:display_name, max: 255, count: :codepoints)
     |> validate_length(:external_id, max: 255, count: :codepoints)
+    |> unique_constraint(:display_name,
+      name: :scim_groups_connection_id_display_name_index,
+      message: "is already taken"
+    )
   end
 end

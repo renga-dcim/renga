@@ -220,7 +220,11 @@ defmodule Renga.Scim.Groups do
   defp invalid({:error, changeset}) do
     {field, {message, opts}} = hd(changeset.errors)
     name = if field == :display_name, do: "displayName", else: "externalId"
-    {:error, {:invalid_value, "#{name} #{interpolate(message, opts)}"}}
+    detail = "#{name} #{interpolate(message, opts)}"
+
+    if opts[:constraint] == :unique,
+      do: {:error, {:uniqueness, detail}},
+      else: {:error, {:invalid_value, detail}}
   end
 
   # Ecto keeps messages as templates such as "should be at most %{count}

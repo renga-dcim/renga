@@ -260,6 +260,33 @@ defmodule RengaWeb.Scim.GroupControllerTest do
     assert refused["detail"] =~ "at most 255 character(s)"
   end
 
+  # Entra matches groups by name, so a name is unique in a connection.
+  test "a displayName taken in the connection is a uniqueness conflict",
+       %{conn: conn} = context do
+    ops = group!(conn, %{"displayName" => "Ops"})
+    dev = group!(conn, %{"displayName" => "Dev"})
+
+    created =
+      conn |> post(~p"/scim/v2/Groups", Jason.encode!(%{"displayName" => "OPS"})) |> body(409)
+
+    assert created["scimType"] == "uniqueness"
+
+    renamed =
+      conn
+      |> patch_ops(dev["id"], [%{"op" => "replace", "path" => "displayName", "value" => "ops"}])
+      |> body(409)
+
+    assert renamed["scimType"] == "uniqueness"
+    assert body(get(conn, ~p"/scim/v2/Groups/#{ops["id"]}"), 200)["displayName"] == "Ops"
+
+    other_owner = member_scope(organization_fixture(), "owner")
+    {_token, other} = scim_token_fixture(other_owner, scim_connection_fixture(other_owner))
+
+    context.conn
+    |> put_req_header("authorization", "Bearer " <> other)
+    |> group!(%{"displayName" => "Ops"})
+  end
+
   test "displayName is required", %{conn: conn} do
     assert %{"scimType" => "invalidValue"} =
              conn |> post(~p"/scim/v2/Groups", Jason.encode!(%{})) |> body(400)
