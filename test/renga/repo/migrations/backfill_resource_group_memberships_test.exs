@@ -48,12 +48,13 @@ defmodule Renga.Repo.Migrations.BackfillResourceGroupMembershipsTest do
 
     assert [@backfill] = Renga.ScratchMigrations.run(repo, :up, to: @backfill)
 
-    assert memberships(repo, data.organization, group) == [
-             [data.rack_resource, "inventory"],
-             [data.rack_resource, "trusted"],
-             [data.server, "inventory"],
-             [data.server, "trusted"]
-           ]
+    assert memberships(repo, data.organization, group) ==
+             Enum.sort([
+               [data.rack_resource, "inventory"],
+               [data.rack_resource, "trusted"],
+               [data.server, "inventory"],
+               [data.server, "trusted"]
+             ])
 
     assert [@backfill] = Renga.ScratchMigrations.run(repo, :down, to: @backfill)
 
