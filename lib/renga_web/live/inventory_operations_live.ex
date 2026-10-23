@@ -461,16 +461,18 @@ defmodule RengaWeb.InventoryOperationsLive do
               </span>
             </:col>
             <:col :let={{_id, source}} label="Accepts jobs" class="w-28" hide_below="4xl">
-              <span id={"collector-jobs-#{source.id}"}>
-                <.collector_jobs
-                  id={"collector-jobs-#{source.id}-list"}
-                  agent={collector_agent(source)}
+              <span class="flex min-w-0 items-center gap-1">
+                <.collector_osquery
+                  id={"collector-osquery-#{source.id}"}
+                  osquery={Agent.osquery(collector_agent(source))}
                 />
+                <span id={"collector-jobs-#{source.id}"} class="min-w-0">
+                  <.collector_jobs
+                    id={"collector-jobs-#{source.id}-list"}
+                    agent={collector_agent(source)}
+                  />
+                </span>
               </span>
-              <.collector_osquery
-                id={"collector-osquery-#{source.id}"}
-                osquery={Agent.osquery(collector_agent(source))}
-              />
             </:col>
             <:col :let={{_id, source}} label="Delivery queue" class="w-32" hide_below="2xl">
               <span id={"collector-queue-#{source.id}"}>
@@ -877,28 +879,27 @@ defmodule RengaWeb.InventoryOperationsLive do
   attr :osquery, :map, required: true
 
   # Whether operational queries can use the host's osqueryd (RFD 12), as of
-  # the latest check-in, under the jobs it accepts: the page is never wide
-  # enough for a column of its own. Agents that don't report it show nothing.
+  # the latest check-in: a status-colored mark before the jobs the host
+  # accepts, so the row stays one line and the chips keep most of the cell. The
+  # status itself is the mark's tooltip and accessible text. Agents that don't
+  # report it show nothing.
   defp collector_osquery(assigns) do
     ~H"""
     <span
       :if={@osquery}
       id={@id}
-      class="mt-0.5 block truncate text-xs"
       title={osquery_title(@osquery)}
+      class="inline-flex shrink-0 items-center"
     >
-      <%= case @osquery do %>
-        <% %{status: "available"} -> %>
-          <span class="text-fg">osquery</span>
-          <span :if={@osquery.version} class="font-mono text-fg-muted">{@osquery.version}</span>
-        <% %{status: "not_permitted"} -> %>
-          <span class="font-medium text-warn-text">osquery not permitted</span>
-        <% %{status: "not_present"} -> %>
-          <span class="text-fg-muted">osquery not running</span>
-      <% end %>
+      <.icon name="hero-circle-stack-micro" class={"size-3 #{osquery_icon(@osquery.status)}"} />
+      <span class="sr-only">{osquery_title(@osquery)}</span>
     </span>
     """
   end
+
+  defp osquery_icon("available"), do: "text-ok"
+  defp osquery_icon("not_permitted"), do: "text-warn-text"
+  defp osquery_icon("not_present"), do: "text-unknown"
 
   defp osquery_title(%{status: "available", version: version}) when is_binary(version),
     do: "osquery #{version}"
