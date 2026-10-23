@@ -310,12 +310,12 @@ fn host_power_batches_match_the_contract() {
     let batch = power::batch(
         &[
             reading(
-                "acpi_power_meter/ACPI000D:00/power1",
+                "power_meter/acpi:LNXSYSTM:00/ACPI000D:00/power1",
                 hwmon::Boundary::HostInput,
                 Ok(245.5),
             ),
             reading(
-                "ibm-cffps/3-0068/power1",
+                "ibm_cffps1/dt:ahb/apb/i2c@1e78a400/power-supply@68/power1",
                 hwmon::Boundary::SupplyInput,
                 Err(hwmon::SensorError {
                     message: "busy".into(),
@@ -323,7 +323,7 @@ fn host_power_batches_match_the_contract() {
                 }),
             ),
             reading(
-                "ibm-cffps/3-0068/power2",
+                "ibm_cffps1/dt:ahb/apb/i2c@1e78a400/power-supply@68/power2",
                 hwmon::Boundary::SupplyOutput,
                 Ok(0.0),
             ),

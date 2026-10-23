@@ -109,7 +109,11 @@ pub fn batch(readings: &[hwmon::Reading], now: DateTime<Utc>) -> TelemetryBatch 
 }
 
 fn to_sample(reading: &hwmon::Reading, now: DateTime<Utc>) -> TelemetrySample {
-    let window = chrono::Duration::from_std(reading.window).unwrap_or_default();
+    // hwmon bounds a window to a day, so the start is always representable.
+    let start = chrono::Duration::from_std(reading.window)
+        .ok()
+        .and_then(|window| now.checked_sub_signed(window))
+        .unwrap_or(now);
     let (status, value) = match &reading.watts {
         Ok(watts) => ("valid", Some(*watts)),
         Err(error) => {
@@ -126,10 +130,7 @@ fn to_sample(reading: &hwmon::Reading, now: DateTime<Utc>) -> TelemetrySample {
         status,
         origin: "native",
         value,
-        window: SampleWindow {
-            start: now - window,
-            end: now,
-        },
+        window: SampleWindow { start, end: now },
         event_at: now,
         mapping: SampleMapping {
             name: hwmon::MAPPING,
@@ -162,12 +163,18 @@ mod tests {
 
     #[test]
     fn queues_one_host_batch_per_sample_with_failures_as_unknown() {
-        let root = std::env::temp_dir().join(format!("renga-power-{}", Uuid::new_v4()));
-        for (chip, value) in [("hwmon0", "245500000"), ("hwmon1", "busy")] {
-            fs::create_dir_all(root.join(chip)).unwrap();
-            fs::write(root.join(chip).join("name"), "acpi_power_meter\n").unwrap();
-            fs::write(root.join(chip).join("power1_average"), value).unwrap();
-            fs::write(root.join(chip).join("power1_average_interval"), "30000").unwrap();
+        // A fake /sys with two ACPI power meters, which have no hwmon `name`.
+        let sys = std::env::temp_dir().join(format!("renga-power-{}", Uuid::new_v4()));
+        let root = sys.join("class/hwmon");
+        for (index, value) in [(0, "245500000"), (1, "busy")] {
+            let chip = root.join(format!("hwmon{index}"));
+            let device = sys.join(format!("devices/LNXSYSTM:00/ACPI000D:0{index}"));
+            fs::create_dir_all(&chip).unwrap();
+            fs::create_dir_all(&device).unwrap();
+            fs::write(device.join("hid"), "ACPI000D\n").unwrap();
+            std::os::unix::fs::symlink(&device, chip.join("device")).unwrap();
+            fs::write(chip.join("power1_average"), value).unwrap();
+            fs::write(chip.join("power1_average_interval"), "30000").unwrap();
         }
         let (sink, batches) = capture();
         let sources = PowerSources::default();
@@ -176,7 +183,7 @@ mod tests {
             .with_timezone(&Utc);
 
         sample(&root, now, &sink, &sources);
-        fs::remove_dir_all(&root).unwrap();
+        fs::remove_dir_all(&sys).unwrap();
 
         assert_eq!(sources.hwmon(), Some(hwmon::Availability::Available));
         let batches = batches.lock().unwrap();
@@ -189,7 +196,7 @@ mod tests {
         assert_eq!(
             batch["samples"][0],
             json!({
-                "sensor": "acpi_power_meter/hwmon0/power1",
+                "sensor": "power_meter/acpi:LNXSYSTM:00/ACPI000D:00/power1",
                 "boundary": "host_input",
                 "quantity": "real_power",
                 "unit": "W",
