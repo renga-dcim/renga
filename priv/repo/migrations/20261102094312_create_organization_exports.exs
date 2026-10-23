@@ -9,6 +9,8 @@ defmodule Renga.Repo.Migrations.CreateOrganizationExports do
       add :organization_id, references(:organizations, on_delete: :delete_all), null: false
       add :requested_by_user_id, references(:users, on_delete: :nilify_all)
       add :parts, {:array, :string}, null: false, default: []
+      # The query payloads its requester could read when it started (RFD 12).
+      add :readable_payloads, {:array, :string}, null: false, default: []
       add :status, :string, null: false
       add :snapshot_at, :"timestamp(3)"
       add :records, :bigint

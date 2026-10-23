@@ -17,6 +17,7 @@ defmodule Renga.Transfers.OrganizationExport do
 
   schema "organization_exports" do
     field :parts, {:array, :string}, default: []
+    field :readable_payloads, {:array, :string}, default: []
     field :status, :string
     field :snapshot_at, :utc_datetime_usec
     field :records, :integer

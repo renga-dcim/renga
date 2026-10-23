@@ -36,6 +36,9 @@ defmodule Renga.Transfers.Export do
 
     * `:parts` - optional parts to include (`Archive.parts/0`), default none
     * `:tmp_dir` - where the archive is assembled
+    * `:readable_payloads` - the `name@version` keys whose job payloads the
+      export may hold (`Renga.Jobs.readable_payloads/1`); other jobs'
+      parameters, results, and agent reports are withheld. Default: all
 
   Returns `{:ok, %{snapshot_at: at, records: count}}`.
   """
@@ -86,7 +89,7 @@ defmodule Renga.Transfers.Export do
           Writer.add_json(
             writer,
             type.name,
-            rows(type_sql(type, types, parts, columns), params)
+            rows(type_sql(type, types, parts, columns, opts[:readable_payloads]), params)
           )
 
         after_type.(type.name)
@@ -158,9 +161,9 @@ defmodule Renga.Transfers.Export do
     """
   end
 
-  defp type_sql(type, types, parts, columns) do
+  defp type_sql(type, types, parts, columns, readable) do
     """
-    SELECT #{json_object(type.name, type.fields, columns)}
+    SELECT #{json_object(type.name, type.fields, columns, withheld(type.name, readable))}
     FROM #{quote_name(type.name)} AS t
     WHERE t.organization_id = $1#{filter(type.name, types, parts)}
     ORDER BY #{Enum.map_join(type.order_by, ", ", &("t." <> quote_name(&1)))}
@@ -234,7 +237,49 @@ defmodule Renga.Transfers.Export do
     """
   end
 
-  defp json_object(table, fields, columns) do
+  # RFD 12: a job's parameters, result, and agent reports are read only by
+  # those allowed its capability's payloads, so an export for such a reader
+  # withholds the rest as `Renga.Jobs` does on every read. Without
+  # `readable` (an operator's export), nothing is withheld.
+  @system_failure_reasons ~w(capability_not_allowed binding_changed resolved_failed)
+
+  defp withheld(_table, nil), do: %{}
+
+  defp withheld("jobs", readable) do
+    readable? = readable_sql("t", readable)
+
+    %{
+      "parameters" => "CASE WHEN #{readable?} THEN t.parameters ELSE '{}'::jsonb END",
+      "result" => "CASE WHEN #{readable?} THEN t.result END",
+      "failure_reason" =>
+        "CASE WHEN #{readable?} OR t.failure_reason IN (#{literals(@system_failure_reasons)}) " <>
+          "THEN t.failure_reason END"
+    }
+  end
+
+  # Only the agent's reports carry a job's output.
+  defp withheld("job_events", readable) do
+    readable_jobs =
+      "SELECT j.id FROM jobs AS j WHERE j.organization_id = $1 AND #{readable_sql("j", readable)}"
+
+    %{
+      "payload" =>
+        "CASE WHEN t.actor_type <> 'agent' OR t.job_id IN (#{readable_jobs}) " <>
+          "THEN t.payload ELSE '{}'::jsonb END"
+    }
+  end
+
+  defp withheld(_table, _readable), do: %{}
+
+  defp readable_sql(_job, []), do: "false"
+
+  defp readable_sql(job, readable),
+    do: "(#{job}.capability || '@' || #{job}.capability_version) IN (#{literals(readable)})"
+
+  defp literals(values),
+    do: Enum.map_join(values, ", ", &("'" <> String.replace(&1, "'", "''") <> "'"))
+
+  defp json_object(table, fields, columns, overrides \\ %{}) do
     types = Map.fetch!(columns, table)
 
     objects =
@@ -247,7 +292,7 @@ defmodule Renga.Transfers.Export do
               Map.get(types, field) ||
                 raise ArgumentError, "#{table}.#{field} is not a column"
 
-            "'#{field}', #{value(field, type)}"
+            "'#{field}', #{overrides[field] || value(field, type)}"
           end)
 
         "jsonb_build_object(#{pairs})"

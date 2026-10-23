@@ -4,8 +4,12 @@ defmodule Renga.TransfersTest do
   import Renga.JobsFixtures
   import ExUnit.CaptureLog
 
+  alias Renga.Accounts
   alias Renga.Accounts.OrganizationMembership
+  alias Renga.Assignments
   alias Renga.Inventory.ChangeEvent
+  alias Renga.Jobs
+  alias Renga.Roles
   alias Renga.Transfers
   alias Renga.Transfers.Archive
   alias Renga.Transfers.OrganizationExport
@@ -80,6 +84,86 @@ defmodule Renga.TransfersTest do
 
     assert [%OrganizationExport{id: id}] = elem(Transfers.list_exports(owner), 1)
     assert id == export.id
+  end
+
+  describe "query payloads (RFD 12)" do
+    @packages "query.packages@1"
+
+    # A member allowed sensitive queries ran query.packages; the owner holds
+    # no query permission.
+    setup %{organization: organization, owner: owner} do
+      agent = agent_fixture(organization, ["host.inventory", @packages])
+      resource = reported_resource_fixture(organization, agent, "db-01")
+      {:ok, _} = Jobs.update_settings(owner, %{allowed_capabilities: [@packages]})
+
+      member = member_scope(organization, "member")
+      grant(owner, member, ~w(queries.run queries.run_sensitive))
+      requester = Accounts.scope_for_user(member.user, organization.id)
+      system = Accounts.scope_for(organization)
+
+      {:ok, job} =
+        Jobs.create_job(requester, agent.id, @packages, %{"name" => "ssl"},
+          resource_id: resource.id
+        )
+
+      {:ok, [{_job, token}]} = Jobs.lease_jobs(system, agent, [@packages], 1)
+
+      {:ok, _} =
+        Jobs.report(system, agent, job.id, token, "succeeded", %{
+          "result" => %{"packages" => [], "truncated" => false}
+        })
+
+      %{job: job}
+    end
+
+    defp grant(owner, scope, permissions) do
+      {:ok, role} =
+        Roles.create_role(owner, %{
+          "name" => "Queries #{System.unique_integer([:positive])}",
+          "permissions" => permissions
+        })
+
+      {:ok, _} = Assignments.assign(owner, scope.membership_id, %{"role" => role.id})
+      Accounts.scope_for_user(scope.user, scope.organization_id)
+    end
+
+    defp archived_job(scope, export, tmp, job) do
+      path = Path.join(tmp, "#{export.id}.tar.zst")
+      assert {:ok, download} = Transfers.authorize_download(scope, export.id)
+      File.write!(path, Enum.to_list(Transfers.chunks(download)))
+      assert {:ok, archive} = Archive.open(path, tmp_dir: tmp)
+      on_exit(fn -> Archive.close(archive) end)
+
+      record = archive |> Archive.records("jobs") |> Enum.find(&(&1["id"] == job.id))
+
+      reports =
+        for event <- Archive.records(archive, "job_events"),
+            event["job_id"] == job.id and event["actor_type"] == "agent",
+            do: event["payload"]
+
+      {record, reports}
+    end
+
+    test "an export withholds the payloads its requester may not read", context do
+      export = start!(context.owner, ["history"])
+      {job, reports} = archived_job(context.owner, export, context.tmp_dir, context.job)
+
+      assert %{"parameters" => %{}, "result" => nil, "capability" => "query.packages"} = job
+      assert reports != [] and Enum.all?(reports, &(&1 == %{}))
+    end
+
+    test "only those who read its payloads download an export that holds them", context do
+      owner = grant(context.owner, context.owner, ~w(queries.run queries.run_sensitive))
+      export = start!(owner, ["history"])
+
+      {job, reports} = archived_job(owner, export, context.tmp_dir, context.job)
+      assert job["parameters"] == %{"name" => "ssl"}
+      assert job["result"] == %{"packages" => [], "truncated" => false}
+      assert Enum.any?(reports, &(&1 != %{}))
+
+      other_owner = member_scope(context.organization, "owner")
+      assert {:error, :not_found} = Transfers.authorize_download(other_owner, export.id)
+    end
   end
 
   test "every action requires organization.export, checked when it happens", context do

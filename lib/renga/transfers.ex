@@ -30,6 +30,7 @@ defmodule Renga.Transfers do
   alias Renga.DeploymentAudit
   alias Renga.Inventory.ChangeEvent
   alias Renga.Inventory.Changes
+  alias Renga.Jobs
   alias Renga.Repo
   alias Renga.Transfers.Archive
   alias Renga.Transfers.Export
@@ -85,6 +86,7 @@ defmodule Renga.Transfers do
         organization_id: scope.organization_id,
         requested_by_user_id: scope.user.id,
         parts: parts,
+        readable_payloads: scope |> Jobs.readable_payloads() |> Enum.sort(),
         status: "running"
       }
       |> Ecto.Changeset.change()
@@ -134,7 +136,12 @@ defmodule Renga.Transfers do
       File.mkdir!(dir)
       File.chmod!(dir, 0o700)
       path = Path.join(dir, "#{export.id}.tar.zst")
-      {:ok, summary} = Export.write(organization, path, parts: export.parts)
+
+      {:ok, summary} =
+        Export.write(organization, path,
+          parts: export.parts,
+          readable_payloads: export.readable_payloads
+        )
 
       case store(export, path, summary) do
         {:ok, export} -> notify_ready(export, organization, url_fun)
@@ -251,7 +258,8 @@ defmodule Renga.Transfers do
 
       with {:ok, export_id} <- Ecto.UUID.cast(export_id),
            %OrganizationExport{} = export <- locked_export(scope.organization_id, export_id),
-           true <- OrganizationExport.downloadable?(export, Renga.Time.utc_now_ms()) do
+           true <- OrganizationExport.downloadable?(export, Renga.Time.utc_now_ms()),
+           true <- reads_payloads?(scope, export) do
         record!(export, scope.user.id, "export_downloaded", %{})
         export
       else
@@ -260,6 +268,11 @@ defmodule Renga.Transfers do
     end)
     |> Changes.broadcast(scope.organization_id)
   end
+
+  # An archive holds the query payloads its requester could read (RFD 12),
+  # so only someone who can read at least those may download it.
+  defp reads_payloads?(scope, export),
+    do: MapSet.subset?(MapSet.new(export.readable_payloads), Jobs.readable_payloads(scope))
 
   @doc """
   Streams a ready export's archive, one stored chunk at a time. A chunk
