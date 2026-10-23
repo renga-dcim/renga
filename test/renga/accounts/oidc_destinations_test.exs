@@ -126,6 +126,14 @@ defmodule Renga.Accounts.OIDCDestinationsTest do
       assert_received {FakeOIDCProvider, :request, "8.8.4.4", [^host]}
     end
 
+    test "connect to a checked IPv6 address", %{fake: fake, provider: provider} do
+      host = URI.parse(fake.issuer).host
+      FakeResolver.put(host, [{0x2606, 0x4700, 0, 0, 0, 0, 0, 0x1111}])
+
+      assert {:ok, _url, _attempt} = OIDC.start(provider, "http://localhost/cb")
+      assert_received {FakeOIDCProvider, :request, "2606:4700::1111", [^host]}
+    end
+
     test "never reach a private address", %{fake: fake, provider: provider} do
       FakeResolver.put(URI.parse(fake.issuer).host, [{169, 254, 169, 254}])
 

@@ -17,6 +17,7 @@ defmodule Renga.Accounts.OIDC.HTTP do
   """
 
   alias Renga.Accounts.OIDC.Destinations
+  alias Renga.Accounts.OIDC.PinnedTransport
 
   @behaviour :oidcc_http_adapter
 
@@ -69,31 +70,29 @@ defmodule Renga.Accounts.OIDC.HTTP do
     end
   end
 
-  defp target(url, headers, :deployment), do: {:ok, %{url: url, headers: headers, connect: []}}
+  defp target(url, headers, :deployment), do: {:ok, %{url: url, headers: headers, tls: nil}}
 
   # Connects to the address the policy checked rather than resolving the
   # name again, keeping the name for the Host header and for TLS (SNI and
-  # certificate verification).
+  # certificate verification). `URI.to_string/1` brackets an IPv6 host
+  # itself, so the host stays bare here.
   defp target(url, headers, :organization) do
     with {:ok, address} <- Destinations.check(url) do
       %URI{host: host} = uri = URI.parse(url)
 
       {:ok,
        %{
-         url: URI.to_string(%{uri | host: address_host(address)}),
+         url: URI.to_string(%{uri | host: to_string(:inet.ntoa(address))}),
          headers: [{"host", host_header(uri)} | Enum.reject(headers, &(elem(&1, 0) == "host"))],
-         connect: [hostname: host]
+         tls: host
        }}
     end
   end
 
-  defp address_host(address) do
-    formatted = address |> :inet.ntoa() |> to_string()
-    if tuple_size(address) == 8, do: "[#{formatted}]", else: formatted
+  defp host_header(%URI{host: host, port: port}) do
+    host = if String.contains?(host, ":"), do: "[#{host}]", else: host
+    if port == 443, do: host, else: "#{host}:#{port}"
   end
-
-  defp host_header(%URI{host: host, port: 443}), do: host
-  defp host_header(%URI{host: host, port: port}), do: "#{host}:#{port}"
 
   defp send_request(method, target, body, http_options) do
     options =
@@ -101,16 +100,21 @@ defmodule Renga.Accounts.OIDC.HTTP do
         method: method,
         url: target.url,
         headers: target.headers,
-        connect_options: target.connect,
         body: body,
         decode_body: false,
         redirect: false,
         retry: false,
         receive_timeout: Keyword.get(http_options, :timeout, :timer.seconds(10))
       ]
+      |> Keyword.merge(pinned(target))
       |> Keyword.merge(Application.get_env(:renga, :oidc_req_options, []))
 
-    case Req.request(options) do
+    request =
+      options
+      |> Req.new()
+      |> Req.Request.put_private(:renga_tls_hostname, target.tls)
+
+    case Req.request(request) do
       {:ok, %Req.Response{status: status, headers: response_headers, body: response_body}} ->
         {:ok, {{~c"HTTP/1.1", status, ~c""}, charlist_headers(response_headers), response_body}}
 
@@ -118,6 +122,11 @@ defmodule Renga.Accounts.OIDC.HTTP do
         {:error, exception}
     end
   end
+
+  # An organization's request connects through `PinnedTransport`, which
+  # opens no Finch pool for the host names its owners choose.
+  defp pinned(%{tls: nil}), do: []
+  defp pinned(_target), do: [adapter: &PinnedTransport.run/1]
 
   defp split({url, headers}), do: {url, headers, nil}
 
