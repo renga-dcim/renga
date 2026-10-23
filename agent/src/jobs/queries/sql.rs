@@ -48,7 +48,10 @@ use std::collections::BTreeSet;
 /// `yara_process`'s rule file, `deb_package_files`, whose package name joins
 /// a path unchecked, the `elf_*` tables of older releases, and the
 /// package-tree walkers `npm_packages`, `python_packages`,
-/// `homebrew_packages`, and `ai_agent_skills`), a device they
+/// `homebrew_packages`, and `ai_agent_skills`), a `/proc` path built from an
+/// unchecked `pid` (the six `process*` tables that take one), an LXD API
+/// path built from an unchecked name or id (`lxd_instances`,
+/// `lxd_instance_config`, `lxd_instance_devices`, `lxd_images`), a device they
 /// read (Sleuth Kit's `device_*`), an address they reach (`curl`,
 /// `curl_certificate`, and `ycloud_instance_metadata`, whose
 /// `metadata_endpoint` becomes the URL it fetches), or files they copy off
@@ -58,7 +61,7 @@ use std::collections::BTreeSet;
 /// `deb_packages` and `pacman_packages` also take a database directory but
 /// read only fixed file names inside it, and the named packages query
 /// answers from `deb_packages`, so they stay enabled.
-pub const DENIED_TABLES: [&str; 27] = [
+pub const DENIED_TABLES: [&str; 37] = [
     "ai_agent_skills",
     "augeas",
     "carves",
@@ -78,8 +81,18 @@ pub const DENIED_TABLES: [&str; 27] = [
     "file",
     "hash",
     "homebrew_packages",
+    "lxd_images",
+    "lxd_instance_config",
+    "lxd_instance_devices",
+    "lxd_instances",
     "magic",
     "npm_packages",
+    "process_envs",
+    "process_memory_map",
+    "process_namespaces",
+    "process_open_files",
+    "process_open_sockets",
+    "processes",
     "python_packages",
     "sshd_config",
     "ycloud_instance_metadata",

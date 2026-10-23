@@ -471,8 +471,8 @@ fn sql_daemon(disabled: &'static str) -> (QueryCapability, std::thread::JoinHand
                 ("disable_tables", disabled),
                 ("carver_disable_function", "true"),
             ]),
-            ("getQueryColumns", "SELECT pid, name FROM processes") => {
-                fake::response(0, "OK", &[&[("pid", "BIGINT")], &[("name", "TEXT")]])
+            ("getQueryColumns", "SELECT name, version FROM os_version") => {
+                fake::response(0, "OK", &[&[("name", "TEXT")], &[("version", "TEXT")]])
             }
             ("query", "EXPLAIN SELECT sleep(1000000)") => fake::response(
                 0,
@@ -483,7 +483,7 @@ fn sql_daemon(disabled: &'static str) -> (QueryCapability, std::thread::JoinHand
                     &[("opcode", "ResultRow"), ("p2", "1"), ("p4", "")],
                 ],
             ),
-            ("query", "EXPLAIN SELECT pid, name FROM processes") => fake::response(
+            ("query", "EXPLAIN SELECT name, version FROM os_version") => fake::response(
                 0,
                 "OK",
                 &[
@@ -501,12 +501,12 @@ fn sql_daemon(disabled: &'static str) -> (QueryCapability, std::thread::JoinHand
                     ],
                 )
             }
-            ("query", "SELECT pid, name FROM processes") => fake::response(
+            ("query", "SELECT name, version FROM os_version") => fake::response(
                 0,
                 "OK",
                 &[
-                    &[("name", "sshd"), ("pid", "812")],
-                    &[("name", "init"), ("pid", "1")],
+                    &[("version", "24.04"), ("name", "Ubuntu")],
+                    &[("name", "Debian")],
                 ],
             ),
             (_, sql) => fake::response(1, &format!("no such table: {sql}"), &[]),
@@ -527,13 +527,13 @@ fn ad_hoc_sql_answers_a_table_in_column_order() {
     let (capability, server) = sql_daemon(ALL_DENIED.as_str());
     let value = run(
         &capability,
-        json!({"sql": "SELECT pid, name FROM processes"}),
+        json!({"sql": "SELECT name, version FROM os_version"}),
     );
     assert_eq!(
         value,
         json!({
-            "columns": ["pid", "name"],
-            "rows": [["812", "sshd"], ["1", "init"]],
+            "columns": ["name", "version"],
+            "rows": [["Ubuntu", "24.04"], ["Debian", ""]],
             "truncated": false
         })
     );
@@ -550,7 +550,7 @@ fn ad_hoc_sql_is_refused_unless_every_denied_table_is_disabled() {
     let (capability, server) = sql_daemon("curl,carves");
     let failure = capability
         .run(
-            &json!({"sql": "SELECT pid, name FROM processes"}),
+            &json!({"sql": "SELECT name, version FROM os_version"}),
             &Cancellation::default(),
         )
         .unwrap_err();
@@ -684,7 +684,7 @@ fn ad_hoc_sql_needs_every_denied_table_disabled() {
             .collect::<Vec<_>>()
             .join(",");
         let (capability, server) = sql_daemon(Box::leak(others.into_boxed_str()));
-        let reason = refusal(&capability, "SELECT pid, name FROM processes");
+        let reason = refusal(&capability, "SELECT name, version FROM os_version");
         assert!(reason.contains(table), "{table}: {reason}");
         drop(capability);
         assert_eq!(server.join().unwrap(), ["options"], "{table}");

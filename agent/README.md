@@ -525,7 +525,11 @@ and it answers only when all of these hold:
   names what it opens: a file or directory it reads, hashes, parses, or scans;
   a device; an address it reaches; or files it copies off the host. Opening a
   path the query chooses can also block the daemon for good, on a FIFO for
-  one. The list is in the command below. `deb_packages` and `pacman_packages`
+  one. Six `process*` tables build `/proc` paths from an unchecked `pid` and
+  four `lxd_*` tables build API paths from an unchecked name, so they are on
+  the list too, and ad hoc SQL cannot read those six. With them
+  disabled, the named listening-sockets query, which joins `processes`, reads
+  natively. The list is in the command below. `deb_packages` and `pacman_packages`
   also take a database directory but read only fixed file names inside it,
   and the named packages query uses `deb_packages`, so they stay enabled. The agent reads the daemon's flags before every
   run and refuses otherwise. It does not look for table names in the SQL.
@@ -550,8 +554,10 @@ and it answers only when all of these hold:
 osqueryd --disable_tables=ai_agent_skills,augeas,carves,certificates,curl,\
 curl_certificate,deb_package_files,device_file,device_hash,device_partitions,\
 elf_dynamic,elf_info,elf_sections,elf_segments,elf_symbols,extended_attributes,\
-file,hash,homebrew_packages,magic,npm_packages,python_packages,sshd_config,\
-ycloud_instance_metadata,yara,yara_file,yara_process \
+file,hash,homebrew_packages,lxd_images,lxd_instance_config,lxd_instance_devices,\
+lxd_instances,magic,npm_packages,process_envs,process_memory_map,\
+process_namespaces,process_open_files,process_open_sockets,processes,\
+python_packages,sshd_config,ycloud_instance_metadata,yara,yara_file,yara_process \
   --carver_disable_function=true ...
 ```
 
