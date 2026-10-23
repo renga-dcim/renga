@@ -109,6 +109,12 @@ defmodule Renga.Accounts.SignInPolicy do
   def recover_local(minutes, actor, opts \\ [])
       when is_integer(minutes) and minutes > 0 and minutes <= @max_override_minutes and
              is_binary(actor) do
+    # Disabling the provider can remove SCIM grants (RFD 16); open pages
+    # hear of it only once this transaction, not the nested one, commits.
+    Renga.Scim.Grants.announcing(fn -> recover(minutes, actor, opts) end)
+  end
+
+  defp recover(minutes, actor, opts) do
     Repo.transaction(fn ->
       override =
         Repo.insert!(%Override{
