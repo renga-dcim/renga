@@ -53,7 +53,10 @@ defmodule RengaWeb.Router do
     post "/observations", ObservationController, :create
   end
 
-  scope "/scim/v2", RengaWeb.Scim do
+  # Route dispatch logging is off here: it prints request parameters, and
+  # Phoenix's filter misses a SCIM password sent as a PATCH operation's
+  # value or under a key such as "Password" (RFD 16 never logs one).
+  scope "/scim/v2", RengaWeb.Scim, log: false do
     pipe_through :scim
 
     get "/ServiceProviderConfig", DiscoveryController, :service_provider_config
