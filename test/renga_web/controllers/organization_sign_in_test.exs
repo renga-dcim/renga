@@ -262,6 +262,19 @@ defmodule RengaWeb.OrganizationSignInTest do
                Members.accept_invitation(user, invite(owner, "sam@acme.example"))
     end
 
+    test "not with a verification the provider sent as a string", %{
+      conn: conn,
+      fake: fake,
+      owner: owner,
+      provider: provider
+    } do
+      user =
+        conn |> sign_in(fake, provider, claims(%{"email_verified" => "true"})) |> session_user()
+
+      assert {:error, :wrong_email} =
+               Members.accept_invitation(user, invite(owner, "sam@acme.example"))
+    end
+
     test "not another organization's invitation, even signed in another way", %{
       conn: conn,
       fake: fake,

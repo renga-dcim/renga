@@ -233,9 +233,15 @@ defmodule Renga.Accounts.Identities do
   end
 
   defp returning(identity, email, claims) do
+    # Both email fields are always written, even when one equals what was
+    # read: two sign-ins racing on this row must not leave one's address
+    # with the other's verification.
     identity =
-      identity
-      |> Ecto.Changeset.change(email_fields(email))
+      email
+      |> email_fields()
+      |> Enum.reduce(Ecto.Changeset.change(identity), fn {field, value}, changeset ->
+        Ecto.Changeset.force_change(changeset, field, value)
+      end)
       |> Ecto.Changeset.change(last_signed_in_at: Renga.Time.utc_now_ms())
       |> Repo.update!()
 
@@ -339,7 +345,14 @@ defmodule Renga.Accounts.Identities do
 
     case String.split(address, "@") do
       [local, domain] when local != "" and domain != "" ->
-        %{address: address, domain: domain, verified: claims["email_verified"] in [true, "true"]}
+        %{
+          address: address,
+          domain: domain,
+          verified: claims["email_verified"] in [true, "true"],
+          # What the identity records for joining an organization: only the
+          # boolean the OpenID Connect spec defines, not a string.
+          verified_claim: claims["email_verified"] === true
+        }
 
       _other ->
         nil
@@ -349,5 +362,5 @@ defmodule Renga.Accounts.Identities do
   defp email(_claims), do: nil
 
   defp email_fields(nil), do: [email: nil, email_verified: false]
-  defp email_fields(email), do: [email: email.address, email_verified: email.verified]
+  defp email_fields(email), do: [email: email.address, email_verified: email.verified_claim]
 end
