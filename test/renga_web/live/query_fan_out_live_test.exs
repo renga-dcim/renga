@@ -16,12 +16,13 @@ defmodule RengaWeb.QueryFanOutLiveTest do
 
   @sockets "query.listening_sockets@1"
   @time "query.time_sync@1"
+  @sql "query.sql@1"
 
   setup do
     %{organization: organization, scope: owner, system_scope: system} =
       job_organization_fixture()
 
-    {:ok, _} = Jobs.update_settings(owner, %{allowed_capabilities: [@sockets, @time]})
+    {:ok, _} = Jobs.update_settings(owner, %{allowed_capabilities: [@sockets, @time, @sql]})
 
     member = member_scope(organization, "member")
 
@@ -33,8 +34,8 @@ defmodule RengaWeb.QueryFanOutLiveTest do
 
     {:ok, _} = Assignments.assign(owner, member.membership_id, %{"role" => role.id})
 
-    web = agent_fixture(organization, [@sockets, @time])
-    db = agent_fixture(organization, [@sockets, @time])
+    web = agent_fixture(organization, [@sockets, @time, @sql])
+    db = agent_fixture(organization, [@sockets, @time, @sql])
     old = agent_fixture(organization, [])
 
     %{
@@ -156,6 +157,42 @@ defmodule RengaWeb.QueryFanOutLiveTest do
     assert has_element?(view, "#query-batch-row-0", "web-01")
     assert has_element?(view, "#query-batch-row-0", "chronyd")
     assert has_element?(view, "#query-batch-row-0", "-12 µs")
+  end
+
+  test "an osquery SQL result reads as its columns, a row per answered row", context do
+    {:ok, %{batch_id: batch_id, jobs: jobs}} =
+      Jobs.create_batch(context.runner, @sql, %{"sql" => "SELECT * FROM processes"}, [
+        context.web.id,
+        context.db.id
+      ])
+
+    web_job = Enum.find(jobs, &(&1.resource_id == context.web.id))
+    db_job = Enum.find(jobs, &(&1.resource_id == context.db.id))
+
+    # A newer osquery on db-01 answers `SELECT *` with one more column.
+    answer(context, context.agents.web, web_job, %{
+      "columns" => ["name", "pid"],
+      "rows" => [["sshd", "812"]],
+      "truncated" => false
+    })
+
+    answer(context, context.agents.db, db_job, %{
+      "columns" => ["name", "pid", "path"],
+      "rows" => [["postgres", "90", "/usr/bin/postgres"]],
+      "truncated" => false
+    })
+
+    conn = conn_for(context.conn, context.runner, context.organization)
+    {:ok, view, _html} = live(conn, ~p"/activity/queries/#{batch_id}")
+
+    assert has_element?(view, "#query-batch th", "PID")
+    assert has_element?(view, "#query-batch th", "Path")
+    refute has_element?(view, "#query-batch th", "Rows")
+    # Hosts sort by name: db-01, then web-01. Cells follow Host, Name, PID, Path.
+    assert has_element?(view, "#query-batch-row-0 td:nth-child(3)", "90")
+    assert has_element?(view, "#query-batch-row-0 td:nth-child(4)", "/usr/bin/postgres")
+    assert has_element?(view, "#query-batch-row-1", "web-01")
+    assert has_element?(view, "#query-batch-row-1 td:nth-child(3)", "812")
   end
 
   test "a reader without the permissions sees the hosts, not the answers", context do

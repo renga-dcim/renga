@@ -87,7 +87,7 @@ defmodule RengaWeb.QueryBatchLive do
   # columns (a row per item) or its other fields (a row per host).
   defp result_table(module, jobs) do
     answered = for job <- jobs, parts = result_parts(module, job), do: {job, parts}
-    {columns, rows} = table_rows(result_columns(module), answered)
+    {columns, rows} = table_rows(result_columns(module, answered), answered)
 
     %{
       columns: columns,
@@ -104,14 +104,34 @@ defmodule RengaWeb.QueryBatchLive do
   end
 
   # Columns come from the schema rather than from what arrived, so the table
-  # has its header before any host answers.
-  defp result_columns(module) do
+  # has its header before any host answers. An osquery SQL result names its
+  # own columns, so its table takes every column any host answered with.
+  defp result_columns(module, answered) do
     fields = Schema.fields(module.result_schema())
+    objects = Enum.find(fields, &match?({_name, {:list, {:object, _}, _opts}, _required?}, &1))
+    strings = Enum.find(fields, &match?({_name, {:list, {:list, _, _}, _opts}, _required?}, &1))
 
-    case Enum.find(fields, &match?({_name, {:list, {:object, _}, _opts}, _required?}, &1)) do
-      {name, {:list, item, _opts}, _required?} -> {:list, name, Schema.fields(item)}
-      nil -> {:scalars, Enum.reject(fields, &match?({"truncated", :boolean, _}, &1))}
+    cond do
+      objects ->
+        {name, {:list, item, _opts}, _required?} = objects
+        {:list, name, Schema.fields(item)}
+
+      strings ->
+        {name, _type, _required?} = strings
+        {:list, name, answered_columns(answered, name)}
+
+      true ->
+        {:scalars, Enum.reject(fields, &match?({"truncated", :boolean, _}, &1))}
     end
+  end
+
+  defp answered_columns(answered, name) do
+    Enum.uniq(
+      for {_job, parts} <- answered,
+          %{name: ^name, columns: columns} <- parts.lists,
+          column <- columns,
+          do: column
+    )
   end
 
   defp table_rows({:list, name, columns}, answered) do
