@@ -435,6 +435,22 @@ defmodule Renga.TopologyTest do
           do: assert(mismatches(ctx.scope, interface) == [])
     end
 
+    test "an independent manual conflict remains visible beside a mismatch", ctx do
+      {:ok, manual} =
+        Inventory.create_source(ctx.scope, %{kind: "manual", name: "mismatch-manual"})
+
+      report_neighbors!(ctx.scope, ctx.poller, ctx.switch, "swp1", [{ctx.server, "eth0"}])
+      report_neighbors!(ctx.scope, ctx.agent, ctx.server, "eth0", [{ctx.switch, "swp2"}])
+      report_neighbors!(ctx.scope, manual, ctx.server, "eth0", [{ctx.guest, "eth0"}])
+
+      assert [_mismatch] = mismatches(ctx.scope, ctx.eth0)
+
+      assert Enum.any?(
+               Topology.list_topology_findings(ctx.scope, ctx.eth0.id),
+               &(&1.kind == "conflicting_neighbors")
+             )
+    end
+
     test "it resolves when the host's report agrees", ctx do
       report_neighbors!(ctx.scope, ctx.poller, ctx.switch, "swp1", [{ctx.server, "eth0"}])
       report_neighbors!(ctx.scope, ctx.agent, ctx.server, "eth0", [{ctx.switch, "swp2"}])
@@ -445,6 +461,10 @@ defmodule Renga.TopologyTest do
       )
 
       assert mismatches(ctx.scope, ctx.eth0) == []
+    end
+
+    test "registers neighbor mismatch as a topology finding kind" do
+      assert "neighbor_mismatch" in Topology.topology_finding_kinds()
     end
   end
 

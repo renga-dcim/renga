@@ -720,14 +720,13 @@ defmodule Renga.Topology.NeighborReconciler do
     boundaries = latest_neighbor_boundaries(organization_id, evidence)
 
     mismatches = mismatch_findings(organization_id, evidence, matches, observed_at)
-    explained = MapSet.new(mismatches, & &1.interface_id)
 
     # A mismatch names both reports, so the generic conflict it explains is
     # not filed beside it.
     conflicts =
       evidence
       |> conflicting_findings(matches, observed_at)
-      |> Enum.reject(&MapSet.member?(explained, &1.interface_id))
+      |> Enum.reject(&conflict_explained?(&1, mismatches))
 
     findings =
       ambiguous_findings(evidence, matches, observed_at) ++
@@ -978,6 +977,25 @@ defmodule Renga.Topology.NeighborReconciler do
         observed_at
       )
     end)
+  end
+
+  defp conflict_explained?(conflict, mismatches) do
+    explained_remote_ids =
+      mismatches
+      |> Enum.filter(&(&1.interface_id == conflict.interface_id))
+      |> Enum.flat_map(fn mismatch ->
+        [
+          mismatch.details["switch_interface_id"],
+          mismatch.details["host_interface_id"]
+          | mismatch.details["reported_by_other_end"]
+        ]
+      end)
+      |> MapSet.new()
+      |> MapSet.delete(conflict.interface_id)
+
+    conflict.details["remote_interface_ids"]
+    |> MapSet.new()
+    |> MapSet.subset?(explained_remote_ids)
   end
 
   defp claims_by_local(claims, kinds, kind) do
