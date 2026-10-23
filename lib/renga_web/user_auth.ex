@@ -54,18 +54,22 @@ defmodule RengaWeb.UserAuth do
   organization this browser last opened, or the user's only one, so they
   skip the organization picker (`Renga.Accounts.default_organization_id/2`).
   A return-to link that could name a record opens only a sole organization.
+  `expires_at` carries an absolute provider deadline only when replacing an
+  existing session after an account change.
   """
-  def log_in_user(conn, user, params \\ %{}, method \\ nil) do
+  def log_in_user(conn, user, params \\ %{}, method \\ nil, expires_at \\ nil) do
     user_return_to = get_session(conn, :user_return_to)
 
     # A fresh sign-in names its `method`, and the session and its security
     # log entry commit together. Signing back in after a password change
     # is not a new sign-in and passes none; the new session keeps the MFA
-    # evidence of the one it replaces.
+    # evidence and absolute deadline of the one it replaces.
     issue =
       if method,
         do: &Accounts.create_signed_in_session(user, &1, method),
-        else: &{:ok, Accounts.generate_user_session_token(user, &1, nil, carried_mfa(conn, user))}
+        else:
+          &{:ok,
+           Accounts.generate_user_session_token(user, &1, expires_at, carried_mfa(conn, user))}
 
     case create_or_extend_session(conn, user, params, issue) do
       {:ok, signed_in} ->

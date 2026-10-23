@@ -354,6 +354,49 @@ defmodule RengaWeb.UserSessionControllerTest do
       assert redirected_to(conn) == ~p"/users/settings"
       assert second_factor?(conn)
     end
+
+    test "a provider session replacement keeps its evidence and absolute deadline", %{
+      conn: conn,
+      user: user,
+      secret: secret
+    } do
+      provider =
+        Renga.Repo.insert!(%Accounts.IdentityProvider{
+          id: "password-change-sso",
+          kind: "oidc",
+          issuer: "https://sso.example.com/",
+          display_name: "SSO"
+        })
+
+      evidence = Accounts.SessionMFA.for_provider(provider, %{"amr" => ["mfa"]})
+      deadline = DateTime.add(Renga.Time.utc_now_ms(), 5, :minute)
+      old_token = Accounts.generate_user_session_token(user, nil, deadline, evidence)
+      :ok = Accounts.recheck_with_totp(user, old_token, NimbleTOTP.verification_code(secret))
+
+      conn =
+        conn
+        |> init_test_session(%{user_token: old_token})
+        |> post(~p"/users/update-password", %{
+          "user" => %{
+            "password" => "a brand new password",
+            "password_confirmation" => "a brand new password"
+          }
+        })
+
+      new_token = get_session(conn, :user_token)
+      assert new_token != old_token
+      refute Accounts.get_user_by_session_token(old_token)
+      assert Accounts.session_deadline(new_token) == deadline
+      assert {session_user, _inserted_at} = Accounts.get_user_by_session_token(new_token)
+      assert session_user.session_mfa == evidence
+
+      Renga.Repo.update_all(
+        from(t in Accounts.UserToken, where: t.token == ^new_token),
+        set: [expires_at: DateTime.add(Renga.Time.utc_now_ms(), -1, :second)]
+      )
+
+      refute Accounts.get_user_by_session_token(new_token)
+    end
   end
 
   describe "passkeys" do
