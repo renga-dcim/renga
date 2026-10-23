@@ -9,7 +9,9 @@ defmodule Renga.Accounts.Recheck do
   renewal, and session rotation never count as a re-check (RFD 15), so the
   evidence is a separate row rather than the session's `authenticated_at`.
 
-  An account with neither a password nor a second factor has nothing to
+  An account with neither a password nor a second factor re-checks by
+  signing in again at a linked deployment OpenID Connect provider (RFD 15,
+  "Re-authentication and step-up"). One with none of those has nothing to
   re-check with. It proves control of its current email address instead,
   and that bootstrap authorization only lets it set its first password or add
   its first factor.
@@ -19,9 +21,13 @@ defmodule Renga.Accounts.Recheck do
 
   alias Renga.Accounts.AccountAuthorization
   alias Renga.Accounts.AccountChallenge
+  alias Renga.Accounts.IdentityProvider
+  alias Renga.Accounts.IdentityProviderRevision
   alias Renga.Accounts.MFA
+  alias Renga.Accounts.OIDC
   alias Renga.Accounts.Passkeys
   alias Renga.Accounts.User
+  alias Renga.Accounts.UserIdentity
   alias Renga.Accounts.UserNotifier
   alias Renga.Accounts.UserToken
   alias Renga.Repo
@@ -61,8 +67,9 @@ defmodule Renga.Accounts.Recheck do
   @doc """
   The ways this account can pass the re-check. An account with a second
   factor confirms with a passkey or authenticator code; one without enters
-  its password. An empty list
-  means the account must bootstrap through its email first.
+  its password; one with neither signs in again at a linked provider
+  (`:provider`, see `provider_identities/1`). An empty list means the
+  account must bootstrap through its email first.
   """
   def methods(%User{} = user) do
     factors =
@@ -74,8 +81,27 @@ defmodule Renga.Accounts.Recheck do
     cond do
       factors != [] -> Keyword.keys(factors)
       user.hashed_password -> [:password]
+      provider_identities(user) != [] -> [:provider]
       true -> []
     end
+  end
+
+  @doc """
+  The account's identities that can pass the re-check: OpenID Connect
+  identities at usable deployment providers. GitHub OAuth cannot show a
+  fresh authentication, and an organization's provider never authorizes an
+  account-wide change.
+  """
+  def provider_identities(%User{id: user_id}) do
+    UserIdentity
+    |> join(:inner, [identity], provider in assoc(identity, :provider))
+    |> where([identity, provider], identity.user_id == ^user_id)
+    |> where([_identity, provider], provider.kind == "oidc" and is_nil(provider.organization_id))
+    |> where([_identity, provider], is_nil(provider.removed_at) and provider.enabled)
+    |> where([_identity, provider], not is_nil(provider.active_revision))
+    |> order_by([_identity, provider], asc: provider.display_name)
+    |> preload([_identity, provider], provider: provider)
+    |> Repo.all()
   end
 
   @doc """
@@ -183,6 +209,63 @@ defmodule Renga.Accounts.Recheck do
     else
       :error -> {:error, :no_session}
       {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
+  Records a re-check for this session from a provider sign-in that
+  `OIDC.finish/4` validated for a re-check attempt bound to this session.
+  It counts only for an account whose re-check method is `:provider`, when
+  the token's subject is `identity_id`'s at the same provider, so switching
+  accounts at the provider fails, and when `auth_time` shows the person
+  authenticated within the re-check window.
+
+  The grant is recorded under a share lock on the provider, and only while
+  it still uses the revision the token was validated with: an operator who
+  replaced, disabled, or removed the provider while the browser was there
+  leaves nothing to grant.
+  """
+  def recheck_with_provider(%User{} = user, session_token, identity_id, %{
+        provider: provider,
+        revision: %IdentityProviderRevision{number: number},
+        claims: claims
+      }) do
+    Repo.transact(fn ->
+      with {:ok, session} <- fetch_session(user, session_token),
+           :ok <- lock_current_provider(provider, number),
+           true <- methods(user) == [:provider] || {:error, :not_available},
+           %UserIdentity{} = identity <-
+             Enum.find(provider_identities(user), &(&1.id == identity_id)) ||
+               {:error, :not_available},
+           true <-
+             (identity.provider_id == provider.id and claims["sub"] == identity.subject) ||
+               {:error, :wrong_account},
+           true <- OIDC.fresh_authentication?(claims) || {:error, :stale_authentication} do
+        {:ok, grant(session, "recheck")}
+      else
+        :error -> {:error, :no_session}
+        {:error, _reason} = error -> error
+      end
+    end)
+    |> case do
+      {:ok, :ok} -> :ok
+      error -> error
+    end
+  end
+
+  def recheck_with_provider(_user, _session_token, _identity_id, _result),
+    do: {:error, :not_available}
+
+  defp lock_current_provider(%IdentityProvider{id: id}, number) do
+    Repo.one(
+      from p in IdentityProvider,
+        where: p.id == ^id and is_nil(p.organization_id) and is_nil(p.removed_at),
+        lock: "FOR SHARE"
+    )
+    |> case do
+      %{enabled: true, active_revision: ^number} -> :ok
+      %{enabled: true} -> {:error, :provider_changed}
+      _disabled_or_removed -> {:error, :not_available}
     end
   end
 

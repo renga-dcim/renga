@@ -27,23 +27,35 @@ defmodule Renga.Accounts.OIDC do
 
   @attempt_seconds 10 * 60
   @default_scopes ["openid", "email", "profile"]
+  # How recently a re-check sign-in must have authenticated (RFD 19's
+  # re-check window), and how far ahead of this server's clock an
+  # `auth_time` may be before it counts as in the future.
+  @recheck_max_age 5 * 60
+  @clock_skew 60
 
   @typedoc """
-  What an attempt is for: `:sign_in`, or `{:link, user_id, session_token_id}`
-  to connect the provider to that user's account from that session.
+  What an attempt is for: `:sign_in`; `{:link, user_id, session_token_id}`
+  to connect the provider to that user's account from that session; or
+  `{:recheck, user_id, session_token_id}` to pass the account re-check by
+  signing in again.
   """
-  @type purpose :: :sign_in | {:link, Ecto.UUID.t(), Ecto.UUID.t()}
+  @type purpose ::
+          :sign_in
+          | {:link, Ecto.UUID.t(), Ecto.UUID.t()}
+          | {:recheck, Ecto.UUID.t(), Ecto.UUID.t()}
 
   @doc """
-  Starts signing in with `provider`, or linking it when `purpose` says so.
-  Returns `{:ok, url, attempt}`; send the browser to `url` and keep
-  `attempt` for the callback.
+  Starts signing in with `provider`, or another `purpose`. Returns
+  `{:ok, url, attempt}`; send the browser to `url` and keep `attempt` for
+  the callback. A re-check asks the provider to authenticate the person
+  again now, with `prompt=login` and `max_age`.
   """
   def start(%IdentityProvider{kind: "oidc"} = provider, redirect_uri, purpose \\ :sign_in) do
     with %Revision{} = revision <-
            IdentityProviders.active_revision(provider) || {:error, :inactive},
          true <- IdentityProviders.usable?(provider) || {:error, :inactive},
-         {:ok, url, attempt} <- authorize(provider, revision, redirect_uri) do
+         {:ok, url, attempt} <-
+           authorize(provider, revision, redirect_uri, url_extension(purpose)) do
       Repo.insert!(
         struct(
           %IdentityProviderAttempt{
@@ -62,18 +74,43 @@ defmodule Renga.Accounts.OIDC do
 
   defp attempt_binding(:sign_in), do: [purpose: "sign_in", user_id: nil, session_token_id: nil]
 
-  defp attempt_binding({:link, user_id, session_token_id}),
-    do: [purpose: "link", user_id: user_id, session_token_id: session_token_id]
+  defp attempt_binding({purpose, user_id, session_token_id}) when purpose in [:link, :recheck],
+    do: [purpose: Atom.to_string(purpose), user_id: user_id, session_token_id: session_token_id]
 
   defp purpose_name(purpose), do: attempt_binding(purpose)[:purpose]
+
+  defp url_extension({:recheck, _user_id, _session_token_id}),
+    do: [{"prompt", "login"}, {"max_age", Integer.to_string(@recheck_max_age)}]
+
+  defp url_extension(_purpose), do: []
+
+  @doc """
+  Checks that validated ID token `claims` show a fresh authentication for
+  the account re-check (RFD 15, "Re-authentication and step-up"): an
+  `auth_time` that is an integer, not in the future, and within the
+  re-check window. `oidcc` validates the token but does not age-check
+  `auth_time`, so Renga does.
+  """
+  def fresh_authentication?(%{"auth_time" => auth_time}) when is_integer(auth_time) do
+    now = System.system_time(:second)
+    auth_time <= now + @clock_skew and now - auth_time <= @recheck_max_age
+  end
+
+  def fresh_authentication?(_claims), do: false
 
   @doc """
   The authorization URL for `revision` of `provider`, whichever revision
   that is, with a fresh attempt. `start/2` uses the active revision and
   records the attempt; a test sign-in uses the pending one and keeps the
-  attempt on its own record.
+  attempt on its own record. `extension` adds query parameters, such as a
+  re-check's `prompt`.
   """
-  def authorize(%IdentityProvider{} = provider, %Revision{} = revision, redirect_uri) do
+  def authorize(
+        %IdentityProvider{} = provider,
+        %Revision{} = revision,
+        redirect_uri,
+        extension \\ []
+      ) do
     with {:ok, context} <- client_context(provider, revision) do
       attempt = %{
         "provider" => provider.id,
@@ -93,6 +130,7 @@ defmodule Renga.Accounts.OIDC do
         pkce_verifier: attempt["verifier"],
         require_pkce: true,
         scopes: Enum.uniq(@default_scopes ++ revision.scopes),
+        url_extension: extension,
         request_opts: HTTP.request_opts()
       }
 

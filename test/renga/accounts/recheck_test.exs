@@ -206,4 +206,221 @@ defmodule Renga.Accounts.RecheckTest do
       refute Recheck.authorized?(user, token, :set_password)
     end
   end
+
+  describe "re-check through a provider" do
+    setup do
+      fake = Renga.FakeOIDCProvider.new()
+      provider = identity_provider_fixture(fake)
+      user = user_fixture()
+
+      {:ok, identity} =
+        Accounts.link_identity(user, %{
+          provider: provider,
+          revision: Accounts.IdentityProviders.active_revision(provider),
+          claims: %{"sub" => "subject-1"}
+        })
+
+      %{
+        fake: fake,
+        provider: provider,
+        user: user,
+        identity: identity,
+        token: session_token(user)
+      }
+    end
+
+    defp provider_result(provider, claims) do
+      %{
+        provider: provider,
+        revision: Accounts.IdentityProviders.active_revision(provider),
+        claims:
+          Map.merge(
+            %{"sub" => "subject-1", "auth_time" => System.system_time(:second)},
+            claims
+          )
+      }
+    end
+
+    test "an account with only a linked provider re-checks there", %{
+      user: user,
+      identity: identity
+    } do
+      assert Recheck.methods(user) == [:provider]
+      assert [%{id: id}] = Recheck.provider_identities(user)
+      assert id == identity.id
+    end
+
+    test "a password or factor comes first", %{user: user} do
+      assert Recheck.methods(set_password(user)) == [:password]
+    end
+
+    test "a fresh sign-in as the same subject records the re-check", %{
+      user: user,
+      provider: provider,
+      identity: identity,
+      token: token
+    } do
+      refute Recheck.authorized?(user, token, :link_identity)
+
+      assert :ok =
+               Recheck.recheck_with_provider(
+                 user,
+                 token,
+                 identity.id,
+                 provider_result(provider, %{})
+               )
+
+      assert Recheck.authorized?(user, token, :link_identity)
+      assert Recheck.authorized?(user, token, :change_email)
+    end
+
+    test "another subject at the provider is refused", %{
+      user: user,
+      provider: provider,
+      identity: identity,
+      token: token
+    } do
+      assert {:error, :wrong_account} =
+               Recheck.recheck_with_provider(
+                 user,
+                 token,
+                 identity.id,
+                 provider_result(provider, %{"sub" => "someone-else"})
+               )
+
+      refute Recheck.authorized?(user, token, :change_email)
+    end
+
+    test "another provider is refused", %{
+      fake: fake,
+      user: user,
+      identity: identity,
+      token: token
+    } do
+      other = identity_provider_fixture(fake)
+
+      assert {:error, :wrong_account} =
+               Recheck.recheck_with_provider(
+                 user,
+                 token,
+                 identity.id,
+                 provider_result(other, %{})
+               )
+    end
+
+    test "auth_time must be present, an integer, recent, and not in the future", %{
+      user: user,
+      provider: provider,
+      identity: identity,
+      token: token
+    } do
+      now = System.system_time(:second)
+
+      results = [
+        Map.update!(provider_result(provider, %{}), :claims, &Map.delete(&1, "auth_time")),
+        provider_result(provider, %{"auth_time" => "#{now}"}),
+        provider_result(provider, %{"auth_time" => now * 1.0}),
+        provider_result(provider, %{"auth_time" => now - 301}),
+        provider_result(provider, %{"auth_time" => now + 3600})
+      ]
+
+      for result <- results do
+        assert {:error, :stale_authentication} =
+                 Recheck.recheck_with_provider(user, token, identity.id, result)
+      end
+
+      refute Recheck.authorized?(user, token, :change_email)
+    end
+
+    test "only when the provider is the account's re-check method", %{
+      user: user,
+      provider: provider,
+      identity: identity
+    } do
+      user = set_password(user)
+      token = session_token(user)
+
+      assert {:error, :not_available} =
+               Recheck.recheck_with_provider(
+                 user,
+                 token,
+                 identity.id,
+                 provider_result(provider, %{})
+               )
+    end
+
+    test "a provider changed while the browser was there grants nothing", %{
+      user: user,
+      provider: provider,
+      identity: identity,
+      token: token
+    } do
+      stale = provider_result(provider, %{})
+
+      provider |> Ecto.Changeset.change(active_revision: 2) |> Repo.update!()
+
+      assert {:error, :provider_changed} =
+               Recheck.recheck_with_provider(user, token, identity.id, stale)
+
+      refute Recheck.authorized?(user, token, :change_email)
+    end
+
+    test "an identity at a disabled provider cannot re-check", %{
+      user: user,
+      provider: provider,
+      identity: identity,
+      token: token
+    } do
+      Accounts.IdentityProviders.disable(provider, {:operator, "test"})
+      assert Recheck.methods(user) == []
+
+      assert {:error, :not_available} =
+               Recheck.recheck_with_provider(
+                 user,
+                 token,
+                 identity.id,
+                 provider_result(provider, %{})
+               )
+    end
+
+    test "another user's session records nothing", %{
+      user: user,
+      provider: provider,
+      identity: identity
+    } do
+      other_token = session_token(user_fixture())
+
+      assert {:error, :no_session} =
+               Recheck.recheck_with_provider(
+                 user,
+                 other_token,
+                 identity.id,
+                 provider_result(provider, %{})
+               )
+    end
+
+    test "the last identity the account re-checks with cannot be unlinked", %{
+      fake: fake,
+      user: user,
+      provider: provider,
+      identity: identity,
+      token: token
+    } do
+      :ok =
+        Recheck.recheck_with_provider(user, token, identity.id, provider_result(provider, %{}))
+
+      assert {:error, :last_recheck_method} = Accounts.unlink_identity(user, token, identity.id)
+
+      other = identity_provider_fixture(fake)
+
+      {:ok, _} =
+        Accounts.link_identity(user, %{
+          provider: other,
+          revision: Accounts.IdentityProviders.active_revision(other),
+          claims: %{"sub" => "subject-2"}
+        })
+
+      assert {:ok, _} = Accounts.unlink_identity(user, token, identity.id)
+    end
+  end
 end

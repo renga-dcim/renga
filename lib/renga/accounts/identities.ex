@@ -150,7 +150,9 @@ defmodule Renga.Accounts.Identities do
   Unlinks one of the account's identities, if the browser session holding
   `session_token` passed the account re-check. Refused with
   `{:error, :last_sign_in_method}` when the account could no longer sign in
-  under the deployment's local sign-in policy and providers.
+  under the deployment's local sign-in policy and providers, and with
+  `{:error, :last_recheck_method}` when it is the account's last way to pass
+  the re-check.
   """
   def unlink(%User{} = user, session_token, identity_id) do
     Grants.announcing(fn -> unlink_locked(user, session_token, identity_id) end)
@@ -177,7 +179,8 @@ defmodule Renga.Accounts.Identities do
                  lock: "FOR UPDATE",
                  preload: :provider
              ) || {:error, :not_found},
-           true <- can_sign_in_without?(user, identity) || {:error, :last_sign_in_method} do
+           true <- can_sign_in_without?(user, identity) || {:error, :last_sign_in_method},
+           true <- can_recheck_without?(user, identity) || {:error, :last_recheck_method} do
         # The SCIM grants it carried go with it (RFD 16).
         Linking.unlink_identity!(identity)
         Repo.delete!(identity)
@@ -185,6 +188,12 @@ defmodule Renga.Accounts.Identities do
         {:ok, identity}
       end
     end)
+  end
+
+  # An account that re-checks only through providers keeps one.
+  defp can_recheck_without?(user, identity) do
+    Recheck.methods(user) != [:provider] or
+      Enum.any?(Recheck.provider_identities(user), &(&1.id != identity.id))
   end
 
   # With local sign-in on, the account's email still signs it in. Otherwise

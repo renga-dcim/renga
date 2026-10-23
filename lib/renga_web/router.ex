@@ -260,6 +260,7 @@ defmodule RengaWeb.Router do
     post "/organizations/select", OrganizationSessionController, :create
     post "/users/update-password", UserSessionController, :update_password
     post "/users/settings/identities", UserProviderController, :link
+    post "/users/settings/recheck", UserProviderController, :recheck
   end
 
   scope "/", RengaWeb do

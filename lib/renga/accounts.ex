@@ -357,6 +357,12 @@ defmodule Renga.Accounts do
   @doc "The ways `user` can pass the account re-check."
   defdelegate recheck_methods(user), to: Recheck, as: :methods
 
+  @doc "The account's identities that can pass the re-check by signing in again."
+  defdelegate recheck_identities(user), to: Recheck, as: :provider_identities
+
+  @doc "Records an account re-check for this session from a validated provider re-check."
+  defdelegate recheck_with_provider(user, session_token, identity_id, result), to: Recheck
+
   @doc "Records an account re-check for this session if `password` is correct."
   defdelegate recheck_with_password(user, session_token, password), to: Recheck
 
