@@ -599,7 +599,10 @@ defmodule RengaWeb.UserAuth do
 
     case socket.assigns.current_scope do
       %Scope{organization_id: organization_id} when is_binary(organization_id) ->
-        {:cont, attach_organization_guard(socket)}
+        {:cont,
+         socket
+         |> Phoenix.Component.assign(:organization_access_required?, true)
+         |> attach_organization_guard()}
 
       # The organization requires MFA and this session has not shown a
       # second factor yet: ask for one in place (RFD 19).
@@ -619,23 +622,26 @@ defmodule RengaWeb.UserAuth do
   defp attach_organization_guard(socket) do
     socket
     |> Phoenix.LiveView.attach_hook(:organization_access, :handle_event, fn
-      _event, _params, socket -> refresh_organization(socket)
+      _event, _params, socket -> refresh_organization_access(socket)
     end)
     |> Phoenix.LiveView.attach_hook(:organization_access, :handle_params, fn
-      _params, _uri, socket -> refresh_organization(socket)
+      _params, _uri, socket -> refresh_organization_access(socket)
     end)
     |> Phoenix.LiveView.attach_hook(:organization_access, :handle_info, fn
-      _message, socket -> refresh_organization(socket)
+      _message, socket -> refresh_organization_access(socket)
     end)
     |> Phoenix.LiveView.attach_hook(:organization_access, :handle_async, fn
-      _name, _result, socket -> refresh_organization(socket)
+      _name, _result, socket -> refresh_organization_access(socket)
     end)
   end
 
   # A LiveView can outlive both a newly enabled requirement and removal of a
   # provider's MFA mark. Refresh before every organization interaction so the
   # next request observes current membership, permissions, and MFA policy.
-  defp refresh_organization(%{assigns: %{current_scope: current_scope}} = socket) do
+  @doc false
+  def refresh_organization_access(
+        %{assigns: %{organization_access_required?: true, current_scope: current_scope}} = socket
+      ) do
     scope = Accounts.scope_for_user(current_scope.user, current_scope.organization_id)
 
     case scope do
@@ -652,6 +658,8 @@ defmodule RengaWeb.UserAuth do
          |> Phoenix.LiveView.redirect(to: ~p"/organizations")}
     end
   end
+
+  def refresh_organization_access(socket), do: {:cont, socket}
 
   defp mount_current_scope(socket, session) do
     socket

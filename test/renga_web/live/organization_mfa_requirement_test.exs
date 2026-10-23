@@ -96,6 +96,26 @@ defmodule RengaWeb.OrganizationMFARequirementTest do
     assert Accounts.get_user_by_session_token(get_session(conn, :user_token))
   end
 
+  test "an earlier global event cannot bypass the stale organization guard", %{
+    conn: conn,
+    owner: owner,
+    organization: organization
+  } do
+    owner = %{owner | session_mfa: SessionMFA.for_method(:passkey)}
+    scope = Accounts.scope_for_user(owner, organization.id)
+    {:ok, false} = SecuritySettings.put(scope, :require_mfa, false, "Prepare stale session")
+
+    other_owner = user_fixture()
+    organization_membership_fixture(other_owner, organization, %{role: "owner"})
+    conn = open(conn, other_owner, organization)
+    {:ok, view, _html} = live(conn, ~p"/inbox")
+
+    {:ok, true} = SecuritySettings.put(scope, :require_mfa, true, "Organization policy")
+
+    assert {:error, {:redirect, %{to: "/organizations/confirm-mfa"}}} =
+             render_click(view, "cycle_theme")
+  end
+
   test "selecting the organization leads to the confirmation", %{
     conn: conn,
     member: member,

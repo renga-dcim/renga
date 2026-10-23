@@ -14,6 +14,7 @@ defmodule RengaWeb.AppearanceHook do
 
   alias Renga.Accounts
   alias Renga.Accounts.Appearance
+  alias RengaWeb.UserAuth
 
   @next_theme %{"system" => "light", "light" => "dark", "dark" => "system"}
 
@@ -30,6 +31,14 @@ defmodule RengaWeb.AppearanceHook do
   end
 
   defp handle_event("cycle_theme", _params, socket) do
+    with {:cont, socket} <- UserAuth.refresh_organization_access(socket) do
+      cycle_theme(socket)
+    end
+  end
+
+  defp handle_event(_event, _params, socket), do: {:cont, socket}
+
+  defp cycle_theme(socket) do
     case socket.assigns[:current_scope] do
       %{user: %{} = user} = scope ->
         case Accounts.update_user_appearance(user, %{
@@ -49,8 +58,6 @@ defmodule RengaWeb.AppearanceHook do
         {:halt, socket}
     end
   end
-
-  defp handle_event(_event, _params, socket), do: {:cont, socket}
 
   @doc "Sends the socket's appearance to the page, which applies it in place."
   def push_appearance(socket) do
