@@ -94,3 +94,4 @@ config :renga, :webauthn, origin: "http://localhost:4002"
 
 # Provider requests (RFD 15) go to Renga.FakeOIDCProvider's stub.
 config :renga, :oidc_req_options, plug: {Req.Test, Renga.Accounts.OIDC}
+config :renga, :oidc_resolver, &Renga.FakeResolver.resolve/1

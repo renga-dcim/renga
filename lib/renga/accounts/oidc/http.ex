@@ -5,17 +5,25 @@ defmodule Renga.Accounts.OIDC.HTTP do
   Every request `oidcc` makes for Renga goes through here: discovery, signing
   keys, and the token exchange. Each goes only to an https URL, or over plain
   HTTP to this machine. Redirects are not followed, so a provider
-  cannot send Renga somewhere its configuration does not name. Deployment
-  providers are configured by the operator, who is trusted with the
-  destinations they name, private addresses included; organization providers
-  will add their destination policy here. Tests route requests to a
-  `Req.Test` stub with `config :renga, :oidc_req_options`.
+  cannot send Renga somewhere its configuration does not name.
+
+  A request carries its provider's policy. Deployment providers
+  (`:deployment`) are configured by the operator, who is trusted with the
+  destinations they name, private addresses included. An organization's
+  provider (`:organization`) is chosen by its owners, so its requests go only
+  over https to the public addresses `Renga.Accounts.OIDC.Destinations`
+  allows, and connect to the address that was checked. Tests route requests
+  to a `Req.Test` stub with `config :renga, :oidc_req_options`.
   """
+
+  alias Renga.Accounts.OIDC.Destinations
+  alias Renga.Accounts.OIDC.PinnedTransport
 
   @behaviour :oidcc_http_adapter
 
-  @doc "The `request_opts` that make `oidcc` use this adapter."
-  def request_opts, do: %{http_adapter: {__MODULE__, %{}}, timeout: :timer.seconds(10)}
+  @doc "The `request_opts` that make `oidcc` use this adapter under `policy`."
+  def request_opts(policy \\ :deployment) when policy in [:deployment, :organization],
+    do: %{http_adapter: {__MODULE__, %{policy: policy}}, timeout: :timer.seconds(10)}
 
   @doc """
   Whether Renga sends anything to `url`: an absolute https URL, or plain HTTP
@@ -39,30 +47,74 @@ defmodule Renga.Accounts.OIDC.HTTP do
 
   def allowed_url?(_url), do: false
 
-  @impl true
-  def request(method, request, http_options, _request_options, _config) do
-    {url, headers, body} = split(request)
+  @doc """
+  Whether Renga sends anything to `url` under `policy`. An organization's
+  provider gets no plain-HTTP exception; its destination is checked again
+  when the request is made.
+  """
+  def allowed_url?(url, :deployment), do: allowed_url?(url)
 
-    if allowed_url?(to_string(url)),
-      do: send_request(method, url, headers, body, http_options),
-      else: {:error, :insecure_endpoint}
+  def allowed_url?(url, :organization),
+    do: allowed_url?(url) and match?(%URI{scheme: "https"}, URI.parse(url))
+
+  @impl true
+  def request(method, request, http_options, _request_options, config) do
+    {url, headers, body} = split(request)
+    url = to_string(url)
+    headers = Enum.map(headers, fn {name, value} -> {to_string(name), to_string(value)} end)
+    policy = Map.get(config, :policy, :deployment)
+
+    with true <- allowed_url?(url, policy) || {:error, :insecure_endpoint},
+         {:ok, target} <- target(url, headers, policy) do
+      send_request(method, target, body, http_options)
+    end
   end
 
-  defp send_request(method, url, headers, body, http_options) do
+  defp target(url, headers, :deployment), do: {:ok, %{url: url, headers: headers, tls: nil}}
+
+  # Connects to the address the policy checked rather than resolving the
+  # name again, keeping the name for the Host header and for TLS (SNI and
+  # certificate verification). `URI.to_string/1` brackets an IPv6 host
+  # itself, so the host stays bare here.
+  defp target(url, headers, :organization) do
+    with {:ok, address} <- Destinations.check(url) do
+      %URI{host: host} = uri = URI.parse(url)
+
+      {:ok,
+       %{
+         url: URI.to_string(%{uri | host: to_string(:inet.ntoa(address))}),
+         headers: [{"host", host_header(uri)} | Enum.reject(headers, &(elem(&1, 0) == "host"))],
+         tls: host
+       }}
+    end
+  end
+
+  defp host_header(%URI{host: host, port: port}) do
+    host = if String.contains?(host, ":"), do: "[#{host}]", else: host
+    if port == 443, do: host, else: "#{host}:#{port}"
+  end
+
+  defp send_request(method, target, body, http_options) do
     options =
       [
         method: method,
-        url: to_string(url),
-        headers: Enum.map(headers, fn {name, value} -> {to_string(name), to_string(value)} end),
+        url: target.url,
+        headers: target.headers,
         body: body,
         decode_body: false,
         redirect: false,
         retry: false,
         receive_timeout: Keyword.get(http_options, :timeout, :timer.seconds(10))
       ]
+      |> Keyword.merge(pinned(target))
       |> Keyword.merge(Application.get_env(:renga, :oidc_req_options, []))
 
-    case Req.request(options) do
+    request =
+      options
+      |> Req.new()
+      |> Req.Request.put_private(:renga_tls_hostname, target.tls)
+
+    case Req.request(request) do
       {:ok, %Req.Response{status: status, headers: response_headers, body: response_body}} ->
         {:ok, {{~c"HTTP/1.1", status, ~c""}, charlist_headers(response_headers), response_body}}
 
@@ -70,6 +122,11 @@ defmodule Renga.Accounts.OIDC.HTTP do
         {:error, exception}
     end
   end
+
+  # An organization's request connects through `PinnedTransport`, which
+  # opens no Finch pool for the host names its owners choose.
+  defp pinned(%{tls: nil}), do: []
+  defp pinned(_target), do: [adapter: &PinnedTransport.run/1]
 
   defp split({url, headers}), do: {url, headers, nil}
 
