@@ -10,7 +10,8 @@ defmodule Renga.Jobs.Query.Schema do
 
   Types:
 
-    * `:string` or `{:string, max: n}` (at most 1024 characters by default)
+    * `:string` or `{:string, max: n}` (at most 1024 characters by default,
+      counted as Unicode code points)
     * `:integer` or `{:integer, min: a, max: b}`
     * `:boolean`
     * `{:enum, values}` - one of a list of strings
@@ -39,9 +40,16 @@ defmodule Renga.Jobs.Query.Schema do
         {atom(name), Map.fetch!(value, name)}
       end
 
+    # `force_change/3` keeps a field given as `null`: `change/2` would drop
+    # it as equal to the empty data, and a nullable field is still required.
+    changeset =
+      Enum.reduce(present, change({%{}, types(fields)}), fn {field, value}, changeset ->
+        force_change(changeset, field, value)
+      end)
+
     schema
     |> validate(value)
-    |> Enum.reduce(change({%{}, types(fields)}, present), fn {path, message}, changeset ->
+    |> Enum.reduce(changeset, fn {path, message}, changeset ->
       add_path_error(changeset, path, message)
     end)
   end
@@ -87,9 +95,13 @@ defmodule Renga.Jobs.Query.Schema do
   defp validate({:string, opts}, value, path) when is_binary(value) do
     max = Keyword.get(opts, :max, @default_string_max)
 
+    # Characters are Unicode code points, as JSON Schema's `maxLength` and the
+    # agent count them. A code point is at most four bytes, so the byte check
+    # bounds the work before anything walks the string.
     cond do
+      byte_size(value) > 4 * max -> [{path, "must be at most #{max} characters"}]
       not String.valid?(value) -> [{path, "must be valid UTF-8"}]
-      String.length(value) > max -> [{path, "must be at most #{max} characters"}]
+      length(String.codepoints(value)) > max -> [{path, "must be at most #{max} characters"}]
       true -> []
     end
   end

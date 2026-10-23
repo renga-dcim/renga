@@ -211,5 +211,28 @@ defmodule Renga.Jobs.QueryTest do
 
       refute Schema.changeset(@schema, "not a map").valid?
     end
+
+    test "keeps a required field given as null" do
+      schema = {:object, [{"offset", {:nullable, :integer}}, {"ok", :boolean}]}
+
+      assert {:ok, %{offset: nil, ok: false}} =
+               schema
+               |> Schema.changeset(%{"offset" => nil, "ok" => false})
+               |> Changeset.apply_action(:validate)
+    end
+
+    test "counts a string's characters as code points, bounded by its bytes" do
+      schema = {:object, [{"name", {:string, max: 4}}]}
+
+      # Four precomposed and four decomposed é: 4 and 8 code points.
+      assert Schema.validate(schema, %{"name" => String.duplicate("\u00e9", 4)}) == []
+
+      assert [{["name"], "must be at most 4 characters"}] =
+               Schema.validate(schema, %{"name" => String.duplicate("e\u0301", 4)})
+
+      # One grapheme, but far more bytes than four code points can take.
+      assert [{["name"], "must be at most 4 characters"}] =
+               Schema.validate(schema, %{"name" => "a" <> String.duplicate("\u0301", 100_000)})
+    end
   end
 end
