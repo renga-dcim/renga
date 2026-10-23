@@ -219,17 +219,23 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
                valid_api_response(second, 202)
     end
 
-    for order <- [:host_first, :collector_first] do
-      test "names and MAC addresses alone never merge a collector resource (#{order})", %{
+    for order <- [:host_first, :collector_first],
+        {kind, resource_kind, collector_id} <- [
+          {"switch_poller", "switch", "core-switches"},
+          {"power_poller", "pdu", "rack-pdus"}
+        ] do
+      test "names and MAC addresses alone never merge a #{resource_kind} (#{order})", %{
         token: token
       } do
         lookalike =
-          switch("10.0.0.1", "SER-1",
+          "10.0.0.1"
+          |> switch("SER-1",
             hostname: "core1",
             interfaces: [
               %{"name" => "eth0", "kind" => "ethernet", "mac_address" => "52:54:00:00:00:01"}
             ]
           )
+          |> Map.put("kind", unquote(resource_kind))
 
         same_mac = host_report(mac: "52:54:00:00:00:01")
 
@@ -249,7 +255,12 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
 
         switch_id = fn ->
           %{"reconciliation" => %{"resources" => [%{"resource_id" => id}]}} =
-            post.(switch_report([lookalike]))
+            post.(
+              switch_report([lookalike],
+                kind: unquote(kind),
+                collector_id: unquote(collector_id)
+              )
+            )
 
           id
         end
