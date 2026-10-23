@@ -33,9 +33,24 @@ defmodule Renga.Accounts.Recheck do
   @code_length 10
 
   @typedoc "A change the re-check guards."
-  @type change :: :change_email | :set_password | :add_factor | :remove_factor | :recovery_codes
+  @type change ::
+          :change_email
+          | :set_password
+          | :add_factor
+          | :remove_factor
+          | :recovery_codes
+          | :link_identity
+          | :unlink_identity
 
-  @changes [:change_email, :set_password, :add_factor, :remove_factor, :recovery_codes]
+  @changes [
+    :change_email,
+    :set_password,
+    :add_factor,
+    :remove_factor,
+    :recovery_codes,
+    :link_identity,
+    :unlink_identity
+  ]
   # What an account with nothing to re-check with may do after proving its
   # email: get its first credential, and nothing else.
   @bootstrap_changes [:set_password, :add_factor]

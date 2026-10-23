@@ -77,6 +77,39 @@ defmodule Renga.Scim.Linking do
     end)
   end
 
+  @doc """
+  Releases every entry bound to `identity` before the identity is deleted,
+  and brings the account's grants in those organizations up to date, in
+  the caller's transaction. Deleting the identity alone would clear the
+  bindings but keep the memberships they granted, and no later SCIM change
+  could reach the account to remove them.
+
+  The caller holds the identity's row lock (`FOR UPDATE`), so a sign-in
+  that links it has either committed, and its bindings are found here, or
+  waits until the identity is gone.
+  """
+  def unlink_identity!(%UserIdentity{id: identity_id, user_id: user_id}) do
+    DirectoryUser
+    |> where([user], user.user_identity_id == ^identity_id)
+    |> select([user], user.organization_id)
+    |> distinct(true)
+    |> Repo.all()
+    # The same order and lock as a sign-in's linking. An organization that
+    # stopped being active keeps its grants for whenever it is reactivated,
+    # as a provider change leaves them.
+    |> Enum.sort()
+    |> Enum.each(fn organization_id ->
+      with :ok <- Grants.lock_organization(organization_id) do
+        DirectoryUser
+        |> where([user], user.user_identity_id == ^identity_id)
+        |> where([user], user.organization_id == ^organization_id)
+        |> Repo.update_all(set: [user_identity_id: nil])
+
+        Grants.reconcile!(organization_id, [user_id], %{"user_identity_id" => identity_id})
+      end
+    end)
+  end
+
   @doc "Whether `value` is usable correlation evidence."
   def correlation_value?(value) do
     is_binary(value) and value != "" and byte_size(value) <= 255 and String.printable?(value) and

@@ -5,6 +5,7 @@ defmodule Renga.Accounts do
 
   import Ecto.Query, warn: false
 
+  alias Renga.Accounts.Identities
   alias Renga.Accounts.Organization
   alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.MFA
@@ -656,6 +657,36 @@ defmodule Renga.Accounts do
       end
     end)
   end
+
+  ## Linked identities
+
+  @doc "The account's linked provider identities. See `Renga.Accounts.Identities`."
+  defdelegate list_user_identities(user), to: Identities, as: :list
+
+  @doc "The deployment providers the account could link from settings."
+  defdelegate linkable_providers(user), to: Identities
+
+  @doc "Links the identity a validated link attempt returned to the account."
+  defdelegate link_identity(user, result), to: Identities, as: :link
+
+  @doc "Unlinks one of the account's identities if this session passed the re-check."
+  defdelegate unlink_identity(user, session_token, identity_id), to: Identities, as: :unlink
+
+  @doc """
+  The ID of the session token `token`, while it is a valid session of
+  `user`, for binding something to that session; otherwise nil.
+  """
+  def session_token_id(%User{id: user_id}, token) when is_binary(token) do
+    {:ok, query} = UserToken.verify_session_token_query(token)
+
+    query
+    |> where([_token, user], user.id == ^user_id)
+    |> exclude(:select)
+    |> select([token], token.id)
+    |> Repo.one()
+  end
+
+  def session_token_id(_user, _token), do: nil
 
   @doc "The account's most recent security log entries, newest first."
   defdelegate list_security_events(user), to: SecurityLog, as: :list

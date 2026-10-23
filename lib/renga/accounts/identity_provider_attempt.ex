@@ -4,6 +4,10 @@ defmodule Renga.Accounts.IdentityProviderAttempt do
   the hash of its `state`, the provider revision it started with, and when it
   expires. A callback deletes it before exchanging the code, so an attempt
   completes at most once even when its session cookie is copied.
+
+  `purpose` is `sign_in`, or `link` for connecting the provider to the
+  signed-in account, which also names the user and the session that started
+  it ("Identities and accounts").
   """
 
   use Ecto.Schema
@@ -14,8 +18,11 @@ defmodule Renga.Accounts.IdentityProviderAttempt do
     field :revision, :integer
     field :state_hash, :binary, redact: true
     field :expires_at, :utc_datetime_usec
+    field :purpose, :string, default: "sign_in"
 
     belongs_to :provider, Renga.Accounts.IdentityProvider, type: :string
+    belongs_to :user, Renga.Accounts.User
+    belongs_to :session_token, Renga.Accounts.UserToken
 
     timestamps(
       type: :utc_datetime_usec,
