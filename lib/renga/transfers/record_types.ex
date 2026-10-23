@@ -325,6 +325,8 @@ defmodule Renga.Transfers.RecordTypes do
       "maintained by a trigger when an adjacency is inserted",
     "deployment_audit_events" => "the deployment's operator audit log, not organization data",
     "identity_providers" => "deployment configuration, set up at the destination",
+    "organization_domains" =>
+      "sign-in routing to the organization's identity providers, which are not exported; the destination verifies its domains again",
     "organization_invitations" =>
       "pending invitations carry secrets; access returns through new invitations",
     "organization_limits" => "operator policy of the source deployment",
