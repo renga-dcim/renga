@@ -822,8 +822,9 @@ defmodule RengaWeb.InventoryOperationsLive do
 
   defp power_source_hint(%{source: "hwmon", status: "not_present"}),
     do:
-      "No acpi_power_meter or supported power supply sensor. A host running " <>
-        "ipmi_exporter can be read by adding it under [[exporters]] in the agent configuration."
+      "No supported power supply sensor. ACPI power meters are skipped because Linux does " <>
+        "not say whether they measure input or output. A host running ipmi_exporter can be " <>
+        "read by adding it under [[exporters]] in the agent configuration."
 
   defp power_source_hint(%{source: "hwmon", status: "not_permitted"}),
     do: "The agent cannot read /sys/class/hwmon. Check the service's sandbox settings."
