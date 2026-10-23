@@ -73,7 +73,18 @@ defmodule Renga.Operators.InvitationDeliveries do
   end
 
   @doc "Attempts each currently available delivery once. Safe on every node."
-  def sweep(now \\ Renga.Time.utc_now_ms()) do
+  def sweep(now \\ nil)
+
+  def sweep(nil) do
+    now = Renga.Time.utc_now_ms()
+    sweep_available(now, fn id -> dispatch(id) end)
+  end
+
+  def sweep(%DateTime{} = now) do
+    sweep_available(now, fn id -> dispatch(id, now) end)
+  end
+
+  defp sweep_available(now, dispatch) do
     ids =
       InvitationDelivery
       |> available(now)
@@ -83,7 +94,7 @@ defmodule Renga.Operators.InvitationDeliveries do
       |> Repo.all()
 
     Enum.reduce(ids, %{delivered: 0, pending: 0, discarded: 0}, fn id, counts ->
-      case dispatch(id, now) do
+      case dispatch.(id) do
         :ok -> Map.update!(counts, :delivered, &(&1 + 1))
         :discarded -> Map.update!(counts, :discarded, &(&1 + 1))
         _pending -> Map.update!(counts, :pending, &(&1 + 1))
