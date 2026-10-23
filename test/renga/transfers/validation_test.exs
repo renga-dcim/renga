@@ -193,10 +193,18 @@ defmodule Renga.Transfers.ValidationTest do
     archive =
       rewrite(context, export(context), fn
         "rack_occupancies", [] ->
-          Enum.map(["[-,)", "[2147483648,)", "[5,2)", "[1,3)", "empty", "(,4]"], occupancy)
+          Enum.map(
+            ~w|[-,) [2147483648,) [5,2) [1,2147483647] (2147483647,)
+               [1,3) empty (,4] [5,5) (2147483647,2147483647)|,
+            occupancy
+          )
 
         "prefixes", [] ->
-          Enum.map(["192.0.2.1/24", "2001:db8::1/64", "192.0.2.0/24", "2001:db8::/64"], prefix)
+          Enum.map(
+            ~w(192.0.2.1/24 2001:db8::1/64 192.0.2.0/+24 0.0.0.0/-0 2001:db8::/064
+               192.0.2.0/24 2001:db8::/64 192.0.2.0/024),
+            prefix
+          )
 
         "resources", [resource | rest] ->
           # 255 characters as people read them, 510 as PostgreSQL counts.
@@ -215,9 +223,14 @@ defmodule Renga.Transfers.ValidationTest do
     assert type_messages == [
              {"prefixes.ndjson", 1, ~s(field "prefix" must be an IP network)},
              {"prefixes.ndjson", 2, ~s(field "prefix" must be an IP network)},
+             {"prefixes.ndjson", 3, ~s(field "prefix" must be an IP network)},
+             {"prefixes.ndjson", 4, ~s(field "prefix" must be an IP network)},
+             {"prefixes.ndjson", 5, ~s(field "prefix" must be an IP network)},
              {"rack_occupancies.ndjson", 1, ~s(field "units" must be an integer range)},
              {"rack_occupancies.ndjson", 2, ~s(field "units" must be an integer range)},
              {"rack_occupancies.ndjson", 3, ~s(field "units" must be an integer range)},
+             {"rack_occupancies.ndjson", 4, ~s(field "units" must be an integer range)},
+             {"rack_occupancies.ndjson", 5, ~s(field "units" must be an integer range)},
              {"resources.ndjson", 1, ~s(field "name" is longer than 255 characters)}
            ]
   end

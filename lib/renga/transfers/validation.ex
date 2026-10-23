@@ -36,7 +36,7 @@ defmodule Renga.Transfers.Validation do
 
   @uuid ~r/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i
   @mac_address ~r/\A[0-9a-f]{2}(:[0-9a-f]{2}){5}\z/i
-  @int4range ~r/\A[\[(](-?\d+)?,(-?\d+)?[\])]\z/
+  @int4range ~r/\A([\[(])(-?\d+)?,(-?\d+)?([\])])\z/
   @int4 {-2_147_483_648, 2_147_483_647}
   @int8 {-9_223_372_036_854_775_808, 9_223_372_036_854_775_807}
 
@@ -337,14 +337,16 @@ defmodule Renga.Transfers.Validation do
 
   defp timestamp?(_value), do: false
 
-  # Each bound must be an int4 and the lower no greater than the upper,
-  # as PostgreSQL requires before it canonicalizes the range.
+  # As PostgreSQL reads an int4range: each bound an int4, the lower no
+  # greater than the upper, and equal bounds not both inclusive an empty
+  # range. Otherwise it canonicalizes to [lower, upper), adding one to an
+  # exclusive lower or inclusive upper bound, which must still fit.
   defp int4range?("empty"), do: true
 
   defp int4range?(value) when is_binary(value) do
     case Regex.run(@int4range, value, capture: :all_but_first) do
+      [open, lower, upper, close] -> range?(open == "[", bound(lower), bound(upper), close == "]")
       nil -> false
-      bounds -> bounds |> Enum.map(&bound/1) |> valid_bounds?()
     end
   end
 
@@ -353,19 +355,31 @@ defmodule Renga.Transfers.Validation do
   defp bound(""), do: nil
   defp bound(digits), do: String.to_integer(digits)
 
-  defp valid_bounds?(bounds) do
-    Enum.all?(bounds, &(is_nil(&1) or in_range?(&1, @int4))) and
-      case bounds do
-        [lower, upper] when is_integer(lower) and is_integer(upper) -> lower <= upper
-        _open -> true
-      end
+  defp range?(lower_inclusive?, lower, upper, upper_inclusive?) do
+    in_int4?(lower) and in_int4?(upper) and
+      ordered_range?({lower_inclusive?, lower}, {upper, upper_inclusive?})
   end
+
+  defp ordered_range?({_inclusive?, lower}, {upper, _upper_inclusive?})
+       when is_integer(lower) and is_integer(upper) and lower > upper,
+       do: false
+
+  # Equal bounds not both inclusive make an empty range, never incremented.
+  defp ordered_range?({true, same}, {same, true}), do: not overflows?(same, true)
+  defp ordered_range?({_inclusive?, same}, {same, _upper}) when is_integer(same), do: true
+
+  defp ordered_range?({lower_inclusive?, lower}, {upper, upper_inclusive?}),
+    do: not overflows?(lower, not lower_inclusive?) and not overflows?(upper, upper_inclusive?)
+
+  defp in_int4?(bound), do: is_nil(bound) or in_range?(bound, @int4)
+
+  defp overflows?(bound, incremented?), do: incremented? and bound == elem(@int4, 1)
 
   # A network (cidr) must have no bits set past its prefix length.
   defp address?(value, network?) when is_binary(value) do
     case String.split(value, "/") do
       [address] -> not network? and match?({:ok, _ip}, ip(address))
-      [address, length] -> network?(ip(address), Integer.parse(length), network?)
+      [address, length] -> network?(ip(address), length, network?)
       _other -> false
     end
   end
@@ -374,14 +388,30 @@ defmodule Renga.Transfers.Validation do
 
   defp ip(address), do: :inet.parse_strict_address(String.to_charlist(address))
 
-  defp network?({:ok, ip}, {length, ""}, network?) do
+  defp network?({:ok, ip}, length, network?) do
     bits = if tuple_size(ip) == 8, do: 128, else: 32
 
-    length >= 0 and length <= bits and
-      (not network? or host_bits_zero?(ip, bits - length))
+    case prefix_length(length, bits) do
+      {:ok, length} -> not network? or host_bits_zero?(ip, bits - length)
+      :error -> false
+    end
   end
 
   defp network?(_ip, _length, _network?), do: false
+
+  # PostgreSQL reads a prefix length as plain digits, with leading zeros
+  # only for IPv4.
+  defp prefix_length(length, bits) do
+    syntax = if bits == 128, do: ~r/\A(0|[1-9][0-9]*)\z/, else: ~r/\A[0-9]+\z/
+
+    with true <- Regex.match?(syntax, length),
+         length = String.to_integer(length),
+         true <- length <= bits do
+      {:ok, length}
+    else
+      _invalid -> :error
+    end
+  end
 
   defp host_bits_zero?(ip, host_bits) do
     width = if tuple_size(ip) == 8, do: 16, else: 8
