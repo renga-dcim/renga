@@ -57,6 +57,7 @@ defmodule Renga.Authorization do
     "queries.run_sensitive",
     "views.share",
     "teams.manage",
+    "groups.manage",
     "triage_rules.manage",
     "intake_keys.manage",
     "members.manage",
@@ -83,6 +84,7 @@ defmodule Renga.Authorization do
     "queries.run_sensitive" => "With queries.run, run sensitive queries and read their results",
     "views.share" => "Save and change views shared with the organization",
     "teams.manage" => "Manage teams, who is on them, and resource owners",
+    "groups.manage" => "Define resource groups and group sets",
     "triage_rules.manage" => "Manage triage rules",
     "intake_keys.manage" => "Manage intake API keys",
     "members.manage" => "Invite and disable members and change their roles",
@@ -94,7 +96,7 @@ defmodule Renga.Authorization do
 
   @workflow ~w(inventory.reconcile findings.act catalog.author)
   @management ~w(inventory.edit requests.decide catalog.expectations dcim.edit ipam.edit
-                 topology.edit jobs.request views.share teams.manage triage_rules.manage
+                 topology.edit jobs.request views.share teams.manage groups.manage triage_rules.manage
                  intake_keys.manage members.manage roles.manage)
   @organization ~w(organization.manage organization.export scim.manage)
   # A SCIM connection's mappings can grant any built-in role, so like
