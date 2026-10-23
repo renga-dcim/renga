@@ -872,7 +872,12 @@ defmodule Renga.Accounts do
   Updates the user email using the given token.
 
   If the token matches, the user email is updated and the token is deleted.
+  A session scoped to one organization changes nothing and keeps the token
+  (RFD 15): its link still works after signing in another way.
   """
+  def update_user_email(%User{session_organization_id: id}, _token) when not is_nil(id),
+    do: {:error, :scoped_session}
+
   def update_user_email(user, token) do
     previous_email = user.email
     context = "change:#{previous_email}"

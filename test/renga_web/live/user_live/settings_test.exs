@@ -355,6 +355,32 @@ defmodule RengaWeb.UserLive.SettingsTest do
       assert message == "Email change link is invalid or it has expired."
     end
 
+    test "a session scoped to an organization changes nothing", %{
+      user: user,
+      token: token,
+      email: email
+    } do
+      scoped = %{
+        user
+        | session_organization_id: Renga.InventoryFixtures.organization_fixture().id
+      }
+
+      {:error, redirect} =
+        live(log_in_user(build_conn(), scoped), ~p"/users/settings/confirm-email/#{token}")
+
+      assert {:live_redirect, %{flash: %{"error" => message}}} = redirect
+      assert message =~ "Sign in another way"
+      assert Accounts.get_user_by_email(user.email)
+      refute Accounts.get_user_by_email(email)
+
+      # The link still works from an unscoped session.
+      {:error, redirect} =
+        live(log_in_user(build_conn(), user), ~p"/users/settings/confirm-email/#{token}")
+
+      assert {:live_redirect, %{flash: %{"info" => "Email changed successfully."}}} = redirect
+      assert Accounts.get_user_by_email(email)
+    end
+
     test "does not update email with invalid token", %{conn: conn, user: user} do
       {:error, redirect} = live(conn, ~p"/users/settings/confirm-email/oops")
       assert {:live_redirect, %{to: path, flash: flash}} = redirect

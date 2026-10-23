@@ -578,6 +578,13 @@ defmodule RengaWeb.UserLive.Settings do
         {:ok, _user} ->
           put_flash(socket, :info, "Email changed successfully.")
 
+        {:error, :scoped_session} ->
+          put_flash(
+            socket,
+            :error,
+            "This session signed in with your organization's identity provider. Sign in another way, then open the link again."
+          )
+
         {:error, _} ->
           put_flash(socket, :error, "Email change link is invalid or it has expired.")
       end
