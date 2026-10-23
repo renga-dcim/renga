@@ -77,6 +77,17 @@ defmodule Renga.Operators.IdempotencyTest do
              Repo.transaction(fn -> Idempotency.begin(idempotency) end)
   end
 
+  test "begin distinguishes a conflicting request that completed meanwhile", %{token: token} do
+    {:ok, :ok} = complete(idempotency(token, %{"slug" => "acme"}), "done")
+
+    assert {:ok, {:error, :idempotency_key_reused}} =
+             Repo.transaction(fn ->
+               token
+               |> idempotency(%{"slug" => "other"})
+               |> Idempotency.begin()
+             end)
+  end
+
   test "an expired key is reused", %{token: token} do
     idempotency = idempotency(token, %{"slug" => "acme"})
     {:ok, :ok} = complete(idempotency, "first")

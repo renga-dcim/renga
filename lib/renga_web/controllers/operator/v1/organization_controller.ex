@@ -160,6 +160,9 @@ defmodule RengaWeb.Operator.V1.OrganizationController do
 
   defp respond(conn, _idempotency, {:error, :not_found}), do: error(conn, 404, "not_found")
 
+  defp respond(conn, _idempotency, {:error, :idempotency_key_reused}),
+    do: error(conn, 409, "idempotency_key_reused")
+
   defp respond(conn, _idempotency, {:error, :secret_storage_unavailable}),
     do: error(conn, 503, "secret_storage_unavailable")
 

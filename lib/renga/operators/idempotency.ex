@@ -109,8 +109,10 @@ defmodule Renga.Operators.Idempotency do
   @doc """
   Starts an operation inside its transaction. Waits for any concurrent
   request with the same key, then returns `:ok` to go ahead or
-  `{:error, :replayed}` when one has completed meanwhile. A `nil`
-  idempotency, as release commands pass, always goes ahead.
+  `{:error, :replayed}` when the same request completed meanwhile. Reusing
+  the key for a different request returns `{:error,
+  :idempotency_key_reused}`. A `nil` idempotency, as release commands pass,
+  always goes ahead.
   """
   def begin(nil), do: :ok
 
@@ -129,7 +131,11 @@ defmodule Renga.Operators.Idempotency do
       |> where([key], key.expires_at <= ^Renga.Time.utc_now_ms())
     )
 
-    if Repo.exists?(live_query(idempotency)), do: {:error, :replayed}, else: :ok
+    case Repo.one(live_query(idempotency)) do
+      nil -> :ok
+      %Key{request_digest: digest} when digest == idempotency.digest -> {:error, :replayed}
+      %Key{} -> {:error, :idempotency_key_reused}
+    end
   end
 
   @doc """
