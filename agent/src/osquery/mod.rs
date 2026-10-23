@@ -6,7 +6,7 @@
 //! `osqueryd` and makes its extensions socket reachable by the agent's
 //! account; osquery keeps its own privileges and the agent's sandbox does not
 //! change. The socket speaks Thrift, and the agent calls only the extension
-//! manager's `ping`, `query`, and `options` methods.
+//! manager's `ping`, `query`, `getQueryColumns`, and `options` methods.
 
 pub mod thrift;
 

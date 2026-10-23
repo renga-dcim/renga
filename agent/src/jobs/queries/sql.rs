@@ -42,18 +42,45 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::BTreeSet;
 
-/// Tables that read files (`file`, `yara`, `augeas`), make network requests
-/// to an address the query names (`curl`, `curl_certificate`, and
-/// `ycloud_instance_metadata`, whose `metadata_endpoint` constraint becomes
-/// the URL it fetches), or copy files off the host (`carves`).
-pub const DENIED_TABLES: [&str; 7] = [
+/// Linux tables whose query names what they open: a file or directory they
+/// read, hash, parse, or scan (`file`, `hash`, `magic`, `certificates`,
+/// `extended_attributes`, `sshd_config`, `augeas`, `yara`/`yara_file`, the
+/// `elf_*` tables of older releases, and the package-tree walkers
+/// `npm_packages`, `python_packages`, and `ai_agent_skills`), a device they
+/// read (Sleuth Kit's `device_*`), an address they reach (`curl`,
+/// `curl_certificate`, and `ycloud_instance_metadata`, whose
+/// `metadata_endpoint` becomes the URL it fetches), or files they copy off
+/// the host (`carves`). Opening a path the query chooses can also block the
+/// daemon for good, on a FIFO for one.
+///
+/// `deb_packages`, `deb_package_files`, and `pacman_packages` also take a
+/// database directory but read only fixed file names inside it, and the
+/// named packages query answers from `deb_packages`, so they stay enabled.
+pub const DENIED_TABLES: [&str; 24] = [
+    "ai_agent_skills",
     "augeas",
     "carves",
+    "certificates",
     "curl",
     "curl_certificate",
+    "device_file",
+    "device_hash",
+    "device_partitions",
+    "elf_dynamic",
+    "elf_info",
+    "elf_sections",
+    "elf_segments",
+    "elf_symbols",
+    "extended_attributes",
     "file",
+    "hash",
+    "magic",
+    "npm_packages",
+    "python_packages",
+    "sshd_config",
     "ycloud_instance_metadata",
     "yara",
+    "yara_file",
 ];
 
 const MAX_SQL: usize = 4096;
@@ -410,12 +437,10 @@ mod tests {
 
         match refuse_unless_denied_tables_disabled(&row(&[("disable_tables", "curl,file")])) {
             Err(JobFailure::Failed(reason)) => {
-                assert!(
-                    reason.contains(
-                        "augeas, carves, curl_certificate, ycloud_instance_metadata, yara"
-                    ),
-                    "{reason}"
-                )
+                for missing in ["augeas", "carves", "hash", "magic", "yara_file"] {
+                    assert!(reason.contains(missing), "{reason}");
+                }
+                assert!(!reason.contains(" file,"), "{reason}");
             }
             other => panic!("expected a refusal, got {other:?}"),
         }

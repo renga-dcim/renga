@@ -519,11 +519,12 @@ fn sql_daemon(disabled: &'static str) -> (QueryCapability, std::thread::JoinHand
     (QueryCapability::new(sql::Sql, osquery), server)
 }
 
-const ALL_DENIED: &str = "curl,curl_certificate,carves,yara,file,augeas,ycloud_instance_metadata";
+static ALL_DENIED: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| sql::DENIED_TABLES.join(","));
 
 #[test]
 fn ad_hoc_sql_answers_a_table_in_column_order() {
-    let (capability, server) = sql_daemon(ALL_DENIED);
+    let (capability, server) = sql_daemon(ALL_DENIED.as_str());
     let value = run(
         &capability,
         json!({"sql": "SELECT pid, name FROM processes"}),
@@ -559,10 +560,9 @@ fn ad_hoc_sql_is_refused_unless_every_denied_table_is_disabled() {
                 reason.starts_with("refused by the agent's policy"),
                 "{reason}"
             );
-            assert!(
-                reason.contains("augeas, curl_certificate, file, ycloud_instance_metadata, yara"),
-                "{reason}"
-            );
+            for missing in ["augeas", "curl_certificate", "file", "hash", "yara"] {
+                assert!(reason.contains(missing), "{reason}");
+            }
         }
         other => panic!("expected a refusal, got {other:?}"),
     }
@@ -573,7 +573,7 @@ fn ad_hoc_sql_is_refused_unless_every_denied_table_is_disabled() {
 
 #[test]
 fn ad_hoc_sql_reports_osquery_s_error() {
-    let (capability, _server) = sql_daemon(ALL_DENIED);
+    let (capability, _server) = sql_daemon(ALL_DENIED.as_str());
     match capability.run(
         &json!({"sql": "SELECT * FROM file"}),
         &Cancellation::default(),
@@ -607,7 +607,7 @@ fn refusal(capability: &QueryCapability, sql: &str) -> String {
 
 #[test]
 fn ad_hoc_sql_must_be_one_statement() {
-    let (capability, server) = sql_daemon(ALL_DENIED);
+    let (capability, server) = sql_daemon(ALL_DENIED.as_str());
     let reason = refusal(&capability, "SELECT 1; CREATE TABLE t (a)");
     assert!(reason.contains("one statement"), "{reason}");
     drop(capability);
@@ -617,7 +617,7 @@ fn ad_hoc_sql_must_be_one_statement() {
 
 #[test]
 fn ad_hoc_sql_must_only_read() {
-    let (capability, server) = sql_daemon(ALL_DENIED);
+    let (capability, server) = sql_daemon(ALL_DENIED.as_str());
     let reason = refusal(
         &capability,
         "WITH x AS (SELECT 1) INSERT INTO t SELECT * FROM x",
@@ -637,7 +637,7 @@ fn ad_hoc_sql_must_be_a_select_before_osquery_sees_it() {
         "ATTACH 'x' AS y",
         "VALUES (1)",
     ] {
-        let (capability, server) = sql_daemon(ALL_DENIED);
+        let (capability, server) = sql_daemon(ALL_DENIED.as_str());
         let reason = refusal(&capability, sql);
         assert!(reason.contains("must be a SELECT"), "{sql}: {reason}");
         drop(capability);
@@ -656,7 +656,7 @@ fn ad_hoc_sql_refuses_parameters_that_would_hide_a_statement() {
         "SELECT ?",
         "SELECT #a",
     ] {
-        let (capability, server) = sql_daemon(ALL_DENIED);
+        let (capability, server) = sql_daemon(ALL_DENIED.as_str());
         let reason = refusal(&capability, sql);
         assert!(reason.contains("parameters"), "{sql}: {reason}");
         drop(capability);
@@ -666,7 +666,7 @@ fn ad_hoc_sql_refuses_parameters_that_would_hide_a_statement() {
 
 #[test]
 fn ad_hoc_sql_must_not_sleep() {
-    let (capability, server) = sql_daemon(ALL_DENIED);
+    let (capability, server) = sql_daemon(ALL_DENIED.as_str());
     let reason = refusal(&capability, "SELECT sleep(1000000)");
     assert!(reason.contains("sleep()"), "{reason}");
     drop(capability);
@@ -675,19 +675,26 @@ fn ad_hoc_sql_must_not_sleep() {
 }
 
 #[test]
-fn ad_hoc_sql_needs_ycloud_metadata_disabled() {
-    // ycloud_instance_metadata fetches the endpoint the query names.
-    let (capability, server) = sql_daemon("curl,curl_certificate,carves,yara,file,augeas");
-    let reason = refusal(&capability, "SELECT pid, name FROM processes");
-    assert!(reason.contains("ycloud_instance_metadata"), "{reason}");
-    drop(capability);
-    assert_eq!(server.join().unwrap(), ["options"]);
+fn ad_hoc_sql_needs_every_denied_table_disabled() {
+    // Leaving any one enabled refuses the query after reading the flags.
+    for table in sql::DENIED_TABLES {
+        let others = sql::DENIED_TABLES
+            .into_iter()
+            .filter(|other| *other != table)
+            .collect::<Vec<_>>()
+            .join(",");
+        let (capability, server) = sql_daemon(Box::leak(others.into_boxed_str()));
+        let reason = refusal(&capability, "SELECT pid, name FROM processes");
+        assert!(reason.contains(table), "{table}: {reason}");
+        drop(capability);
+        assert_eq!(server.join().unwrap(), ["options"], "{table}");
+    }
 }
 
 #[test]
 fn ad_hoc_sql_needs_carving_disabled() {
     let (socket, server) = fake::serve(|method, _args| match method {
-        "options" => fake::options(&[("disable_tables", ALL_DENIED)]),
+        "options" => fake::options(&[("disable_tables", ALL_DENIED.as_str())]),
         _ => fake::response(1, "unexpected", &[]),
     });
     let capability = QueryCapability::new(
