@@ -228,6 +228,21 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
     assert view
            |> element("#{cell}-0")
            |> render() =~ "ipmi_exporter"
+
+    agent
+    |> Ecto.Changeset.change(
+      metadata:
+        Map.put(agent.metadata, "power_sources", [
+          %{"source" => "hwmon", "status" => "available"},
+          %{"source" => "http://127.0.0.1:9100/metrics", "status" => "not_present"}
+        ])
+    )
+    |> Repo.update!()
+
+    {:ok, view, _html} = live(conn, ~p"/settings/collectors")
+    assert has_element?(view, "#{cell}-0", "Available")
+    assert has_element?(view, "#{cell}-1", "http://127.0.0.1:9100/metrics")
+    assert view |> element("#{cell}-1") |> render() =~ "serves no power metric"
   end
 
   test "malformed legacy queue metadata is not reported rather than crashing", %{

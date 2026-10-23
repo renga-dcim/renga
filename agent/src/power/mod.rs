@@ -15,6 +15,7 @@ use crate::{
 };
 use chrono::{DateTime, Utc};
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, PoisonError},
     thread,
@@ -29,28 +30,45 @@ pub const SAMPLE_INTERVAL: Duration = Duration::from_secs(60);
 pub const FRESH_FOR_SECONDS: u32 = 300;
 const WAIT_SLICE: Duration = Duration::from_millis(250);
 
-/// The latest availability of the host's power sources, for check-ins.
+/// The latest status of each of the host's power sources, by source name, for check-ins.
 #[derive(Clone, Default)]
-pub struct PowerSources(Arc<Mutex<Option<hwmon::Availability>>>);
+pub struct PowerSources(Arc<Mutex<BTreeMap<String, &'static str>>>);
 
 impl PowerSources {
-    pub fn hwmon(&self) -> Option<hwmon::Availability> {
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    pub fn status(&self, source: &str) -> Option<&'static str> {
+        self.lock().get(source).copied()
+    }
+
+    pub fn hwmon(&self) -> Option<&'static str> {
+        self.status(hwmon::MAPPING)
     }
 
     /// Every source sampled so far, or `None` before the first sample, so a check-in keeps the
     /// last report rather than replacing it with nothing.
     pub fn reports(&self) -> Option<Vec<PowerSourceReport>> {
-        self.hwmon().map(|availability| {
-            vec![PowerSourceReport {
-                source: hwmon::MAPPING.into(),
-                status: availability.as_str(),
-            }]
+        let sources = self.lock();
+        (!sources.is_empty()).then(|| {
+            sources
+                .iter()
+                .map(|(source, status)| PowerSourceReport {
+                    source: source.clone(),
+                    status,
+                })
+                .collect()
         })
     }
 
-    fn publish(&self, availability: hwmon::Availability) {
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(availability);
+    pub fn publish(&self, source: &str, status: &'static str) {
+        self.lock().insert(source.to_owned(), status);
+    }
+
+    /// Forgets the sources `keep` rejects, such as exporters a reload removed.
+    pub fn retain(&self, keep: impl Fn(&str) -> bool) {
+        self.lock().retain(|source, _status| keep(source));
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, &'static str>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -93,7 +111,7 @@ fn run(root: &Path, stop: &Cancellation, sink: &Sink, sources: &PowerSources) {
 /// Reads the sensors once and queues their batch, if any sensor is mapped.
 fn sample(root: &Path, now: DateTime<Utc>, sink: &Sink, sources: &PowerSources) {
     let scan = hwmon::scan(root);
-    sources.publish(scan.availability);
+    sources.publish(hwmon::MAPPING, scan.availability.as_str());
     if scan.readings.is_empty() {
         debug!(
             availability = scan.availability.as_str(),
@@ -140,10 +158,12 @@ fn to_sample(reading: &hwmon::Reading, now: DateTime<Utc>) -> TelemetrySample {
         sensor: reading.sensor.clone(),
         boundary: reading.boundary.as_str(),
         quantity: "real_power",
-        unit: "W",
+        unit: Some("W"),
+        component: None,
         status,
         origin: "native",
         value,
+        state: None,
         window: SampleWindow { start, end: now },
         event_at: now,
         mapping: SampleMapping {
@@ -205,7 +225,7 @@ mod tests {
         sample(&root, now, &sink, &sources);
         fs::remove_dir_all(&sys).unwrap();
 
-        assert_eq!(sources.hwmon(), Some(hwmon::Availability::Available));
+        assert_eq!(sources.hwmon(), Some("available"));
         let batches = batches.lock().unwrap();
         let [(replay_id, batch)] = batches.as_slice() else {
             panic!("expected one batch, got {batches:?}");
@@ -247,7 +267,7 @@ mod tests {
         sample(&root, Utc::now(), &sink, &sources);
 
         assert!(batches.lock().unwrap().is_empty());
-        assert_eq!(sources.hwmon(), Some(hwmon::Availability::NotPresent));
+        assert_eq!(sources.hwmon(), Some("not_present"));
         assert_eq!(
             sources.reports(),
             Some(vec![PowerSourceReport {

@@ -266,8 +266,9 @@ fn channel(file: &str) -> Option<u32> {
         .flatten()
 }
 
-/// The boundary a sensor of `driver` measures, by its label for a supply.
-pub fn boundary(driver: &str, label: Option<String>) -> Option<Boundary> {
+/// The boundary a driver's power sensor measures, or `None` when it measures one component.
+/// Exporters that relay hwmon readings use the same rules.
+pub(crate) fn boundary(driver: &str, label: Option<String>) -> Option<Boundary> {
     if !SUPPLY_NAMES.contains(&driver) {
         return None;
     }

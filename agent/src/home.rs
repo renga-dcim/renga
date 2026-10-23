@@ -238,6 +238,7 @@ mod tests {
             snmp: Vec::new(),
             gnmi: Vec::new(),
             libvirt: None,
+            exporters: Vec::new(),
         }
     }
 

@@ -559,15 +559,29 @@ pub struct TelemetrySample {
     pub sensor: String,
     pub boundary: &'static str,
     pub quantity: &'static str,
-    pub unit: &'static str,
+    /// Absent for a `state` reading.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit: Option<&'static str>,
+    /// The power port or outlet the reading is about, when the source names one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub component: Option<SampleComponent>,
     pub status: &'static str,
     pub origin: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<f64>,
+    /// A `state` reading's value, such as `ok` or `failed`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<&'static str>,
     pub window: SampleWindow,
     pub event_at: DateTime<Utc>,
     pub mapping: SampleMapping,
     pub fresh_for_seconds: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SampleComponent {
+    pub kind: &'static str,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
