@@ -55,9 +55,10 @@ defmodule Renga.Findings do
     # Every address finding is observed state disagreeing with the address
     # plan: strictness, prefixes, assignments, or uniqueness.
     "address" => AddressFinding.kinds(),
-    # Draw with no recorded connection is evidence disagreeing with the
+    # Draw with no recorded connection, and readings suggesting a
+    # connection that is not recorded, are evidence disagreeing with the
     # plan; the other power findings are about capacity and health.
-    "power" => ~w(unexpected_draw)
+    "power" => ~w(unexpected_draw suggested_connection)
   }
   @drift_pairs for {domain, kinds} <- @drift_kinds, kind <- kinds, do: "#{domain}:#{kind}"
 

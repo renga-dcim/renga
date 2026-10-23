@@ -14,6 +14,9 @@ defmodule Renga.Power.Finding do
     * `unexpected_draw` - an outlet drawing power with no connection
       recorded.
     * `path_incomplete` - a connected port whose path stops before a feed.
+    * `suggested_connection` - readings suggest which unconnected outlet an
+      unconnected power supply is plugged into (`Renga.Power.Correlation`),
+      keyed by port and outlet.
   """
 
   use Ecto.Schema
@@ -21,7 +24,8 @@ defmodule Renga.Power.Finding do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
   @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
-  @kinds ~w(not_redundant feed_near_capacity supply_failed unexpected_draw path_incomplete)
+  @kinds ~w(not_redundant feed_near_capacity supply_failed unexpected_draw path_incomplete
+             suggested_connection)
 
   schema "power_findings" do
     field :kind, :string

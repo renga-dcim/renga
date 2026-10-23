@@ -179,6 +179,29 @@ defmodule RengaWeb.Api.V1.TelemetryControllerTest do
                Readings.for_resources(scope, [pdu_id], ~U[2026-08-13 07:31:00Z])
     end
 
+    test "recent outlet and supply samples enter the correlation window", %{token: token} do
+      check_in!(token)
+      now = Renga.Time.utc_now_ms() |> DateTime.to_iso8601()
+
+      batch =
+        host_batch([
+          sample(
+            sensor: "PSU1/input",
+            boundary: "supply_input",
+            component: %{"kind" => "power_port", "name" => "PSU1"},
+            event_at: now
+          ),
+          sample(sensor: "acpi", event_at: now),
+          # Older than the window's 24 hours.
+          sample(sensor: "PSU2/input", boundary: "supply_input")
+        ])
+
+      token |> post_batch(batch) |> valid_api_response(202)
+
+      assert [%Renga.Power.CorrelationSample{sensor: "PSU1/input"}] =
+               Repo.all(Renga.Power.CorrelationSample)
+    end
+
     test "a replayed batch is accepted once, and a reused replay ID is a conflict", %{
       scope: scope,
       token: token

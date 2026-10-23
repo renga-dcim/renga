@@ -50,6 +50,34 @@ defmodule RengaWeb.InboxLiveTest do
     assert render(view) =~ "Outlet 2 draws 120 W"
   end
 
+  test "a suggested connection links to its port's connect panel", %{
+    conn: conn,
+    resource: resource
+  } do
+    port_id = Ecto.UUID.generate()
+    outlet_id = Ecto.UUID.generate()
+
+    finding =
+      Renga.Repo.insert!(%Renga.Power.Finding{
+        organization_id: resource.organization_id,
+        resource_id: resource.id,
+        kind: "suggested_connection",
+        resolution_key: "#{port_id}:#{outlet_id}",
+        message: "PSU1 may be plugged into pdu-a1 outlet 3.",
+        details: %{"port_id" => port_id, "outlet_id" => outlet_id, "basis" => "state"},
+        last_observed_at: Renga.Time.utc_now_ms()
+      })
+
+    {:ok, view, _html} = live(conn, ~p"/inbox?finding=power:#{finding.id}")
+
+    assert has_element?(
+             view,
+             "#finding-record-connection[href='/inventory/#{resource.id}/power?connect=#{port_id}&outlet=#{outlet_id}']"
+           )
+
+    assert has_element?(view, "#findings-group-drift")
+  end
+
   test "lists every domain in one queue grouped as Drift and Health", %{
     conn: conn,
     resource: resource,
