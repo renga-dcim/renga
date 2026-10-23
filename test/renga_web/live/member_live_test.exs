@@ -4,13 +4,19 @@ defmodule RengaWeb.MemberLiveTest do
   import Phoenix.LiveViewTest
   import Renga.AccountsFixtures
   import Renga.InventoryFixtures
+  import Renga.ScimFixtures
 
   alias Renga.Accounts
+  alias Renga.Accounts.OrganizationMembership
+  alias Renga.Accounts.UserIdentity
   alias Renga.Assignments
   alias Renga.Inventory
   alias Renga.Members
   alias Renga.Repo
   alias Renga.Roles
+  alias Renga.Scim.Client
+  alias Renga.Scim.Linking
+  alias Renga.Scim.Users
 
   setup do
     organization = organization_fixture()
@@ -327,6 +333,62 @@ defmodule RengaWeb.MemberLiveTest do
 
     test "signing in comes first", %{conn: conn} do
       assert {:error, {:redirect, %{to: "/users/log-in"}}} = live(conn, ~p"/invitations/anything")
+    end
+  end
+
+  describe "SCIM directory" do
+    setup context do
+      connection = scim_connection_fixture(context.owner, %{"default_role" => "member"})
+      {token, _value} = scim_token_fixture(context.owner, connection)
+      %{connection: connection, client: %Client{connection: connection, token_id: token.id}}
+    end
+
+    test "managers see entries, linked or not, and SCIM members are left to the provider",
+         context do
+      {:ok, unlinked} =
+        Users.create(context.client, %{"userName" => "pending@example.com", "externalId" => "p"})
+
+      {:ok, linked} =
+        Users.create(context.client, %{
+          "userName" => "linked@example.com",
+          "externalId" => "sub-l",
+          "displayName" => "Linked Person"
+        })
+
+      user = user_fixture()
+
+      identity =
+        Repo.insert!(%UserIdentity{
+          user_id: user.id,
+          provider_id: context.connection.provider_id,
+          subject: "sub-l"
+        })
+
+      Linking.link_identity(identity, %{"sub" => "sub-l"})
+      granted = Repo.get_by!(OrganizationMembership, user_id: user.id)
+
+      {:ok, view, _html} = live(context.admin_conn, ~p"/settings/members")
+
+      assert has_element?(view, "#directory-#{linked.id}", "Linked Person")
+      assert has_element?(view, "#directory-#{linked.id}-account", user.email)
+      assert has_element?(view, "#directory-#{unlinked.id}-unlinked", "Not signed in yet")
+      assert has_element?(view, "#member-#{granted.id}-scim", "Managed by SCIM")
+      refute has_element?(view, "#member-#{granted.id}-edit")
+
+      # A push arrives while the page is open.
+      {:ok, _entry} =
+        Users.patch(context.client, unlinked.id, [
+          %{"op" => "replace", "path" => "active", "value" => false}
+        ])
+
+      assert has_element?(view, "#directory-#{unlinked.id}-status", "Inactive")
+    end
+
+    test "members without members.manage do not see the directory", context do
+      {:ok, _entry} = Users.create(context.client, %{"userName" => "x", "externalId" => "x"})
+
+      {:ok, view, _html} = live(context.member_conn, ~p"/settings/members")
+      refute has_element?(view, "#directory")
     end
   end
 
