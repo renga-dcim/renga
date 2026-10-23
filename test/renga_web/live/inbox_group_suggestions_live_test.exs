@@ -102,6 +102,59 @@ defmodule RengaWeb.InboxGroupSuggestionsLiveTest do
     refute has_element?(view, "#group-suggestion-#{context.first.id}")
   end
 
+  test "malformed decision events leave the view usable and membership unchanged", context do
+    {:ok, view, _html} = live(context.admin_conn, ~p"/inbox?group=triage")
+
+    render_click(view, "accept_suggestion", %{})
+    assert has_element?(view, "#group-suggestions-title", "2")
+    assert render(view) =~ "Someone already decided that suggestion"
+
+    render_click(view, "dismiss_suggestion", %{})
+    assert has_element?(view, "#group-suggestions-title", "2")
+    assert ResourceGroups.list_resource_groups(context.admin, context.first.resource_id) == []
+  end
+
+  test "show more reaches every suggestion and decisions refill the first page", context do
+    {:ok, 1} =
+      ResourceGroups.add_members(context.admin, context.staging, [
+        server!(context.admin, "app-visible").id
+      ])
+
+    added =
+      for number <- 3..21 do
+        resource = server!(context.admin, "stg-#{number}")
+
+        assert {:ok, 1} =
+                 TriageRules.apply_to_resource(context.admin.organization_id, resource.id)
+
+        resource
+      end
+
+    suggestions = ResourceGroups.list_suggestions(context.admin)
+    assert length(suggestions) == 21
+    last = List.last(suggestions)
+
+    {:ok, reader, _html} =
+      live(context.member_conn, ~p"/inbox?group=triage&missing=identity")
+
+    assert has_element?(reader, "#triage", "Nothing is missing facts")
+    assert has_element?(reader, "#group-suggestions-more", "1 more")
+    refute has_element?(reader, "#group-suggestion-#{last.id}")
+
+    reader |> element("#group-suggestions-show-more") |> render_click()
+    assert has_element?(reader, "#group-suggestion-#{last.id}")
+    refute has_element?(reader, "#group-suggestions-show-more")
+
+    {:ok, editor, _html} = live(context.admin_conn, ~p"/inbox?group=triage&missing=identity")
+    refute has_element?(editor, "#group-suggestion-#{last.id}")
+
+    editor |> element("#group-suggestion-#{context.first.id}-dismiss") |> render_click()
+
+    assert has_element?(editor, "#group-suggestion-#{last.id}")
+    assert has_element?(editor, "#group-suggestions-title", "20")
+    assert Enum.any?(added, &(&1.id == last.resource_id))
+  end
+
   defp server!(scope, name) do
     {:ok, resource} =
       Inventory.create_resource(scope, %{kind: "server", name: name, lifecycle_state: "active"})

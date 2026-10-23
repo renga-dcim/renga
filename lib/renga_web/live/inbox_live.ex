@@ -78,6 +78,7 @@ defmodule RengaWeb.InboxLive do
        decision_form: decision_form(),
        can_triage?: Teams.can_manage?(scope),
        can_decide_suggestions?: ResourceGroups.can_change_membership?(scope),
+       suggestion_limit: @suggestion_limit,
        selected_triage: nil,
        can_adopt?: Authorization.allowed?(scope, "ipam.edit"),
        can_request?: Requests.can_request?(scope),
@@ -293,6 +294,19 @@ defmodule RengaWeb.InboxLive do
     socket.assigns.current_scope
     |> ResourceGroups.dismiss_suggestion(id)
     |> suggestion_decided(socket, "Suggestion dismissed")
+  end
+
+  def handle_event("accept_suggestion", _malformed, socket),
+    do: suggestion_decided({:error, :not_found}, socket, nil)
+
+  def handle_event("dismiss_suggestion", _malformed, socket),
+    do: suggestion_decided({:error, :not_found}, socket, nil)
+
+  def handle_event("show_more_suggestions", _params, socket) do
+    {:noreply,
+     socket
+     |> update(:suggestion_limit, &(&1 + @suggestion_limit))
+     |> load_group_suggestions()}
   end
 
   @impl true
@@ -641,7 +655,7 @@ defmodule RengaWeb.InboxLive do
     suggestions = ResourceGroups.list_suggestions(socket.assigns.current_scope)
 
     assign(socket,
-      group_suggestions: Enum.take(suggestions, @suggestion_limit),
+      group_suggestions: Enum.take(suggestions, socket.assigns.suggestion_limit),
       group_suggestion_total: length(suggestions)
     )
   end
@@ -1239,9 +1253,17 @@ defmodule RengaWeb.InboxLive do
         <li
           :if={@total > length(@suggestions)}
           id="group-suggestions-more"
-          class="px-4 py-3 text-xs text-fg-muted"
+          class="flex items-center justify-between gap-3 px-4 py-2 text-xs text-fg-muted"
         >
-          {@total - length(@suggestions)} more after these.
+          <span>{@total - length(@suggestions)} more after these.</span>
+          <button
+            id="group-suggestions-show-more"
+            type="button"
+            phx-click="show_more_suggestions"
+            class="min-h-tap cursor-pointer text-sm text-link hover:underline"
+          >
+            Show more
+          </button>
         </li>
       </ul>
     </section>

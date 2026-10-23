@@ -9,13 +9,14 @@ defmodule RengaWeb.TriageRuleLiveTest do
   alias Renga.DCIM.CurrentPlacement
   alias Renga.Inventory
   alias Renga.Repo
+  alias Renga.ResourceGroups
   alias Renga.Teams
   alias Renga.TriageRules
 
   setup do
     organization = organization_fixture()
     {admin_conn, admin} = member(organization, "admin")
-    {member_conn, _member} = member(organization, "member")
+    {member_conn, member} = member(organization, "member")
 
     {:ok, site} = DCIM.create_site(admin, %{name: "DC1"}, %{slug: "dc1"})
     {:ok, team} = Teams.create_team(admin, %{"name" => "Platform"})
@@ -26,6 +27,7 @@ defmodule RengaWeb.TriageRuleLiveTest do
       admin_conn: admin_conn,
       member_conn: member_conn,
       admin: admin,
+      member: member,
       site: site,
       team: team,
       web: web,
@@ -190,6 +192,34 @@ defmodule RengaWeb.TriageRuleLiveTest do
     assert has_element?(view, "#triage-rules-read-only")
     refute has_element?(view, "#new-rule")
     refute has_element?(view, "#rule-#{rule.id}-edit")
+  end
+
+  test "group rules follow group visibility for readers and lookup events", context do
+    {:ok, hidden} = ResourceGroups.create_group(context.admin, %{name: "Hidden customer"})
+
+    {:ok, %{rule: rule}} =
+      TriageRules.create_rule(context.admin, %{
+        "kind" => "group",
+        "name" => "Hidden hosts",
+        "hostname_pattern" => "hidden-*",
+        "resource_group_id" => hidden.id
+      })
+
+    {:ok, %{rule: ordinary}} =
+      TriageRules.create_rule(context.admin, %{"kind" => "top_of_rack", "name" => "ToR"})
+
+    {:ok, view, _html} = live(context.member_conn, ~p"/settings/triage-rules")
+
+    refute has_element?(view, "#rule-#{rule.id}")
+    assert has_element?(view, "#rule-#{ordinary.id}")
+    assert TriageRules.get_rule(context.member, rule.id) == nil
+
+    {:ok, 1} = ResourceGroups.add_members(context.admin, hidden, [context.web.id])
+    {:ok, visible, _html} = live(context.member_conn, ~p"/settings/triage-rules")
+
+    assert has_element?(visible, "#rule-#{rule.id}", "Hidden customer")
+    assert %{id: id} = TriageRules.get_rule(context.member, rule.id)
+    assert id == rule.id
   end
 
   test "a group rule suggests the group and changes no membership", context do
