@@ -74,7 +74,8 @@ defmodule Renga.Accounts.UserToken do
        user_id: user.id,
        authenticated_at: dt,
        browser_session_id: browser_session_id,
-       scoped_organization_id: user.session_organization_id
+       scoped_organization_id: user.session_organization_id,
+       expires_at: user.session_expires_at
      }}
   end
 
@@ -96,7 +97,8 @@ defmodule Renga.Accounts.UserToken do
           {%{
              user
              | authenticated_at: token.authenticated_at,
-               session_organization_id: token.scoped_organization_id
+               session_organization_id: token.scoped_organization_id,
+               session_expires_at: token.expires_at
            }, token.inserted_at}
 
     {:ok, query}

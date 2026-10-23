@@ -31,9 +31,18 @@ defmodule RengaWeb.UserLive.Settings do
           class="flex gap-2.5 rounded-md bg-info-fill px-3 py-2 text-sm text-fg"
         >
           <.icon name="hero-information-circle" class="mt-0.5 size-4 shrink-0 text-info" />
-          <p>
+          <p :if={@current_email && @first_credential_open}>
+            Your login email is set. Add a password or passkey now to sign in to Renga another
+            way; this works only for the next few minutes.
+          </p>
+          <p :if={@current_email && !@first_credential_open}>
             You signed in with your organization's identity provider, so this session can't
             change how you sign in. Sign in another way to change these settings.
+          </p>
+          <p :if={!@current_email}>
+            Your organization's identity provider created this account, so it opens only that
+            organization. To sign in to Renga another way, set up a login email, then add a
+            password or passkey.
           </p>
         </div>
         <div
@@ -48,6 +57,69 @@ defmodule RengaWeb.UserLive.Settings do
           </p>
         </div>
         <.settings_section
+          :if={!@current_email}
+          id="account-email-initialization"
+          title="Login email"
+          description="Choose the address you'll sign in with. We email it a code to confirm it; your organization's identity provider can't confirm it for you."
+        >
+          <.form
+            :if={!@email_initialization}
+            for={@email_initialization_form}
+            id="email_initialization_form"
+            phx-submit="send_email_initialization"
+          >
+            <.input
+              field={@email_initialization_form[:email]}
+              type="email"
+              label="Email"
+              autocomplete="email"
+              spellcheck="false"
+              required
+            />
+            <.button variant="primary" phx-disable-with="Sending...">Send code</.button>
+          </.form>
+          <.form
+            :if={@email_initialization}
+            for={@email_initialization.form}
+            id="email_initialization_code_form"
+            phx-submit="verify_email_initialization"
+            class="space-y-3"
+          >
+            <p class="text-sm text-fg-muted">
+              We emailed a code to <span class="font-medium text-fg">{@email_initialization.email}</span>. It works
+              for {Accounts.Recheck.window_minutes()} minutes, in this browser only.
+            </p>
+            <.input
+              field={@email_initialization.form[:code]}
+              type="text"
+              label="Code"
+              autocomplete="one-time-code"
+              spellcheck="false"
+              required
+            />
+            <div class="flex flex-wrap gap-2">
+              <.button variant="primary" phx-disable-with="Checking...">Confirm email</.button>
+              <.button
+                id="email_initialization_resend"
+                type="button"
+                phx-click="send_email_initialization"
+                phx-value-email={@email_initialization.email}
+              >
+                Send a new code
+              </.button>
+              <.button
+                id="email_initialization_restart"
+                type="button"
+                phx-click="restart_email_initialization"
+              >
+                Use another address
+              </.button>
+            </div>
+          </.form>
+        </.settings_section>
+
+        <.settings_section
+          :if={@current_email}
           id="account-email"
           title="Email"
           description="We send a link to the new address to confirm it before it changes."
@@ -523,6 +595,18 @@ defmodule RengaWeb.UserLive.Settings do
     """
   end
 
+  # A scoped session that set up its login email may add the account's first
+  # credential for a few minutes (RFD 15); the notice says so.
+  defp assign_first_credential_open(socket) do
+    %{current_scope: %{user: user}, session_token: session_token} = socket.assigns
+
+    open? =
+      !!(user.session_organization_id && user.email && session_token &&
+           Accounts.authorized_account_change?(user, session_token, :set_password))
+
+    assign(socket, :first_credential_open, open?)
+  end
+
   defp bootstrap?(%{methods: [], change: change}), do: change in [:set_password, :add_factor]
   defp bootstrap?(_recheck), do: false
 
@@ -610,7 +694,10 @@ defmodule RengaWeb.UserLive.Settings do
       |> assign(:pending_passkey_name, nil)
       |> assign(:passkey_form, passkey_form())
       |> assign(:link_provider, nil)
+      |> assign(:email_initialization, nil)
+      |> assign(:email_initialization_form, email_initialization_form(%{}))
       |> assign_mfa()
+      |> assign_first_credential_open()
 
     {:ok, socket}
   end
@@ -854,6 +941,86 @@ defmodule RengaWeb.UserLive.Settings do
     end
   end
 
+  # Only an account with no email and no credential, such as one an
+  # organization's provider created, gets this far (RFD 15); for anyone
+  # else these events are refused.
+  def handle_event("send_email_initialization", params, socket) do
+    %{current_scope: %{user: user}, session_token: session_token} = socket.assigns
+
+    email =
+      String.trim(get_in(params, ["email_initialization", "email"]) || params["email"] || "")
+
+    case Accounts.deliver_email_initialization_code(user, session_token, email) do
+      {:ok, _sent} ->
+        {:noreply,
+         socket
+         |> assign(:email_initialization, %{
+           email: email,
+           form: to_form(%{}, as: "email_initialization")
+         })
+         |> put_flash(:info, "We emailed a code to #{email}.")}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:noreply,
+         socket
+         |> assign(:email_initialization, nil)
+         |> assign(
+           :email_initialization_form,
+           to_form(changeset, as: "email_initialization", action: :insert)
+         )}
+
+      {:error, :rate_limited} ->
+        {:noreply, put_flash(socket, :error, "Too many codes were sent. Try again in an hour.")}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "The code could not be sent.")}
+    end
+  end
+
+  def handle_event(
+        "verify_email_initialization",
+        _params,
+        %{assigns: %{email_initialization: nil}} = socket
+      ),
+      do: {:noreply, socket}
+
+  def handle_event(
+        "verify_email_initialization",
+        %{"email_initialization" => %{"code" => code}},
+        socket
+      ) do
+    %{current_scope: %{user: user} = scope, session_token: session_token} = socket.assigns
+
+    case Accounts.verify_email_initialization_code(user, session_token, code) do
+      {:ok, user} ->
+        {:noreply,
+         socket
+         |> assign(:current_scope, %{scope | user: user})
+         |> assign(:current_email, user.email)
+         |> assign(
+           :email_form,
+           to_form(Accounts.change_user_email(user, %{}, validate_unique: false))
+         )
+         |> assign(:email_initialization, nil)
+         |> assign_mfa()
+         |> assign_first_credential_open()
+         |> put_flash(
+           :info,
+           "#{user.email} is your login email. Add a password or passkey in the next #{Accounts.Recheck.window_minutes()} minutes."
+         )}
+
+      {:error, reason} ->
+        {:noreply, email_initialization_error(socket, reason)}
+    end
+  end
+
+  def handle_event("restart_email_initialization", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:email_initialization, nil)
+     |> assign(:email_initialization_form, email_initialization_form(%{}))}
+  end
+
   def handle_event("link_identity", %{"provider" => id}, socket) do
     if Enum.any?(socket.assigns.linkable_providers, &(&1.id == id)),
       do: {:noreply, with_recheck(socket, :link_identity, %{"provider" => id})},
@@ -876,12 +1043,16 @@ defmodule RengaWeb.UserLive.Settings do
     change = guarded_change(action)
 
     cond do
-      # No re-check can authorize it (RFD 15), so none is offered.
-      user.session_organization_id ->
-        put_flash(socket, :error, "Sign in another way to change how you sign in.")
-
       Accounts.authorized_account_change?(user, session_token, change) ->
         apply_change(socket, action, params)
+
+      # No re-check can authorize it (RFD 15), so none is offered. Only a
+      # login email set up from this session lets it add a first credential.
+      user.session_organization_id && is_nil(user.email) ->
+        put_flash(socket, :error, "Set up your login email first.")
+
+      user.session_organization_id ->
+        put_flash(socket, :error, "Sign in another way to change how you sign in.")
 
       true ->
         assign(socket, :recheck, %{
@@ -1075,6 +1246,33 @@ defmodule RengaWeb.UserLive.Settings do
   end
 
   defp passkey_form, do: to_form(%{"name" => "Passkey"}, as: "passkey")
+
+  defp email_initialization_form(params), do: to_form(params, as: "email_initialization")
+
+  defp email_initialization_error(socket, :invalid_code),
+    do: email_initialization_code_error(socket, "That code isn't right.")
+
+  defp email_initialization_error(socket, :email_in_use) do
+    socket
+    |> assign(:email_initialization, nil)
+    |> put_flash(:error, "That address now belongs to another account. Choose another.")
+  end
+
+  defp email_initialization_error(socket, :not_available) do
+    socket
+    |> assign(:email_initialization, nil)
+    |> put_flash(:error, "This account already has a login email or a way to sign in.")
+  end
+
+  defp email_initialization_error(socket, _expired_or_too_many),
+    do: email_initialization_code_error(socket, "That code has expired. Send a new one.")
+
+  defp email_initialization_code_error(socket, message) do
+    form =
+      to_form(%{"code" => ""}, as: "email_initialization", errors: [code: {message, []}])
+
+    update(socket, :email_initialization, &%{&1 | form: form})
+  end
 
   defp recheck_form, do: to_form(%{}, as: "recheck")
 

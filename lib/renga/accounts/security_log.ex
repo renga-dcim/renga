@@ -35,6 +35,8 @@ defmodule Renga.Accounts.SecurityLog do
     "password_changed" => "Password changed",
     "password_removed" => "Password removed",
     "email_changed" => "Email address changed",
+    "email_initialized" => "Login email set up",
+    "email_initialization_code_sent" => "Login email code sent",
     "mfa_removed_by_operator" => "Second factors removed by an operator",
     "identity_linked" => "Identity provider connected",
     "identity_unlinked" => "Identity provider disconnected"

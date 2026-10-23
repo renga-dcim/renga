@@ -293,6 +293,130 @@ defmodule RengaWeb.OrganizationSignInTest do
     end
   end
 
+  describe "setting up a login email" do
+    setup %{conn: conn, fake: fake, provider: provider} do
+      conn = sign_in(conn, fake, provider, claims())
+      {:ok, view, _html} = live(recycle(conn), ~p"/users/settings")
+      %{conn: recycle(conn), user: session_user(conn), view: view}
+    end
+
+    defp send_code(view, email) do
+      view
+      |> form("#email_initialization_form", email_initialization: %{email: email})
+      |> render_submit()
+
+      assert_received {:email, %{subject: "Your Renga confirmation code"} = sent}
+      assert sent.to == [{"", email}]
+      [code] = Regex.run(~r/[A-Z0-9]{5}-[A-Z0-9]{5}/, sent.text_body)
+      code
+    end
+
+    test "lets the account add a password and then sign in without its organization", %{
+      conn: conn,
+      organization: organization,
+      user: %{session_expires_at: deadline},
+      view: view
+    } do
+      assert has_element?(view, "#scoped_session_notice", "set up a login email")
+      refute has_element?(view, "#email_form")
+
+      # Nothing account-wide works before the email is set up.
+      password = %{
+        "user" => %{
+          "password" => valid_user_password(),
+          "password_confirmation" => valid_user_password()
+        }
+      }
+
+      assert view |> form("#password_form", password) |> render_submit() =~
+               "Set up your login email first."
+
+      code = send_code(view, "sam@personal.example")
+      assert has_element?(view, "#email_initialization_code_form", "sam@personal.example")
+
+      html =
+        view
+        |> form("#email_initialization_code_form", email_initialization: %{code: code})
+        |> render_submit()
+
+      assert html =~ "sam@personal.example is your login email"
+      assert has_element?(view, "#email_form")
+      refute has_element?(view, "#account-email-initialization")
+      assert has_element?(view, "#scoped_session_notice", "Add a password or passkey now")
+
+      # Reloading the page in the same browser keeps the offer.
+      {:ok, reloaded, _html} = live(conn, ~p"/users/settings")
+      assert has_element?(reloaded, "#scoped_session_notice", "Add a password or passkey now")
+
+      form = form(view, "#password_form", password)
+      render_submit(form)
+      conn = follow_trigger_action(form, conn)
+
+      assert redirected_to(conn) == ~p"/users/settings"
+      assert Phoenix.Flash.get(conn.assigns.flash, :info) =~ "Password updated successfully"
+
+      # This browser stays signed in through the organization's provider,
+      # until the same deadline as before.
+      assert session_user(conn).session_organization_id == organization.id
+      assert %DateTime{} = deadline
+      assert session_user(conn).session_expires_at == deadline
+
+      {:ok, view, _html} = live(recycle(conn), ~p"/users/settings")
+
+      assert has_element?(
+               view,
+               "#scoped_session_notice",
+               "Sign in another way to change these settings"
+             )
+
+      # The new password signs in to the whole account.
+      user =
+        Accounts.get_user_by_email_and_password("sam@personal.example", valid_user_password())
+
+      assert user.confirmed_at
+      assert user.session_organization_id == nil
+    end
+
+    test "a wrong code leaves the account as it was", %{user: user, view: view} do
+      send_code(view, "sam@personal.example")
+
+      html =
+        view
+        |> form("#email_initialization_code_form", email_initialization: %{code: "WRONG-CODE0"})
+        |> render_submit()
+
+      assert html =~ "That code isn&#39;t right."
+      assert Repo.get!(Accounts.User, user.id).email == nil
+    end
+
+    test "another account's address is refused once its code is entered", %{
+      user: user,
+      view: view
+    } do
+      other = user_fixture()
+      code = send_code(view, other.email)
+
+      html =
+        view
+        |> form("#email_initialization_code_form", email_initialization: %{code: code})
+        |> render_submit()
+
+      assert html =~ "belongs to another account"
+      assert Repo.get!(Accounts.User, user.id).email == nil
+    end
+
+    test "the address can be changed before confirming", %{view: view} do
+      send_code(view, "sam@old.example")
+
+      view |> element("#email_initialization_restart") |> render_click()
+      code = send_code(view, "sam@new.example")
+
+      assert view
+             |> form("#email_initialization_code_form", email_initialization: %{code: code})
+             |> render_submit() =~ "sam@new.example is your login email"
+    end
+  end
+
   test "a disabled organization's provider signs nobody in", %{
     conn: conn,
     fake: fake,
