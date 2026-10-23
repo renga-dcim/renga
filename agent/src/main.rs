@@ -878,11 +878,13 @@ fn reload_changes_jobs(
         power: _,
         bmc: _,
         exporters: _,
-        // Read afresh by each pass's catalog and each check-in's probe; it never changes which
-        // keys a pass offers.
-        osquery: _,
+        // Bound into every query capability a pass starts, so a pass must not outlive a change.
+        osquery,
     } = new;
-    !old_client.sends_like(new_client) || old.labels != *labels || old.jobs != *jobs
+    !old_client.sends_like(new_client)
+        || old.labels != *labels
+        || old.jobs != *jobs
+        || old.osquery != *osquery
 }
 
 /// Opens the job notice socket when the policy enables a job capability, so
@@ -3355,7 +3357,7 @@ mod tests {
             assert!(!restarts(change), "{what} restarted jobs");
         }
 
-        let relevant: [(&str, &Change); 7] = [
+        let relevant: [(&str, &Change); 9] = [
             ("the home", &|_, home| {
                 *home = "http://other.test".parse().unwrap()
             }),
@@ -3375,6 +3377,12 @@ mod tests {
                 config.labels.insert("team".into(), "storage".into());
             }),
             ("jobs", &|config, _| config.jobs.enabled = Some(Vec::new())),
+            ("osquery.enabled", &|config, _| {
+                config.osquery.enabled = !config.osquery.enabled
+            }),
+            ("osquery.socket", &|config, _| {
+                config.osquery.socket = "/run/other/osquery.em".into()
+            }),
         ];
         for (what, change) in relevant {
             assert!(restarts(change), "{what} did not restart jobs");
