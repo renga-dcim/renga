@@ -152,7 +152,7 @@ defmodule Renga.Accounts.ProviderMFATest do
       provider: provider,
       organization: organization
     } do
-      for amr <- [["pwd"], ["pwd", "kba"], ["otp"], [], "mfa"] do
+      for amr <- [nil, ["pwd"], ["pwd", "kba"], ["otp"], [], "mfa"] do
         refute ProviderMFA.satisfies?(
                  signed_in_through(provider, %{"amr" => amr}),
                  organization.id
