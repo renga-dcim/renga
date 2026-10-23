@@ -4,7 +4,9 @@ defmodule Renga.SavedViewsTest do
   import Renga.AccountsFixtures
   import Renga.InventoryFixtures
 
+  alias Renga.Accounts.SessionMFA
   alias Renga.SavedViews
+  alias Renga.SecuritySettings
 
   setup do
     organization = organization_fixture()
@@ -61,6 +63,36 @@ defmodule Renga.SavedViewsTest do
       Renga.Accounts.update_organization_membership(membership, %{role: "member"})
 
     assert {:error, :forbidden} = SavedViews.delete_view(stale_scope, view)
+  end
+
+  test "personal view writes recheck the organization's MFA requirement", %{
+    organization: organization
+  } do
+    user = user_fixture()
+    organization_membership_fixture(user, organization, %{role: "owner"})
+    stale_scope = Renga.Accounts.scope_for_user(user, organization.id)
+
+    assert {:ok, view} = SavedViews.create_view(stale_scope, view_attrs())
+
+    assert {:ok, true} =
+             SecuritySettings.put(stale_scope, :require_mfa, true, "Organization policy")
+
+    assert {:error, :forbidden} =
+             SavedViews.create_view(stale_scope, view_attrs(%{"name" => "Blocked create"}))
+
+    assert {:error, :forbidden} =
+             SavedViews.update_view(stale_scope, view, %{"name" => "Blocked update"})
+
+    assert {:error, :forbidden} = SavedViews.delete_view(stale_scope, view)
+    assert SavedViews.get_view!(stale_scope, view.id).name == view.name
+
+    satisfied = %{
+      stale_scope
+      | user: %{stale_scope.user | session_mfa: SessionMFA.for_method(:passkey)}
+    }
+
+    assert {:ok, _view} =
+             SavedViews.create_view(satisfied, view_attrs(%{"name" => "Allowed with MFA"}))
   end
 
   test "the sidebar shows pinned views: the organization's, then the person's", %{

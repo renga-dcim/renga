@@ -5,9 +5,11 @@ defmodule Renga.AuthorizationTest do
   import Renga.JobsFixtures, only: [member_scope: 2]
 
   alias Renga.Accounts
+  alias Renga.Accounts.SessionMFA
   alias Renga.Accounts.Scope
   alias Renga.Authorization
   alias Renga.Repo
+  alias Renga.SecuritySettings
 
   # RFD 17's built-in role table, written out so a catalogue change has to
   # change this test too.
@@ -171,6 +173,23 @@ defmodule Renga.AuthorizationTest do
                Repo.transaction(fn ->
                  Authorization.authorize!(scope, "organization.manage", lock: :share)
                end)
+    end
+
+    test "refuses a stale human scope after MFA becomes required", %{
+      organization: organization
+    } do
+      scope = member_scope(organization, "owner")
+
+      assert {:ok, true} =
+               SecuritySettings.put(scope, :require_mfa, true, "Organization policy")
+
+      assert {:error, :forbidden} =
+               Repo.transaction(fn -> Authorization.authorize!(scope, "inventory.read") end)
+
+      satisfied = %{scope | user: %{scope.user | session_mfa: SessionMFA.for_method(:passkey)}}
+
+      assert {:ok, :ok} =
+               Repo.transaction(fn -> Authorization.authorize!(satisfied, "inventory.read") end)
     end
 
     test "refuses machine scopes", %{organization: organization} do

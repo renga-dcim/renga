@@ -114,12 +114,13 @@ defmodule Renga.SavedViews do
 
   defp manageable(_scope, _view), do: {:error, :forbidden}
 
-  # Shared views need views.share, re-checked in the database inside the
-  # write's transaction so a demoted admin cannot keep changing them.
-  # Personal views belong to the person saving them.
+  # Permission and the organization's MFA requirement are re-checked in the
+  # database inside the write's transaction. Personal views need only the
+  # baseline inventory access their owner already uses to open them.
   defp write(%Scope{} = scope, shared?, write) do
     Repo.transaction(fn ->
-      if shared?, do: Authorization.authorize!(scope, "views.share")
+      permission = if shared?, do: "views.share", else: "inventory.read"
+      Authorization.authorize!(scope, permission)
 
       case write.() do
         {:ok, view} -> view

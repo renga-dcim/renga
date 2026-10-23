@@ -205,6 +205,7 @@ defmodule RengaWeb.Router do
       live "/users/settings", UserLive.Settings, :edit
       live "/users/settings/confirm-email/:token", UserLive.Settings, :confirm_email
       live "/organizations", OrganizationLive.Index, :index
+      live "/organizations/confirm-mfa", OrganizationLive.ConfirmMFA, :show
       live "/invitations/:token", InvitationLive, :show
 
       # The six RFD 8 areas.
@@ -262,6 +263,7 @@ defmodule RengaWeb.Router do
     end
 
     post "/organizations/select", OrganizationSessionController, :create
+    post "/organizations/confirm-mfa", OrganizationSessionController, :confirm_mfa
     post "/users/update-password", UserSessionController, :update_password
     post "/users/settings/identities", UserProviderController, :link
     post "/users/settings/recheck", UserProviderController, :recheck

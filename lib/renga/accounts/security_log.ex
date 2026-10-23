@@ -32,6 +32,8 @@ defmodule Renga.Accounts.SecurityLog do
     "recovery_code_used" => "Recovery code used",
     "recovery_code_failed" => "Wrong recovery code",
     "second_factor_rate_limited" => "Second step refused after too many wrong attempts",
+    "second_factor_confirmed" =>
+      "Second factor confirmed to open an organization that requires MFA",
     "password_changed" => "Password changed",
     "password_removed" => "Password removed",
     "email_changed" => "Email address changed",

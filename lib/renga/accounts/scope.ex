@@ -25,7 +25,8 @@ defmodule Renga.Accounts.Scope do
             organization_id: nil,
             membership_id: nil,
             roles: [],
-            permissions: []
+            permissions: [],
+            mfa_organization: nil
 
   @doc """
   Creates a scope for the given user.
@@ -37,6 +38,16 @@ defmodule Renga.Accounts.Scope do
   end
 
   def for_user(nil), do: nil
+
+  @doc """
+  Creates a scope for a user whose session may not open `organization` yet,
+  because the organization requires MFA and the session's sign-in does not
+  meet it (RFD 19). The scope opens no organization; `mfa_organization`
+  names the one waiting for the person to confirm a second factor.
+  """
+  def awaiting_mfa(%User{} = user, %Organization{} = organization) do
+    %__MODULE__{user: user, mfa_organization: organization}
+  end
 
   @doc """
   Creates a scope for an organization.

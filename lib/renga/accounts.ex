@@ -7,6 +7,7 @@ defmodule Renga.Accounts do
 
   alias Renga.Accounts.Identities
   alias Renga.Accounts.Organization
+  alias Renga.Accounts.OrganizationMFA
   alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.MFA
   alias Renga.Accounts.Passkeys
@@ -275,9 +276,14 @@ defmodule Renga.Accounts do
 
     case membership do
       %OrganizationMembership{organization: %Organization{} = organization} ->
-        assigned = Authorization.assigned_access(membership.id)
         user = put_organization_email(user, organization.id)
-        Scope.for_membership(user, organization, membership, assigned)
+
+        if OrganizationMFA.satisfied?(user, organization.id) do
+          assigned = Authorization.assigned_access(membership.id)
+          Scope.for_membership(user, organization, membership, assigned)
+        else
+          Scope.awaiting_mfa(user, organization)
+        end
 
       _ ->
         Scope.for_user(user)
@@ -591,8 +597,9 @@ defmodule Renga.Accounts do
   def passkey_sign_in_options, do: Passkeys.authentication_options("sign_in")
 
   @doc "Options for a passkey ceremony that only `user`'s passkeys can complete."
-  def passkey_options(%User{} = user, purpose) when purpose in ["second_step", "recheck"],
-    do: Passkeys.authentication_options(purpose, user)
+  def passkey_options(%User{} = user, purpose)
+      when purpose in ["second_step", "recheck", "confirm_mfa"],
+      do: Passkeys.authentication_options(purpose, user)
 
   @doc "Options for registering a new passkey for `user`."
   defdelegate passkey_registration_options(user), to: Passkeys, as: :registration_options
@@ -634,6 +641,55 @@ defmodule Renga.Accounts do
       end
     end
   end
+
+  @doc """
+  Confirms a second factor for the signed-in session holding
+  `session_token`, so it meets organizations' MFA requirement from now on
+  (RFD 19). Someone whose sign-in did not use one, such as through a
+  provider that is not marked as enforcing MFA, is asked for it in place
+  rather than signed out. Takes a passkey assertion (`{:passkey, response}`)
+  or an authenticator code; a recovery code is for signing in, not this.
+  """
+  def confirm_session_second_factor(%User{} = user, session_token, credential)
+      when is_binary(session_token) do
+    with {:ok, method} <- verify_session_factor(user, credential),
+         {:ok, :ok} <- Repo.transaction(fn -> confirm_session(user, session_token, method) end) do
+      :ok
+    end
+  end
+
+  defp confirm_session(user, session_token, method) do
+    {count, _} =
+      Repo.update_all(
+        from(t in UserToken,
+          where: t.token == ^session_token and t.context == "session",
+          where: t.user_id == ^user.id
+        ),
+        set: [second_factor_at: Renga.Time.utc_now_ms()]
+      )
+
+    if count == 1 do
+      SecurityLog.record(user, "second_factor_confirmed", %{"method" => to_string(method)})
+      :ok
+    else
+      Repo.rollback(:no_session)
+    end
+  end
+
+  defp verify_session_factor(user, {:passkey, response}) when is_map(response) do
+    with {:ok, _user, _passkey} <- Passkeys.authenticate("confirm_mfa", response, user),
+         do: {:ok, :passkey}
+  end
+
+  defp verify_session_factor(user, code) when is_binary(code) do
+    if String.match?(String.replace(code, ~r/\s/, ""), ~r/^\d{6}$/) do
+      with :ok <- MFA.verify_totp(user, code), do: {:ok, :totp}
+    else
+      {:error, :invalid_code}
+    end
+  end
+
+  defp verify_session_factor(_user, _credential), do: {:error, :invalid_response}
 
   @doc """
   Records a completed sign-in in the account's security log. `method` is
