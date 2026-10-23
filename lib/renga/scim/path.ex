@@ -38,7 +38,9 @@ defmodule Renga.Scim.Path do
         {:ok,
          %{
            attribute: String.downcase(attribute),
-           filter: if(filter == "", do: nil, else: filter),
+           # Empty brackets are an empty filter, which selects nothing, not
+           # the absence of one.
+           filter: if(String.contains?(path, "["), do: filter, else: nil),
            sub: if(sub == "", do: nil, else: String.downcase(sub))
          }}
 

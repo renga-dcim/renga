@@ -24,7 +24,7 @@ defmodule Renga.Scim.UserResource do
   alias Renga.Scim.Path
 
   @core "urn:ietf:params:scim:schemas:core:2.0:User"
-  @email_filter ~r/^\s*(value|type)\s+eq\s+"((?:[^"\\]|\\.)*)"\s*$/i
+  @email_filter ~r/^\s*(value|type)\s+eq\s+("(?:[^"\\]|\\.)*")\s*$/i
 
   @doc "Attributes for a new entry from a POST body."
   def create(resource) when is_map(resource) do
@@ -333,21 +333,20 @@ defmodule Renga.Scim.UserResource do
 
   defp apply_email(_op, _sub, _value, attrs), do: {:ok, attrs}
 
+  # The compared value is a JSON string literal (RFC 7644, section 3.4.2.2),
+  # so an invalid escape makes the filter unreadable rather than matching.
   defp email_selector(filter, email) do
-    case Regex.run(@email_filter, filter) do
-      [_match, attribute, value] ->
-        cond do
-          String.downcase(attribute) == "type" -> :selected
-          String.downcase(unescape(value)) == String.downcase(email || "") -> :selected
-          true -> :other
-        end
-
-      nil ->
-        :unsupported
+    with [_match, attribute, literal] <- Regex.run(@email_filter, filter),
+         {:ok, value} when is_binary(value) <- Jason.decode(literal) do
+      cond do
+        String.downcase(attribute) == "type" -> :selected
+        is_binary(email) and String.downcase(value) == String.downcase(email) -> :selected
+        true -> :other
+      end
+    else
+      _unreadable -> :unsupported
     end
   end
-
-  defp unescape(value), do: Regex.replace(~r/\\(.)/, value, "\\1")
 
   defp password_change,
     do: {:error, {:invalid_value, "Renga accounts' passwords cannot be changed through SCIM"}}

@@ -197,10 +197,27 @@ defmodule Renga.Scim.UserResourceTest do
                  %{@current | email: nil}
                )
 
+      # A value filter never selects a missing address, even an empty value.
+      assert {:error, {:no_target, _}} =
+               UserResource.patch(
+                 [op("replace", ~s(emails[value eq ""].value), "x@example.com")],
+                 %{@current | email: nil}
+               )
+
+      # The value is a JSON string literal: escapes decode as JSON does.
+      assert {:ok, %{email: nil}} =
+               UserResource.patch(
+                 [op("remove", ~S(emails[value eq "s\u0061m@example.com"]))],
+                 @current
+               )
+
       # A filter Renga cannot evaluate selects nothing rather than everything.
       for operation <- [
             op("remove", "emails[primary eq false]"),
             op("remove", "emails[nonsense]"),
+            op("remove", "emails[]"),
+            op("replace", "emails[].value", "x@example.com"),
+            op("remove", ~S(emails[value eq "\sam@example.com"])),
             op("replace", ~s(emails[display eq "x"].value), "x@example.com")
           ] do
         assert {:error, {:invalid_filter, _}} = UserResource.patch([operation], @current)
