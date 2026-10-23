@@ -4,8 +4,12 @@
 //! iproute2 reads the kernel's tables over netlink and prints them as JSON;
 //! the agent runs it with fixed arguments (`ip -j route show table all`, and
 //! `ip -j -d link show type vrf` to name each VRF's table). `ip` prints a
-//! table named in `rt_tables` by its name, so the agent reads the same files
-//! `ip` does to turn names back into numbers. The `family`
+//! table named in `rt_tables` by its name, so the agent reads the files `ip`
+//! may read to turn names back into numbers. Distributions differ in which
+//! of those files `ip` reads and which mask others, so a name the files give
+//! two different numbers, or none, fails the query instead of guessing.
+//! (`ip -N` would print tables as numbers, but also route types and
+//! protocols.) The `family`
 //! parameter picks which of the two route commands runs; it never becomes an
 //! argument.
 
@@ -85,7 +89,7 @@ impl Query for Routes {
         }
         // VRF names are extra detail; routes without them still answer.
         let vrfs = ip(VRFS, cancellation).ok().flatten().unwrap_or(Value::Null);
-        Ok(answer(&tables, &vrfs, &table_names()))
+        answer(&tables, &vrfs, &table_names(RT_TABLES_DIRS))
     }
 }
 
@@ -113,17 +117,24 @@ fn ip(args: &[&str], cancellation: &Cancellation) -> Result<Option<Value>, JobFa
         .map_err(|_| failed("ip's answer was not JSON"))
 }
 
-/// The table names `ip` may print, from the files it reads them from.
-fn table_names() -> HashMap<String, u32> {
-    let mut names = HashMap::new();
-    for dir in RT_TABLES_DIRS.iter().map(Path::new) {
+/// The table names `ip` may print, from the files it may read them from.
+/// A name given two different numbers maps to `None`.
+fn table_names(dirs: &[&str]) -> HashMap<String, Option<u32>> {
+    let mut names: HashMap<String, Option<u32>> = HashMap::new();
+    for dir in dirs.iter().map(Path::new) {
         let mut files = vec![dir.join("rt_tables")];
         let mut conf: Vec<_> = fs::read_dir(dir.join("rt_tables.d"))
             .into_iter()
             .flatten()
             .flatten()
             .map(|entry| entry.path())
-            .filter(|path| path.extension().is_some_and(|ext| ext == "conf"))
+            // `ip` skips hidden files, such as an editor's saved copy.
+            .filter(|path| {
+                path.extension().is_some_and(|ext| ext == "conf")
+                    && !path
+                        .file_name()
+                        .is_some_and(|name| name.to_string_lossy().starts_with('.'))
+            })
             .collect();
         conf.sort();
         files.extend(conf);
@@ -131,7 +142,12 @@ fn table_names() -> HashMap<String, u32> {
             // A table file is a few lines; a large one is not iproute2's.
             if fs::metadata(&file).is_ok_and(|meta| meta.len() <= 1024 * 1024) {
                 if let Ok(text) = fs::read_to_string(&file) {
-                    names.extend(parse_rt_tables(&text));
+                    for (name, id) in parse_rt_tables(&text) {
+                        let entry = names.entry(name).or_insert(Some(id));
+                        if *entry != Some(id) {
+                            *entry = None;
+                        }
+                    }
                 }
             }
         }
@@ -153,17 +169,31 @@ fn parse_rt_tables(text: &str) -> impl Iterator<Item = (String, u32)> + '_ {
 }
 
 /// A table as `ip` prints it: a number, a reserved name, or a name from
-/// `rt_tables`.
-fn table_id(name: &str, names: &HashMap<String, u32>) -> Option<u32> {
+/// `rt_tables`. A name the files leave unknown or ambiguous fails.
+fn table_id(name: &str, names: &HashMap<String, Option<u32>>) -> Result<u32, JobFailure> {
     match name {
-        "main" => Some(254),
-        "local" => Some(255),
-        "default" => Some(253),
-        name => name.parse().ok().or_else(|| names.get(name).copied()),
+        "main" => Ok(254),
+        "local" => Ok(255),
+        "default" => Ok(253),
+        name => name
+            .parse()
+            .ok()
+            .or_else(|| names.get(name).copied().flatten())
+            .ok_or_else(|| {
+                failed(&format!(
+                    "could not tell which routing table \"{}\" is: rt_tables names it \
+                     with no number, or with more than one",
+                    clip(name, 64)
+                ))
+            }),
     }
 }
 
-fn answer(tables: &[(&'static str, Value)], vrfs: &Value, names: &HashMap<String, u32>) -> Value {
+fn answer(
+    tables: &[(&'static str, Value)],
+    vrfs: &Value,
+    names: &HashMap<String, Option<u32>>,
+) -> Result<Value, JobFailure> {
     let vrf_by_table: HashMap<u32, String> = vrfs
         .as_array()
         .into_iter()
@@ -189,7 +219,7 @@ fn answer(tables: &[(&'static str, Value)], vrfs: &Value, names: &HashMap<String
             // `ip` omits the table for the main one and names tables it knows.
             let table = match &entry["table"] {
                 Value::Null => Some(254),
-                Value::String(name) => table_id(name, names),
+                Value::String(name) => Some(table_id(name, names)?),
                 Value::Number(number) => number.as_u64().and_then(|n| u32::try_from(n).ok()),
                 _ => None,
             };
@@ -220,7 +250,7 @@ fn answer(tables: &[(&'static str, Value)], vrfs: &Value, names: &HashMap<String
         }
     }
     let (routes, truncated) = list.into_parts();
-    serde_json::json!({ "routes": routes, "truncated": truncated })
+    Ok(serde_json::json!({ "routes": routes, "truncated": truncated }))
 }
 
 /// Writes every destination as a prefix: `default` and bare host addresses
@@ -251,7 +281,7 @@ mod tests {
         let ipv6 = json!([{"dst": "fe80::/64", "dev": "eth0", "protocol": "kernel", "metric": 256, "flags": []}]);
         let vrfs = json!([{"ifname": "blue", "linkinfo": {"info_kind": "vrf", "info_data": {"table": 10}}}]);
 
-        let value = answer(&[("ipv4", ipv4), ("ipv6", ipv6)], &vrfs, &HashMap::new());
+        let value = answer(&[("ipv4", ipv4), ("ipv6", ipv6)], &vrfs, &HashMap::new()).unwrap();
         super::super::contract::assert_conforms("query.routes@1", "result", &value);
         assert_eq!(
             value,
@@ -273,15 +303,52 @@ mod tests {
 
     #[test]
     fn keeps_routes_in_tables_named_in_rt_tables() {
-        let names: HashMap<String, u32> =
-            parse_rt_tables("# reserved\n255\tlocal\n100 customer # vrf\n0x10 lab\n").collect();
-        assert_eq!(names.get("customer"), Some(&100));
-        assert_eq!(names.get("lab"), Some(&16));
+        let names: HashMap<String, Option<u32>> =
+            parse_rt_tables("# reserved\n255\tlocal\n100 customer # vrf\n0x10 lab\n")
+                .map(|(name, id)| (name, Some(id)))
+                .collect();
+        assert_eq!(names.get("customer"), Some(&Some(100)));
+        assert_eq!(names.get("lab"), Some(&Some(16)));
         let ipv4 = json!([{"dst": "10.9.0.0/16", "dev": "eth2", "table": "customer", "flags": []}]);
         let vrfs = json!([{"ifname": "customer", "linkinfo": {"info_kind": "vrf", "info_data": {"table": 100}}}]);
-        let value = answer(&[("ipv4", ipv4)], &vrfs, &names);
+        let value = answer(&[("ipv4", ipv4)], &vrfs, &names).unwrap();
         assert_eq!(value["routes"][0]["table"], json!(100));
         assert_eq!(value["routes"][0]["vrf"], json!("customer"));
+    }
+
+    #[test]
+    fn reads_drop_ins_but_not_hidden_files_and_marks_conflicts() {
+        let root = std::env::temp_dir().join(format!("renga-rt-{}", uuid::Uuid::new_v4()));
+        let (vendor, etc) = (root.join("usr"), root.join("etc"));
+        fs::create_dir_all(etc.join("rt_tables.d")).unwrap();
+        fs::create_dir_all(&vendor).unwrap();
+        fs::write(etc.join("rt_tables"), "100 customer\n").unwrap();
+        fs::write(etc.join("rt_tables.d/.saved.conf"), "200 customer\n").unwrap();
+        fs::write(etc.join("rt_tables.d/lab.conf"), "16 lab\n").unwrap();
+        fs::write(etc.join("rt_tables.d/notes.txt"), "17 notes\n").unwrap();
+        fs::write(vendor.join("rt_tables"), "100 customer\n30 shadowed\n").unwrap();
+        fs::write(etc.join("rt_tables.d/shadow.conf"), "31 shadowed\n").unwrap();
+        let dirs = [vendor.to_str().unwrap(), etc.to_str().unwrap()];
+        let names = table_names(&dirs);
+        assert_eq!(names.get("customer"), Some(&Some(100)));
+        assert_eq!(names.get("lab"), Some(&Some(16)));
+        assert_eq!(names.get("notes"), None);
+        assert_eq!(names.get("shadowed"), Some(&None));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn an_unknown_or_ambiguous_table_name_fails_rather_than_guesses() {
+        // Two files giving one name different numbers, as when /etc masks a
+        // vendor file, or a name in no file at all.
+        let names = HashMap::from([("customer".to_owned(), None)]);
+        for table in ["customer", "elsewhere"] {
+            let ipv4 = json!([{"dst": "10.9.0.0/16", "table": table, "flags": []}]);
+            assert!(
+                answer(&[("ipv4", ipv4)], &Value::Null, &names).is_err(),
+                "{table}"
+            );
+        }
     }
 
     #[test]
