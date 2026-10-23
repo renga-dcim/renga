@@ -32,7 +32,38 @@ export RENGA_UI_REF="$source_ref"
 mix deps.get
 mix compile --warnings-as-errors
 mix test
-mix tailwind.install --if-missing
+
+# The fixture pins the app's tailwind version, and the binary's name carries
+# it, so reuse the app's copy when available. On an empty cache, download with
+# curl because GitHub's release redirect exceeds Erlang httpc's header limit.
+mkdir -p _build
+for binary in "$repo_root"/_build/tailwind-*; do
+  if [[ -f "$binary" ]]; then
+    cp "$binary" _build/
+  fi
+done
+
+# shellcheck disable=SC2016 # $version and $target are Tailwind URL placeholders.
+IFS=$'\t' read -r tailwind_bin tailwind_url < <(
+  mix run --no-start -e '
+    version = Tailwind.configured_version()
+
+    url =
+      Tailwind.default_base_url()
+      |> String.replace("$version", version)
+      |> String.replace("$target", Tailwind.configured_target())
+
+    IO.puts([Tailwind.bin_path(version), "\t", url])
+  '
+)
+
+if [[ ! -x "$tailwind_bin" ]]; then
+  mkdir -p "$(dirname "$tailwind_bin")"
+  curl --fail --location --retry 3 --retry-all-errors \
+    --output "$tailwind_bin" "$tailwind_url"
+  chmod +x "$tailwind_bin"
+fi
+
 mix esbuild.install --if-missing
 mix tailwind consumer
 mix esbuild consumer
