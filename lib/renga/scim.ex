@@ -116,7 +116,9 @@ defmodule Renga.Scim do
   enabled connection.
   """
   def create_connection(%Scope{} = scope, attrs) do
-    managed(scope, fn ->
+    provider_id = attrs["provider_id"] || attrs[:provider_id]
+
+    managed(scope, provider_id, fn ->
       changeset =
         %Connection{organization_id: scope.organization_id, created_by_user_id: scope.user.id}
         |> Connection.create_changeset(attrs)
@@ -190,7 +192,9 @@ defmodule Renga.Scim do
   another one since or its provider is no longer eligible.
   """
   def enable_connection(%Scope{} = scope, connection_id) do
-    with_connection(scope, connection_id, fn connection ->
+    provider_id = connection_provider_id(scope, connection_id)
+
+    with_connection(scope, provider_id, connection_id, fn connection ->
       cond do
         Connection.enabled?(connection) ->
           {:ok, connection}
@@ -414,8 +418,13 @@ defmodule Renga.Scim do
 
   # Connection administration locks the organization, like every other
   # authorization-changing write, and then the connection.
-  defp managed(%Scope{} = scope, mutation) do
+  #
+  # Creating or re-enabling a connection first holds its provider, as a
+  # sign-in does, so a provider being disabled or removed meanwhile either
+  # waits and then reconciles the connection, or is seen as ineligible.
+  defp managed(%Scope{} = scope, provider_id \\ nil, mutation) do
     Repo.transaction(fn ->
+      if is_binary(provider_id), do: lock_provider(provider_id)
       Authorization.authorize!(scope, "scim.manage")
 
       case mutation.() do
@@ -426,10 +435,32 @@ defmodule Renga.Scim do
     |> Changes.broadcast(scope.organization_id)
   end
 
-  defp with_connection(scope, connection_id, mutation) do
-    managed(scope, fn ->
+  defp with_connection(scope, provider_id \\ nil, connection_id, mutation) do
+    managed(scope, provider_id, fn ->
       with {:ok, connection} <- lock_connection(scope, connection_id), do: mutation.(connection)
     end)
+  end
+
+  defp lock_provider(provider_id) do
+    IdentityProvider
+    |> where([provider], provider.id == ^provider_id)
+    |> lock("FOR SHARE")
+    |> Repo.one()
+  end
+
+  # Read before any lock; a connection's provider never changes.
+  defp connection_provider_id(%Scope{organization_id: organization_id}, connection_id) do
+    case Ecto.UUID.cast(connection_id || "") do
+      {:ok, id} ->
+        Connection
+        |> where([connection], connection.organization_id == ^organization_id)
+        |> where([connection], connection.id == ^id)
+        |> select([connection], connection.provider_id)
+        |> Repo.one()
+
+      :error ->
+        nil
+    end
   end
 
   defp lock_connection(%Scope{organization_id: organization_id}, connection_id) do
