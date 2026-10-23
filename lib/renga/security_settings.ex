@@ -138,7 +138,7 @@ defmodule Renga.SecuritySettings do
           name: Atom.to_string(name),
           value: %{"value" => value},
           changed_by_user_id: user.id,
-          changed_by: user.email,
+          changed_by: User.label(user),
           inserted_at: now,
           updated_at: now
         }
