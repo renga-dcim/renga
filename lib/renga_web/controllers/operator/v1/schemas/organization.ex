@@ -19,7 +19,13 @@ defmodule RengaWeb.Operator.V1.Schemas.Organization do
           items: %{
             type: :object,
             properties: %{
-              email: %{type: :string},
+              email: %{
+                type: [:string, :null],
+                description:
+                  "The member's address: their global email or, for an account created " <>
+                    "by the organization's own identity provider, the address that " <>
+                    "provider asserts. Null when there is neither."
+              },
               role: %{type: :string, enum: ["owner", "admin", "member", "viewer"]}
             },
             required: [:email, :role],

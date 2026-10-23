@@ -181,11 +181,42 @@ defmodule RengaWeb.Operator.OrganizationControllerTest do
       organization = organization_fixture()
       owner = user_fixture()
 
-      {:ok, _} =
+      {:ok, membership} =
         Renga.Accounts.create_organization_membership(organization, %{
           user_id: owner.id,
           role: "owner"
         })
+
+      # Accounts the organization's own provider created have no global email
+      # (RFD 15): one goes by the address that provider asserts, and one whose
+      # provider no longer asserts any has none.
+      scope = Renga.Accounts.Scope.for_membership(owner, organization, membership)
+
+      {:ok, {provider, _revision}} =
+        Renga.Accounts.OrganizationProviders.create(scope, %{
+          "id" => Renga.Accounts.OrganizationProviders.new_id(),
+          "issuer" => "https://login.example.com",
+          "display_name" => "Example SSO",
+          "client_id" => "renga",
+          "client_secret" => "s3cret"
+        })
+
+      for {subject, address} <- [{"sam", "sam@acme.example"}, {"kim", nil}] do
+        user = Repo.insert!(%Renga.Accounts.User{})
+
+        {:ok, _} =
+          Renga.Accounts.create_organization_membership(organization, %{
+            user_id: user.id,
+            role: "member"
+          })
+
+        Repo.insert!(%Renga.Accounts.UserIdentity{
+          user_id: user.id,
+          provider_id: provider.id,
+          subject: subject,
+          email: address
+        })
+      end
 
       conn = get(conn, "/operator/v1/organizations/#{organization.id}")
 
@@ -194,7 +225,11 @@ defmodule RengaWeb.Operator.OrganizationControllerTest do
                "name" => organization.name,
                "slug" => organization.slug,
                "status" => "active",
-               "members" => [%{"email" => owner.email, "role" => "owner"}]
+               "members" => [
+                 %{"email" => "sam@acme.example", "role" => "member"},
+                 %{"email" => owner.email, "role" => "owner"},
+                 %{"email" => nil, "role" => "member"}
+               ]
              }
     end
 
