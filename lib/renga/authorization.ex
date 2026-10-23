@@ -34,6 +34,7 @@ defmodule Renga.Authorization do
   import Ecto.Query
 
   alias Renga.Accounts.Organization
+  alias Renga.Accounts.OrganizationMFA
   alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.Scope
   alias Renga.Repo
@@ -294,8 +295,13 @@ defmodule Renga.Authorization do
     |> row_lock(mode)
     |> Repo.one()
     |> case do
-      nil -> Repo.rollback(:forbidden)
-      _membership_id -> :ok
+      nil ->
+        Repo.rollback(:forbidden)
+
+      _membership_id ->
+        if OrganizationMFA.satisfied?(scope.user, scope.organization_id),
+          do: :ok,
+          else: Repo.rollback(:forbidden)
     end
   end
 

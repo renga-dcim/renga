@@ -5,6 +5,7 @@ defmodule Renga.SecuritySettingsTest do
   import Renga.InventoryFixtures
 
   alias Renga.Accounts
+  alias Renga.Accounts.SessionMFA
   alias Renga.Inventory.ChangeEvent
   alias Renga.SecuritySettings
   alias RengaWeb.ChangeDescription
@@ -60,6 +61,8 @@ defmodule Renga.SecuritySettingsTest do
   test "setting the value already in place records nothing", %{owner: owner} do
     assert {:ok, false} = SecuritySettings.put(owner, :require_mfa, false)
     {:ok, true} = SecuritySettings.put(owner, :require_mfa, true, "Policy requirement")
+
+    owner = %{owner | user: %{owner.user | session_mfa: SessionMFA.for_method(:passkey)}}
     {:ok, true} = SecuritySettings.put(owner, :require_mfa, true)
 
     assert Repo.aggregate(where(ChangeEvent, kind: "security_setting_changed"), :count) == 1

@@ -7,10 +7,10 @@ defmodule Renga.Accounts do
 
   alias Renga.Accounts.Identities
   alias Renga.Accounts.Organization
+  alias Renga.Accounts.OrganizationMFA
   alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.MFA
   alias Renga.Accounts.Passkeys
-  alias Renga.Accounts.ProviderMFA
   alias Renga.Accounts.Recheck
   alias Renga.Accounts.Scope
   alias Renga.Accounts.SecurityLog
@@ -21,7 +21,6 @@ defmodule Renga.Accounts do
   alias Renga.Accounts.UserToken
   alias Renga.Authorization
   alias Renga.Repo
-  alias Renga.SecuritySettings
 
   @doc """
   Builds a scope for context calls that must be organization-bound.
@@ -279,7 +278,7 @@ defmodule Renga.Accounts do
       %OrganizationMembership{organization: %Organization{} = organization} ->
         user = put_organization_email(user, organization.id)
 
-        if mfa_satisfied?(user, organization) do
+        if OrganizationMFA.satisfied?(user, organization.id) do
           assigned = Authorization.assigned_access(membership.id)
           Scope.for_membership(user, organization, membership, assigned)
         else
@@ -335,15 +334,6 @@ defmodule Renga.Accounts do
         select: {i.user_id, i.email}
     )
     |> Map.new()
-  end
-
-  # An organization that requires MFA opens only for a session whose
-  # sign-in, or a later confirmation, meets it (RFD 19). The user carries
-  # the session's evidence when it was loaded through a session token; one
-  # loaded any other way has none.
-  defp mfa_satisfied?(%User{} = user, %Organization{id: organization_id}) do
-    not SecuritySettings.require_mfa?(organization_id) or
-      ProviderMFA.satisfies?(user.session_mfa, organization_id)
   end
 
   ## Database getters
