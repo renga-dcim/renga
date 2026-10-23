@@ -497,6 +497,72 @@ impl QueueReport {
     }
 }
 
+/// Phoenix's maximum encoded telemetry batch size (`Renga.Telemetry.Payload`).
+pub const MAX_TELEMETRY_BYTES: usize = 512_000;
+
+/// A batch of timed readings (RFD 10, "Measured history"). Must match
+/// `Renga.Telemetry.Payload`. The replay ID makes a resent batch idempotent, and the batch can
+/// never be mistaken for an inventory observation.
+#[derive(Debug, Clone, Serialize)]
+pub struct TelemetryBatch {
+    pub version: u32,
+    pub replay_id: Uuid,
+    /// The collector module that produced the batch; absent for the host's own readings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub collector: Option<TelemetryCollector>,
+    pub samples: Vec<TelemetrySample>,
+}
+
+impl TelemetryBatch {
+    pub fn host(samples: Vec<TelemetrySample>) -> Self {
+        Self {
+            version: 1,
+            replay_id: Uuid::new_v4(),
+            collector: None,
+            samples,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TelemetryCollector {
+    pub id: String,
+    pub kind: &'static str,
+}
+
+/// One reading with its canonical identity. A failed read is sent as `status: "failed"` with
+/// no value, so Renga records the series as unknown rather than zero.
+#[derive(Debug, Clone, Serialize)]
+pub struct TelemetrySample {
+    /// The collector's target; absent for the host's own readings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    pub sensor: String,
+    pub boundary: &'static str,
+    pub quantity: &'static str,
+    pub unit: &'static str,
+    pub status: &'static str,
+    pub origin: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<f64>,
+    pub window: SampleWindow,
+    pub event_at: DateTime<Utc>,
+    pub mapping: SampleMapping,
+    pub fresh_for_seconds: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SampleWindow {
+    pub start: DateTime<Utc>,
+    pub end: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SampleMapping {
+    pub name: &'static str,
+    pub version: u32,
+}
+
 /// What a check-in response tells the agent beyond acceptance. Missing fields
 /// mean an older server, so every field is optional.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]

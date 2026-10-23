@@ -17,6 +17,7 @@ use renga_agent::{
     payload::{
         CheckIn, CheckInAck, KeyApproval, KeyStatus, Observation, PresentedKey, QueueReport,
     },
+    power::{PowerModule, PowerSources},
     queue::{DiskQueue, Drained, QueueError, QueueKind, QueueMonitor},
     scheduler::{Job, Scheduler},
     snmp::worker::{Modules, Sink},
@@ -410,6 +411,8 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
     let mut snmp = Modules::start(config.snmp.clone(), queue_sink(&queue, &stopped));
     let mut gnmi = GnmiModules::start(config.gnmi.clone(), queue_sink(&queue, &stopped));
     let mut libvirt = LibvirtModule::start(config.libvirt.clone(), queue_sink(&queue, &stopped));
+    // Host power readings need no configuration, so reloads leave the module running.
+    let _power = PowerModule::start(telemetry_sink(&queue, &stopped), PowerSources::default());
     let mut relocation: Option<Relocation> = None;
     let mut resolution: Option<Resolution> = None;
     // Puts a reloaded configuration, its home, and the client for it into effect.
@@ -932,6 +935,23 @@ fn queue_sink(queue: &Arc<Mutex<DeliveryQueue>>, stopped: &Cancellation) -> Sink
             Err(error) => {
                 warn!(%error, %observation_id, "cannot queue collector report; dropping it")
             }
+        }
+    })
+}
+
+/// Queues telemetry batches on disk; flushes deliver them after any queued observations.
+fn telemetry_sink(queue: &Arc<Mutex<DeliveryQueue>>, stopped: &Cancellation) -> Sink {
+    let queue = Arc::clone(queue);
+    let stopped = stopped.clone();
+    Arc::new(move |replay_id, body| {
+        let Some(mut delivery) = lock_until_cancelled(&queue, &stopped) else {
+            return;
+        };
+        if let Err(error) = delivery
+            .telemetry_ready()
+            .and_then(|queue| queue.enqueue(replay_id, body, SystemTime::now()))
+        {
+            warn!(%error, %replay_id, "cannot queue telemetry batch; dropping it");
         }
     })
 }

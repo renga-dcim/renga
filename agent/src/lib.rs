@@ -13,6 +13,7 @@ pub mod libvirt;
 pub mod logging;
 pub mod notices;
 pub mod payload;
+pub mod power;
 pub mod queue;
 pub mod scheduler;
 pub mod smbios;
