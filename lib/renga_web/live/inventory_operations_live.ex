@@ -732,13 +732,15 @@ defmodule RengaWeb.InventoryOperationsLive do
   attr :id, :string, required: true
   attr :queue, :map, required: true
 
-  # Agents without telemetry producers report no telemetry queue, so nothing shows.
+  # Agents without telemetry producers report no telemetry queue, so nothing
+  # shows. The queue follows the observation queue on the same line, so the
+  # row stays single-line and clips rather than wraps.
   defp collector_telemetry_queue(%{queue: nil} = assigns), do: ~H""
 
   defp collector_telemetry_queue(assigns) do
     ~H"""
-    <span id={@id} class="mt-0.5 block">
-      <span class="text-xs text-fg-subtle">Telemetry</span>
+    <span id={@id} class="ml-1.5">
+      <span class="text-xs text-fg-subtle">· Telemetry</span>
       <.collector_queue queue={@queue} kind={:telemetry} />
     </span>
     """

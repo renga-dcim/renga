@@ -358,6 +358,48 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
     )
   end
 
+  @tag browser_context_opts: [
+         has_touch: false,
+         is_mobile: false,
+         viewport: %{width: 1600, height: 900}
+       ]
+  test "the telemetry queue shares the delivery queue's line", %{conn: conn} do
+    %{agent: agent, conn: conn} = collector_context(conn)
+
+    queue = %{
+      "entries" => 3,
+      "bytes" => 4_000,
+      "oldest_age_seconds" => 180,
+      "dropped_for_space" => 4,
+      "expired" => 0,
+      "rejected" => 0,
+      "unreadable" => 0
+    }
+
+    agent
+    |> Ecto.Changeset.change(metadata: Map.put(agent.metadata, "telemetry_queue", queue))
+    |> Renga.Repo.update!()
+
+    conn
+    |> visit("/settings/collectors")
+    |> assert_has("body .phx-connected")
+    |> evaluate(
+      """
+      (() => {
+        const telemetry = document.getElementById('collector-telemetry-queue-#{agent.source_id}')
+        const queue = document.getElementById('collector-queue-#{agent.source_id}')
+        const row = telemetry.closest('tr').getBoundingClientRect()
+        const height = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--rg-row-h'))
+        return {
+          one_line: row.height <= height + 1,
+          same_line: Math.abs(telemetry.getBoundingClientRect().top - queue.getBoundingClientRect().top) < 2
+        }
+      })()
+      """,
+      &assert(&1 == %{"one_line" => true, "same_line" => true})
+    )
+  end
+
   defp collector_context(conn) do
     organization = organization_fixture()
     user = user_fixture()
