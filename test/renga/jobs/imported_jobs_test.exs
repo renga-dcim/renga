@@ -29,10 +29,12 @@ defmodule Renga.Jobs.ImportedJobsTest do
   test "an imported queued job is never leased or waited on", context do
     %{owner: owner, system_scope: system_scope, agent: agent} = context
     {:ok, job} = Jobs.create_job(owner, agent.id, @collect, %{})
-    import!(job)
+    job = import!(job)
 
     assert {:ok, []} = Jobs.lease_jobs(system_scope, agent, [@collect], 10)
     refute Jobs.jobs_waiting?(system_scope, agent)
+    # Nor is it in progress, so it never holds back a new collection.
+    refute Job.open?(job)
   end
 
   test "the sweep leaves imported jobs as they were", context do

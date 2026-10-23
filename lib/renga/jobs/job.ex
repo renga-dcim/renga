@@ -89,5 +89,8 @@ defmodule Renga.Jobs.Job do
   def privileged?(%__MODULE__{risk_class: risk_class}), do: risk_class != "observe"
 
   def finished?(%__MODULE__{state: state}), do: state in @finished_states
-  def open?(%__MODULE__{state: state}), do: state in @open_states
+  # An imported job (RFD 20) keeps the state its source recorded, but it
+  # never runs, so it is never work in progress here.
+  def open?(%__MODULE__{state: state, imported_at: imported_at}),
+    do: state in @open_states and is_nil(imported_at)
 end
