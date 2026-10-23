@@ -267,6 +267,42 @@ defmodule Renga.Inventory do
   end
 
   @doc """
+  Runs `operation` with the source a registered installation reports through:
+  its host source, or the stream of `collector` (`{collector_id, kind}`),
+  which is created on first use as an observation would create it.
+
+  Unlike observation intake, this neither registers the installation nor
+  renews its lease, so timed evidence such as telemetry cannot stand in for a
+  check-in. Locks follow `with_intake_installation/5`'s order.
+  """
+  def with_intake_source(
+        %Scope{organization_id: organization_id},
+        %IntakeApiKey{} = intake_api_key,
+        installation_id,
+        collector,
+        operation
+      )
+      when is_function(operation, 1) do
+    Repo.transaction(fn ->
+      ensure_intake_organization_active!(organization_id)
+      ensure_intake_api_key_current!(organization_id, intake_api_key)
+      lock_intake_installation!(organization_id, installation_id)
+      agent = lock_active_intake_agent!(organization_id, installation_id)
+
+      source =
+        case collector do
+          nil -> Repo.get!(Source, agent.source_id)
+          collector -> resolve_collector_stream!(agent, collector)
+        end
+
+      case operation.(source) do
+        {:ok, result} -> result
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
+  @doc """
   Automatically registers an intake-authenticated installation and stores its observation.
 
   A collector stream's report (RFD 11) is stored under the stream's own

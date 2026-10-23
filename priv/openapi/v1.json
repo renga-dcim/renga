@@ -1549,6 +1549,331 @@
           }
         },
         "type": "object"
+      },
+      "TelemetryAccepted": {
+        "title": "TelemetryAccepted",
+        "additionalProperties": false,
+        "description": "The batch is accepted.",
+        "properties": {
+          "batch": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "received_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "replay_id": {
+                "type": "string"
+              },
+              "sample_count": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "source_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "replay_id",
+              "source_id",
+              "received_at",
+              "sample_count"
+            ],
+            "type": "object"
+          },
+          "duplicate": {
+            "description": "True when the source already accepted this replay ID with this batch.",
+            "type": "boolean"
+          },
+          "samples": {
+            "additionalProperties": false,
+            "description": "What became of the samples. Absent for a duplicate, whose samples were settled when it was first accepted.",
+            "properties": {
+              "current": {
+                "description": "Now their series' value.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "rejected": {
+                "description": "Timed implausibly far in the future.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "superseded": {
+                "description": "Not newer than their series' value, so kept out of it.",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "current",
+              "superseded",
+              "rejected"
+            ],
+            "type": "object"
+          },
+          "status": {
+            "const": "accepted"
+          }
+        },
+        "required": [
+          "status",
+          "duplicate",
+          "batch"
+        ],
+        "type": "object"
+      },
+      "TelemetryBatch": {
+        "title": "TelemetryBatch",
+        "description": "A versioned batch of timed readings (RFD 10, \"Measured history\"), apart from inventory observations. Accepting one never renews the installation's lease, advances an inventory clock, or triggers reconciliation; the installation must have checked in first. The encoded body must be at most 512000 bytes. String limits count Unicode code points, and no string may contain a NUL character.",
+        "properties": {
+          "collector": {
+            "description": "The collector module whose readings these are, resolved to its stream as an observation's collector is. Omitted for the installation's own host readings.",
+            "properties": {
+              "id": {
+                "description": "The stable collector ID from the agent configuration, as for observations.",
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "power_poller",
+                  "bmc_power"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "kind"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "replay_id": {
+            "description": "Chosen by the agent and unique per source. Resending the same batch under it is a duplicate; a different batch under it is a conflict. Must not be blank; at most 255 characters.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "samples": {
+            "items": {
+              "description": "One reading. Its series is the source's target, sensor, boundary, quantity, and window length; a series keeps the sample with the latest `event_at`, so a late replay never replaces a newer value. A sample whose `event_at` or window end is more than 5 minutes in the future is rejected. A well-formed sample that is not usable (`status` other than `valid`, a unit that does not fit its quantity, a negative value, or a power factor outside (0, 1]) is kept as invalid evidence, never as zero.",
+              "properties": {
+                "boundary": {
+                  "enum": [
+                    "host_input",
+                    "supply_input",
+                    "supply_output",
+                    "outlet",
+                    "feed",
+                    "leg"
+                  ],
+                  "type": "string"
+                },
+                "component": {
+                  "description": "The power port or outlet on the target the sensor measures, by the name the target's hardware type gives it. Must not be blank; at most 255 characters.",
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "power_port",
+                        "power_outlet"
+                      ],
+                      "type": "string"
+                    },
+                    "name": {
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "name"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "coverage": {
+                  "description": "For an aggregate, whether it covers everything at its boundary. An undeclared coverage is unknown.",
+                  "enum": [
+                    "complete",
+                    "partial",
+                    null
+                  ],
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "event_at": {
+                  "description": "When the reading was taken. An ISO 8601 date and time with a UTC offset, such as 2026-01-02T03:04:05Z.",
+                  "type": "string"
+                },
+                "fresh_for_seconds": {
+                  "description": "How long after `event_at` the reading stays current, as its mapping declares.",
+                  "maximum": 86400,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "leg": {
+                  "description": "The three-phase leg. Required for, and allowed only on, `leg` readings.",
+                  "enum": [
+                    "a",
+                    "b",
+                    "c",
+                    null
+                  ],
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "mapping": {
+                  "description": "The source mapping that produced the reading.",
+                  "properties": {
+                    "name": {
+                      "description": "Must not be blank; at most 255 characters.",
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "version": {
+                      "maximum": 1000000,
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "version"
+                  ],
+                  "type": "object"
+                },
+                "origin": {
+                  "description": "`native` (the default) for the agent's own reading, `exporter` for one mapped from a local Prometheus exporter.",
+                  "enum": [
+                    "native",
+                    "exporter",
+                    null
+                  ],
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "quantity": {
+                  "enum": [
+                    "real_power",
+                    "apparent_power",
+                    "current",
+                    "voltage",
+                    "power_factor",
+                    "state"
+                  ],
+                  "type": "string"
+                },
+                "sensor": {
+                  "description": "The sensor's stable identifier within its target, such as `outlet/3`. Must not be blank; at most 255 characters.",
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "state": {
+                  "description": "The reading of a `state` quantity, such as `on` or `failed`. At most 64 characters.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "status": {
+                  "description": "`valid` when omitted. A missing or failed reading carries no value.",
+                  "enum": [
+                    "valid",
+                    "missing",
+                    "failed",
+                    null
+                  ],
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "target": {
+                  "description": "The collector target the reading is about, such as a PDU's address. Required for a collector's readings and absent for the host's own. Must not be blank; at most 255 characters.",
+                  "minLength": 1,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "unit": {
+                  "description": "Usable only as `apparent_power` in `VA`, `current` in `A`, `power_factor` in `1`, `real_power` in `W`, `voltage` in `V`; `state` takes none. At most 16 characters.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "value": {
+                  "description": "The reading of a numeric quantity.",
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "window": {
+                  "description": "The sampling window. An instantaneous reading starts and ends at once; any window lasts at most 86400 seconds. Windows of different lengths, to the millisecond, are different series.",
+                  "properties": {
+                    "end": {
+                      "description": "Not before `start`. An ISO 8601 date and time with a UTC offset, such as 2026-01-02T03:04:05Z.",
+                      "type": "string"
+                    },
+                    "start": {
+                      "description": "An ISO 8601 date and time with a UTC offset, such as 2026-01-02T03:04:05Z.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "start",
+                    "end"
+                  ],
+                  "type": "object"
+                }
+              },
+              "required": [
+                "sensor",
+                "boundary",
+                "quantity",
+                "window",
+                "event_at",
+                "mapping",
+                "fresh_for_seconds"
+              ],
+              "type": "object"
+            },
+            "maxItems": 2000,
+            "minItems": 1,
+            "type": "array"
+          },
+          "version": {
+            "enum": [
+              1
+            ],
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "replay_id",
+          "samples"
+        ],
+        "type": "object"
       }
     },
     "securitySchemes": {
@@ -2076,6 +2401,105 @@
           "required": true
         },
         "summary": "Submit an observation"
+      }
+    },
+    "/api/v1/telemetry": {
+      "post": {
+        "tags": [
+          "Intake"
+        ],
+        "security": [
+          {
+            "intakeKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TelemetryAccepted"
+                }
+              }
+            },
+            "description": "This replay ID was already accepted with the same batch."
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TelemetryAccepted"
+                }
+              }
+            },
+            "description": "Batch accepted."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "The intake key or installation header is missing or invalid, or the key changed while the request was in flight."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "The installation's agent is disabled."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "The installation has not checked in yet, the `replay_id` was already used for a different batch, or the named collector is disabled or registered with a different kind."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "The batch is invalid."
+          }
+        },
+        "description": "Accepts timed readings, such as power draw, from the installation's host or one of its collector modules. Retries are safe: resending a batch under the same `replay_id` returns the accepted one.",
+        "operationId": "createTelemetryBatch",
+        "parameters": [
+          {
+            "description": "The collector installation's stable UUID. Within the intake key's organization it selects the collector, registering one on first use, so one key can enroll a whole fleet.",
+            "in": "header",
+            "name": "x-renga-installation-id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TelemetryBatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "summary": "Submit a telemetry batch"
       }
     }
   }
