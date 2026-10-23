@@ -3,7 +3,9 @@
 //!
 //! iproute2 reads the kernel's tables over netlink and prints them as JSON;
 //! the agent runs it with fixed arguments (`ip -j route show table all`, and
-//! `ip -j -d link show type vrf` to name each VRF's table). The `family`
+//! `ip -j -d link show type vrf` to name each VRF's table). `ip` prints a
+//! table named in `rt_tables` by its name, so the agent reads the same files
+//! `ip` does to turn names back into numbers. The `family`
 //! parameter picks which of the two route commands runs; it never becomes an
 //! argument.
 
@@ -11,13 +13,18 @@ use super::{clip, failed, parameters, Bounded, Query, Sensitivity};
 use crate::{cancellation::Cancellation, command, jobs::JobFailure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{collections::HashMap, process::Command, time::Duration};
+use std::{collections::HashMap, fs, path::Path, process::Command, time::Duration};
 
 const MAX_ROUTES: usize = 4096;
 const IP_TIMEOUT: Duration = Duration::from_secs(10);
 const IPV4_ROUTES: &[&str] = &["-j", "-4", "route", "show", "table", "all"];
 const IPV6_ROUTES: &[&str] = &["-j", "-6", "route", "show", "table", "all"];
 const VRFS: &[&str] = &["-j", "-d", "link", "show", "type", "vrf"];
+
+/// Where iproute2 keeps `rt_tables` and `rt_tables.d/*.conf`: its packaged
+/// defaults (the path varies by version and distribution), then `/etc`,
+/// whose entries win.
+const RT_TABLES_DIRS: &[&str] = &["/usr/lib/iproute2", "/usr/share/iproute2", "/etc/iproute2"];
 
 /// Local, broadcast, and multicast entries describe addresses, not where
 /// traffic goes, so they are left out.
@@ -75,7 +82,7 @@ impl Query for Routes {
             }
         }
         let vrfs = ip(VRFS, cancellation).unwrap_or(Value::Null);
-        Ok(answer(&tables, &vrfs))
+        Ok(answer(&tables, &vrfs, &table_names()))
     }
 }
 
@@ -100,17 +107,57 @@ fn ip(args: &[&str], cancellation: &Cancellation) -> Result<Value, JobFailure> {
     serde_json::from_slice(&output.stdout).map_err(|_| failed("ip's answer was not JSON"))
 }
 
-/// The kernel's names for its reserved tables, as `ip` prints them.
-fn table_id(name: &str) -> Option<u32> {
+/// The table names `ip` may print, from the files it reads them from.
+fn table_names() -> HashMap<String, u32> {
+    let mut names = HashMap::new();
+    for dir in RT_TABLES_DIRS.iter().map(Path::new) {
+        let mut files = vec![dir.join("rt_tables")];
+        let mut conf: Vec<_> = fs::read_dir(dir.join("rt_tables.d"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "conf"))
+            .collect();
+        conf.sort();
+        files.extend(conf);
+        for file in files {
+            // A table file is a few lines; a large one is not iproute2's.
+            if fs::metadata(&file).is_ok_and(|meta| meta.len() <= 1024 * 1024) {
+                if let Ok(text) = fs::read_to_string(&file) {
+                    names.extend(parse_rt_tables(&text));
+                }
+            }
+        }
+    }
+    names
+}
+
+/// `rt_tables` lines: `<number> <name>`, with `#` comments.
+fn parse_rt_tables(text: &str) -> impl Iterator<Item = (String, u32)> + '_ {
+    text.lines().filter_map(|line| {
+        let mut fields = line.split('#').next()?.split_whitespace();
+        let id = fields.next()?;
+        let id = match id.strip_prefix("0x") {
+            Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+            None => id.parse().ok()?,
+        };
+        Some((fields.next()?.to_owned(), id))
+    })
+}
+
+/// A table as `ip` prints it: a number, a reserved name, or a name from
+/// `rt_tables`.
+fn table_id(name: &str, names: &HashMap<String, u32>) -> Option<u32> {
     match name {
         "main" => Some(254),
         "local" => Some(255),
         "default" => Some(253),
-        number => number.parse().ok(),
+        name => name.parse().ok().or_else(|| names.get(name).copied()),
     }
 }
 
-fn answer(tables: &[(&'static str, Value)], vrfs: &Value) -> Value {
+fn answer(tables: &[(&'static str, Value)], vrfs: &Value, names: &HashMap<String, u32>) -> Value {
     let vrf_by_table: HashMap<u32, String> = vrfs
         .as_array()
         .into_iter()
@@ -136,7 +183,7 @@ fn answer(tables: &[(&'static str, Value)], vrfs: &Value) -> Value {
             // `ip` omits the table for the main one and names tables it knows.
             let table = match &entry["table"] {
                 Value::Null => Some(254),
-                Value::String(name) => table_id(name),
+                Value::String(name) => table_id(name, names),
                 Value::Number(number) => number.as_u64().and_then(|n| u32::try_from(n).ok()),
                 _ => None,
             };
@@ -198,7 +245,7 @@ mod tests {
         let ipv6 = json!([{"dst": "fe80::/64", "dev": "eth0", "protocol": "kernel", "metric": 256, "flags": []}]);
         let vrfs = json!([{"ifname": "blue", "linkinfo": {"info_kind": "vrf", "info_data": {"table": 10}}}]);
 
-        let value = answer(&[("ipv4", ipv4), ("ipv6", ipv6)], &vrfs);
+        let value = answer(&[("ipv4", ipv4), ("ipv6", ipv6)], &vrfs, &HashMap::new());
         super::super::contract::assert_conforms("query.routes@1", "result", &value);
         assert_eq!(
             value,
@@ -216,6 +263,19 @@ mod tests {
                 "truncated": false
             })
         );
+    }
+
+    #[test]
+    fn keeps_routes_in_tables_named_in_rt_tables() {
+        let names: HashMap<String, u32> =
+            parse_rt_tables("# reserved\n255\tlocal\n100 customer # vrf\n0x10 lab\n").collect();
+        assert_eq!(names.get("customer"), Some(&100));
+        assert_eq!(names.get("lab"), Some(&16));
+        let ipv4 = json!([{"dst": "10.9.0.0/16", "dev": "eth2", "table": "customer", "flags": []}]);
+        let vrfs = json!([{"ifname": "customer", "linkinfo": {"info_kind": "vrf", "info_data": {"table": 100}}}]);
+        let value = answer(&[("ipv4", ipv4)], &vrfs, &names);
+        assert_eq!(value["routes"][0]["table"], json!(100));
+        assert_eq!(value["routes"][0]["vrf"], json!("customer"));
     }
 
     #[test]
