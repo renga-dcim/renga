@@ -196,6 +196,15 @@ defmodule RengaWeb.ChangeDescription do
   def describe(%{kind: "scim_token_revoked", metadata: %{"token" => name}}),
     do: "Revoked the SCIM token #{name}"
 
+  def describe(%{kind: "scim_user_created", metadata: %{"user_name" => name}}),
+    do: "SCIM provisioned #{name}"
+
+  def describe(%{kind: "scim_user_updated", metadata: %{"user_name" => name}}),
+    do: "SCIM updated #{name}"
+
+  def describe(%{kind: "scim_user_deleted", metadata: %{"user_name" => name}}),
+    do: "SCIM removed #{name}"
+
   # Job events read as "Inventory collection failed"; the job itself keeps
   # the full history.
   def describe(%{kind: "job_requested", metadata: metadata}),

@@ -30,7 +30,8 @@ defmodule Renga.Inventory.ChangeEvent do
              role_assigned role_unassigned role_expired limit_set limit_cleared withdrawn
              organization_created
              scim_connection_created scim_connection_disabled scim_connection_enabled
-             scim_default_role_changed scim_token_created scim_token_revoked)
+             scim_default_role_changed scim_token_created scim_token_revoked
+             scim_user_created scim_user_updated scim_user_deleted)
   @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
 
   schema "change_events" do
