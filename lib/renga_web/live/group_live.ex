@@ -164,8 +164,13 @@ defmodule RengaWeb.GroupLive do
 
   def handle_event(
         "remove_member",
-        %{"id" => resource_id},
-        %{assigns: %{current_scope: scope, editing: %Group{} = group}} = socket
+        %{"id" => resource_id, "group_id" => group_id},
+        %{
+          assigns: %{
+            current_scope: scope,
+            editing: %Group{id: group_id} = group
+          }
+        } = socket
       ) do
     case ResourceGroups.remove_members(scope, group, [resource_id]) do
       {:ok, _count} -> {:noreply, socket |> load_members() |> load()}
@@ -176,7 +181,7 @@ defmodule RengaWeb.GroupLive do
   def handle_event("remove_member", _params, socket) do
     {:noreply,
      socket
-     |> put_flash(:error, "Choose a group before removing members")
+     |> put_flash(:error, "Choose the group again before removing members")
      |> load()}
   end
 
@@ -411,7 +416,7 @@ defmodule RengaWeb.GroupLive do
                 :if={@can_change_membership?}
                 id={"group-member-#{resource.id}-remove"}
                 type="button"
-                phx-click={JS.push("remove_member", value: %{id: resource.id})}
+                phx-click={JS.push("remove_member", value: %{id: resource.id, group_id: @editing.id})}
                 class="min-h-tap cursor-pointer text-sm text-crit hover:underline"
               >
                 Remove

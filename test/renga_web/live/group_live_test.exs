@@ -112,7 +112,7 @@ defmodule RengaWeb.GroupLiveTest do
       {:ok, view, _html} = live(context.admin_conn, ~p"/settings/groups")
 
       assert render_click(view, "remove_member", %{"id" => context.web.id}) =~
-               "Choose a group before removing members"
+               "Choose the group again before removing members"
 
       view |> element("#group-#{staging.id}-edit") |> render_click()
 
@@ -121,10 +121,38 @@ defmodule RengaWeb.GroupLiveTest do
       |> render_submit()
 
       assert render_click(view, "remove_member", %{"id" => context.web.id}) =~
-               "Choose a group before removing members"
+               "Choose the group again before removing members"
 
       assert [%{id: resource_id}] = ResourceGroups.list_members(context.admin, staging)
       assert resource_id == context.web.id
+    end
+
+    test "a stale removal event cannot remove a member from a newly edited group", context do
+      {:ok, first} = ResourceGroups.create_group(context.admin, %{name: "First"})
+      {:ok, second} = ResourceGroups.create_group(context.admin, %{name: "Second"})
+      {:ok, 1} = ResourceGroups.add_members(context.admin, first, [context.web.id])
+      {:ok, 1} = ResourceGroups.add_members(context.admin, second, [context.web.id])
+      {:ok, view, _html} = live(context.admin_conn, ~p"/settings/groups")
+
+      view |> element("#group-#{first.id}-edit") |> render_click()
+      view |> element("#group-#{second.id}-edit") |> render_click()
+
+      assert render_click(view, "remove_member", %{
+               "id" => context.web.id,
+               "group_id" => first.id
+             }) =~ "Choose the group again before removing members"
+
+      assert [%{id: resource_id}] = ResourceGroups.list_members(context.admin, first)
+      assert resource_id == context.web.id
+      assert [%{id: ^resource_id}] = ResourceGroups.list_members(context.admin, second)
+
+      render_click(view, "remove_member", %{
+        "id" => context.web.id,
+        "group_id" => second.id
+      })
+
+      assert [%{id: ^resource_id}] = ResourceGroups.list_members(context.admin, first)
+      assert ResourceGroups.list_members(context.admin, second) == []
     end
   end
 
