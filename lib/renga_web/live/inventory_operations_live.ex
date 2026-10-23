@@ -461,11 +461,17 @@ defmodule RengaWeb.InventoryOperationsLive do
               </span>
             </:col>
             <:col :let={{_id, source}} label="Accepts jobs" class="w-28" hide_below="4xl">
-              <span id={"collector-jobs-#{source.id}"}>
-                <.collector_jobs
-                  id={"collector-jobs-#{source.id}-list"}
-                  agent={collector_agent(source)}
+              <span class="flex min-w-0 items-center gap-1">
+                <.collector_osquery
+                  id={"collector-osquery-#{source.id}"}
+                  osquery={Agent.osquery(collector_agent(source))}
                 />
+                <span id={"collector-jobs-#{source.id}"} class="min-w-0">
+                  <.collector_jobs
+                    id={"collector-jobs-#{source.id}-list"}
+                    agent={collector_agent(source)}
+                  />
+                </span>
               </span>
             </:col>
             <:col :let={{_id, source}} label="Delivery queue" class="w-32" hide_below="2xl">
@@ -868,6 +874,42 @@ defmodule RengaWeb.InventoryOperationsLive do
     </span>
     """
   end
+
+  attr :id, :string, required: true
+  attr :osquery, :map, required: true
+
+  # Whether operational queries can use the host's osqueryd (RFD 12), as of
+  # the latest check-in: a status-colored mark before the jobs the host
+  # accepts, so the row stays one line and the chips keep most of the cell. The
+  # status itself is the mark's tooltip and accessible text. Agents that don't
+  # report it show nothing.
+  defp collector_osquery(assigns) do
+    ~H"""
+    <span
+      :if={@osquery}
+      id={@id}
+      title={osquery_title(@osquery)}
+      class="inline-flex shrink-0 items-center"
+    >
+      <.icon name="hero-circle-stack-micro" class={"size-3 #{osquery_icon(@osquery.status)}"} />
+      <span class="sr-only">{osquery_title(@osquery)}</span>
+    </span>
+    """
+  end
+
+  defp osquery_icon("available"), do: "text-ok"
+  defp osquery_icon("not_permitted"), do: "text-warn-text"
+  defp osquery_icon("not_present"), do: "text-unknown"
+
+  defp osquery_title(%{status: "available", version: version}) when is_binary(version),
+    do: "osquery #{version}"
+
+  defp osquery_title(%{status: "available"}), do: "osquery"
+
+  defp osquery_title(%{status: "not_permitted"}),
+    do: "osquery not permitted: the agent's account can't open the extensions socket"
+
+  defp osquery_title(%{status: "not_present"}), do: "osquery not running"
 
   attr :queue, :map, required: true
   attr :kind, :atom, default: :observations

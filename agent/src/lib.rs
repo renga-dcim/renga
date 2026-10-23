@@ -13,6 +13,7 @@ pub mod jobs;
 pub mod libvirt;
 pub mod logging;
 pub mod notices;
+pub mod osquery;
 pub mod payload;
 pub mod power;
 pub mod queue;

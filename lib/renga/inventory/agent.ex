@@ -59,6 +59,22 @@ defmodule Renga.Inventory.Agent do
   def observation_queue(_agent), do: nil
 
   @doc """
+  The agent's osquery backend (RFD 12) as of its latest check-in:
+  `%{status: "available" | "not_permitted" | "not_present", version: version}`,
+  or nil when it reported none or the report fails today's validation.
+  """
+  def osquery(%__MODULE__{metadata: %{"query_backends" => backends}}) do
+    with [] <- AgentPayload.query_backends_errors(backends),
+         %{"status" => status} = osquery <- Map.get(backends, "osquery") do
+      %{status: status, version: osquery["version"]}
+    else
+      _missing_or_invalid -> nil
+    end
+  end
+
+  def osquery(_agent), do: nil
+
+  @doc """
   The last reported telemetry queue health (RFD 10), like `observation_queue/1`.
   `dropped_ages`, when present, is how long ago the earliest and latest
   dropped batches were queued, as of the report.

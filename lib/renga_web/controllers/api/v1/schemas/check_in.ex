@@ -5,6 +5,7 @@ defmodule RengaWeb.Api.V1.Schemas.CheckIn do
 
   alias RengaWeb.Api.V1.Schemas.ObservationQueue
   alias RengaWeb.Api.V1.Schemas.PowerSource
+  alias RengaWeb.Api.V1.Schemas.QueryBackends
   alias RengaWeb.Api.V1.Schemas.SourceIdentity
 
   def json_schema do
@@ -36,7 +37,8 @@ defmodule RengaWeb.Api.V1.Schemas.CheckIn do
               description:
                 "Every power source the agent samples and whether it can read it. " <>
                   "Omitted until the agent has sampled once; each report replaces the last."
-            }
+            },
+            query_backends: QueryBackends
           }
         },
         installation_key: %{

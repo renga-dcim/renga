@@ -158,6 +158,7 @@ impl ClientSettings {
             bmc: _,
             // Scraped by the exporter module's own fetcher, which never sends the intake key.
             exporters: _,
+            osquery: _,
         } = config;
         Ok(Self {
             home: origin_url(home.as_str(), *allow_insecure_http, "home URL")?,
@@ -832,6 +833,10 @@ mod tests {
             power: Vec::new(),
             bmc: Vec::new(),
             exporters: Vec::new(),
+            osquery: crate::osquery::OsqueryConfig {
+                enabled: false,
+                ..Default::default()
+            },
         }
     }
 

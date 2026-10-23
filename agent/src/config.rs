@@ -6,6 +6,7 @@ use crate::{
     identity,
     jobs::{JobPolicy, Selector},
     libvirt::config::{self as libvirt_config, LibvirtCollector, RawLibvirtCollector},
+    osquery::{self, OsqueryConfig, RawOsquery},
     power::{
         bmc::config::{self as bmc_config, BmcCollector, RawBmcCollector},
         pdu::POWER_INTERVALS,
@@ -67,6 +68,8 @@ pub struct Config {
     pub bmc: Vec<BmcCollector>,
     /// Local Prometheus exporters to read power from (RFD 10).
     pub exporters: Vec<Exporter>,
+    /// The local osquery daemon queries may use (RFD 12).
+    pub osquery: OsqueryConfig,
 }
 
 impl fmt::Debug for Config {
@@ -90,6 +93,7 @@ impl fmt::Debug for Config {
             .field("power", &self.power)
             .field("bmc", &self.bmc)
             .field("exporters", &self.exporters)
+            .field("osquery", &self.osquery)
             .finish()
     }
 }
@@ -120,6 +124,7 @@ struct RawConfig {
     jobs: Option<RawJobs>,
     collectors: Option<RawCollectors>,
     exporters: Option<Vec<RawExporter>>,
+    osquery: Option<RawOsquery>,
 }
 
 #[derive(Default, Deserialize)]
@@ -364,6 +369,7 @@ impl Config {
             bmc,
             exporters: exporters::from_raw(raw.exporters.unwrap_or_default())
                 .map_err(ConfigError)?,
+            osquery: osquery::from_raw(raw.osquery).map_err(ConfigError)?,
         })
     }
 }

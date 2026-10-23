@@ -38,5 +38,42 @@
         }
       ]
     }
+  },
+  {
+    "metadata": {
+      "query_backends": {}
+    }
+  },
+  {
+    "metadata": {
+      "query_backends": {
+        "osquery": {
+          "status": "available",
+          "version": null
+        }
+      }
+    }
+  },
+  {
+    "metadata": {
+      "query_backends": {
+        "osquery": {
+          "status": "not_present"
+        },
+        "dtrace": {
+          "status": "unknown"
+        }
+      }
+    }
+  },
+  {
+    "metadata": {
+      "query_backends": {
+        "osquery": {
+          "status": "available",
+          "version": "éééééééééééééééééééééééééééééééé"
+        }
+      }
+    }
   }
 ]

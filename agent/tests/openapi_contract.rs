@@ -10,6 +10,7 @@ use renga_agent::{
     collectors,
     exporters::{self, mapping, text},
     installation_key::InstallationKey,
+    osquery::BackendStatus,
     payload::{
         Address, AgentHome, CheckIn, CheckInAck, Collector, CollectorIdentifiers, CollectorKind,
         CollectorResource, CollectorResourceKind, Component, DomainDisk, DomainInterface,
@@ -315,6 +316,22 @@ fn check_ins_match_the_contract() {
         "CheckIn",
         &CheckIn::new(vec![], None).with_installation_key(PresentedKey::ed25519(key.public_key())),
     );
+
+    // Every osquery status a probe reports, and a disabled backend's empty report.
+    for osquery in [
+        Some(BackendStatus::Available {
+            version: Some("5.12.1".into()),
+        }),
+        Some(BackendStatus::Available { version: None }),
+        Some(BackendStatus::NotPermitted),
+        Some(BackendStatus::NotPresent),
+        None,
+    ] {
+        let check_in = CheckIn::new(vec![], None).with_osquery(osquery);
+        assert_conforms("CheckIn", &check_in);
+    }
+    let disabled = serde_json::to_value(CheckIn::new(vec![], None).with_osquery(None)).unwrap();
+    assert_eq!(disabled["metadata"]["query_backends"], json!({}));
 }
 
 #[test]
