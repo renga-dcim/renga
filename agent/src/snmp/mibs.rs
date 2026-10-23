@@ -10,6 +10,7 @@ use crate::{
         CollectorIdentifiers, CollectorResource, CollectorResourceKind, HostAttributes, Interface,
         Neighbor, TaggingMode, VlanMembership,
     },
+    switch_report::Sections,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -100,8 +101,7 @@ const MAX_INT32: u64 = 2_147_483_647;
 /// Far more than any real switch carries, so a device listing more is refused rather than
 /// allowed to grow the report without bound.
 const MAX_VLAN_MEMBERSHIPS: usize = 100_000;
-/// Must match `Renga.Inventory.AgentPayload`'s string limit.
-pub const MAX_STRING_CHARS: usize = 255;
+pub use crate::switch_report::MAX_STRING_CHARS;
 
 /// Every variable a switch answered, by OID.
 #[derive(Debug, Default, Clone)]
@@ -147,13 +147,6 @@ impl Answers {
     }
 }
 
-/// Which optional MIBs answered, so the report claims completeness only for what it read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Support {
-    pub lldp: bool,
-    pub q_bridge: bool,
-}
-
 /// Why a reachable switch cannot be reported.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MapError(pub String);
@@ -164,19 +157,20 @@ pub fn switch(
     target: &str,
     answers: &Answers,
     ttl_seconds: u32,
-) -> Result<(CollectorResource, Support), MapError> {
+) -> Result<(CollectorResource, Sections), MapError> {
     let chassis = chassis(answers).ok_or_else(|| {
         MapError("no chassis serial number in ENTITY-MIB; the switch cannot be identified".into())
     })?;
-    let support = Support {
-        lldp: answers.scalar(LLDP_LOC_CHASSIS_ID).is_some(),
-        q_bridge: answers.scalar(DOT1Q_VLAN_VERSION).is_some(),
+    // Which optional MIBs answered, so the report claims completeness only for what it read.
+    let sections = Sections {
+        interface_neighbors: answers.scalar(LLDP_LOC_CHASSIS_ID).is_some(),
+        interface_vlans: answers.scalar(DOT1Q_VLAN_VERSION).is_some(),
     };
     let mut interfaces = interfaces(answers);
-    if support.lldp {
+    if sections.interface_neighbors {
         attach_neighbors(answers, &mut interfaces, ttl_seconds);
     }
-    if support.q_bridge {
+    if sections.interface_vlans {
         attach_vlans(answers, &mut interfaces)?;
     }
     let hostname = answers.scalar(SYS_NAME).and_then(text);
@@ -205,7 +199,7 @@ pub fn switch(
         ),
         domain: None,
     };
-    Ok((resource, support))
+    Ok((resource, sections))
 }
 
 struct Chassis {
@@ -780,7 +774,7 @@ pub(crate) mod tests {
 
     #[test]
     fn identifies_the_switch_by_its_chassis_serial() {
-        let (resource, support) = switch("10.0.0.1", &answers(), 2_700).unwrap();
+        let (resource, sections) = switch("10.0.0.1", &answers(), 2_700).unwrap();
 
         assert_eq!(resource.kind, CollectorResourceKind::Switch);
         assert_eq!(resource.target.as_deref(), Some("10.0.0.1"));
@@ -794,10 +788,10 @@ pub(crate) mod tests {
         assert_eq!(attributes.vendor.as_deref(), Some("Example Networks"));
         assert_eq!(attributes.model.as_deref(), Some("EX-48T"));
         assert_eq!(
-            support,
-            Support {
-                lldp: true,
-                q_bridge: true
+            sections,
+            Sections {
+                interface_neighbors: true,
+                interface_vlans: true
             }
         );
     }
@@ -942,13 +936,13 @@ pub(crate) mod tests {
         let mut answers = answers();
         answers.insert(LLDP_LOC_CHASSIS_ID.to_vec(), SnmpValue::Missing);
         answers.0.remove(DOT1Q_VLAN_VERSION);
-        let (resource, support) = switch("10.0.0.1", &answers, 2_700).unwrap();
+        let (resource, sections) = switch("10.0.0.1", &answers, 2_700).unwrap();
 
         assert_eq!(
-            support,
-            Support {
-                lldp: false,
-                q_bridge: false
+            sections,
+            Sections {
+                interface_neighbors: false,
+                interface_vlans: false
             }
         );
         let uplink = interface(&resource, "Te1/1/1");

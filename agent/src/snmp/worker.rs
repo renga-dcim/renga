@@ -114,7 +114,7 @@ fn run(collector: &SnmpCollector, stop: &Cancellation, sink: &Sink, open: Opener
             .count();
         for outcome in &outcomes {
             if let Err(error) = &outcome.result {
-                warn!(collector = %collector.id, target = %outcome.target.address, %error, "SNMP target not read");
+                warn!(collector = %collector.id, target = %outcome.address, %error, "SNMP target not read");
             }
         }
         let reports = reports(&collector.id, outcomes);
