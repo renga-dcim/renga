@@ -8,7 +8,10 @@ defmodule Renga.TriageRules.Rule do
     * `top_of_rack` - a resource whose LLDP neighbor is a switch placed in a
       rack goes in that rack, never at a rack unit;
     * `ownership` - a hostname pattern, or a label the collector sends, sets
-      the owning team.
+      the owning team;
+    * `group` - the same signals suggest a resource group (RFD 18). The
+      suggestion waits in the Inbox for a person, because only people
+      change direct group membership.
 
   The changeset clears the fields a kind does not use so the stored shape
   always matches the database check.
@@ -20,13 +23,14 @@ defmodule Renga.TriageRules.Rule do
 
   alias Renga.Accounts.Organization
 
-  @kinds ~w(network_location top_of_rack ownership)
+  @kinds ~w(network_location top_of_rack ownership group)
   @fields ~w(subnet intake_api_key_id hostname_pattern label_key label_value site_id
-             location_id team_id)a
+             location_id team_id resource_group_id)a
   @kind_fields %{
     "network_location" => ~w(subnet intake_api_key_id site_id location_id)a,
     "top_of_rack" => [],
-    "ownership" => ~w(hostname_pattern label_key label_value team_id)a
+    "ownership" => ~w(hostname_pattern label_key label_value team_id)a,
+    "group" => ~w(hostname_pattern label_key label_value resource_group_id)a
   }
   # Hostname patterns are globs over normalized (lowercase) hostnames; `*`
   # is the only wildcard, so a pattern can never smuggle SQL LIKE syntax.
@@ -55,6 +59,7 @@ defmodule Renga.TriageRules.Rule do
     belongs_to :site, Renga.DCIM.Site
     belongs_to :location, Renga.DCIM.Location
     belongs_to :team, Renga.Teams.Team
+    belongs_to :resource_group, Renga.ResourceGroups.Group
     belongs_to :created_by_user, Renga.Accounts.User
 
     timestamps()
@@ -82,6 +87,7 @@ defmodule Renga.TriageRules.Rule do
     |> assoc_constraint(:site, name: :triage_rules_site_fkey)
     |> assoc_constraint(:location, name: :triage_rules_location_fkey)
     |> assoc_constraint(:team, name: :triage_rules_team_fkey)
+    |> assoc_constraint(:resource_group, name: :triage_rules_resource_group_fkey)
     |> check_constraint(:kind, name: :triage_rules_valid_shape, message: "is incomplete")
   end
 
@@ -89,8 +95,11 @@ defmodule Renga.TriageRules.Rule do
   def enabled_changeset(rule, enabled), do: change(rule, enabled: enabled)
 
   @doc "Which condition a rule uses, as the form's `match_on` names it."
-  def match_on(%__MODULE__{kind: "ownership", label_key: key}) when not is_nil(key), do: "label"
-  def match_on(%__MODULE__{kind: "ownership"}), do: "hostname"
+  def match_on(%__MODULE__{kind: kind, label_key: key})
+      when kind in ~w(ownership group) and not is_nil(key),
+      do: "label"
+
+  def match_on(%__MODULE__{kind: kind}) when kind in ~w(ownership group), do: "hostname"
   def match_on(%__MODULE__{intake_api_key_id: id}) when not is_nil(id), do: "intake_key"
   def match_on(%__MODULE__{}), do: "subnet"
 
@@ -111,10 +120,10 @@ defmodule Renga.TriageRules.Rule do
       {"network_location", "subnet"} ->
         put_change(changeset, :intake_api_key_id, nil)
 
-      {"ownership", "label"} ->
+      {kind, "label"} when kind in ~w(ownership group) ->
         put_change(changeset, :hostname_pattern, nil)
 
-      {"ownership", "hostname"} ->
+      {kind, "hostname"} when kind in ~w(ownership group) ->
         changeset |> put_change(:label_key, nil) |> put_change(:label_value, nil)
 
       _other ->
@@ -124,9 +133,19 @@ defmodule Renga.TriageRules.Rule do
 
   defp validate_kind(changeset) do
     case get_field(changeset, :kind) do
-      "network_location" -> validate_network_location(changeset)
-      "ownership" -> validate_ownership(changeset)
-      _top_of_rack_or_invalid -> changeset
+      "network_location" ->
+        validate_network_location(changeset)
+
+      "ownership" ->
+        changeset |> validate_required([:team_id], message: "choose a team") |> validate_signal()
+
+      "group" ->
+        changeset
+        |> validate_required([:resource_group_id], message: "choose a group")
+        |> validate_signal()
+
+      _top_of_rack_or_invalid ->
+        changeset
     end
   end
 
@@ -150,10 +169,10 @@ defmodule Renga.TriageRules.Rule do
     end
   end
 
-  defp validate_ownership(changeset) do
+  # Ownership and group rules match on a hostname pattern or a label.
+  defp validate_signal(changeset) do
     changeset =
       changeset
-      |> validate_required([:team_id], message: "choose a team")
       |> validate_length(:hostname_pattern, max: 100)
       |> validate_format(:hostname_pattern, @hostname_pattern,
         message: "use letters, digits, dots, dashes, underscores, and * only"

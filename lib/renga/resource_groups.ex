@@ -41,6 +41,8 @@ defmodule Renga.ResourceGroups do
   alias Renga.ResourceGroups.GroupSet
   alias Renga.ResourceGroups.Member
   alias Renga.ResourceGroups.Membership
+  alias Renga.ResourceGroups.Suggestion
+  alias Renga.ResourceGroups.SuggestionDismissal
 
   @doc "UI hint: `groups.manage` defines groups and group sets."
   def can_manage?(%Scope{} = scope), do: Authorization.allowed?(scope, "groups.manage")
@@ -502,6 +504,171 @@ defmodule Renga.ResourceGroups do
     |> distinct(true)
     |> select([member], member.resource_id)
     |> Repo.all()
+  end
+
+  ## Suggestions
+
+  @doc """
+  The open group suggestions for groups the scope can see, oldest first,
+  with their resource and group.
+  """
+  def list_suggestions(%Scope{organization_id: organization_id} = scope) do
+    visible = select(visible_groups(scope), [group], group.id)
+
+    Suggestion
+    |> where([suggestion], suggestion.organization_id == ^organization_id)
+    |> where([suggestion], suggestion.status == "open")
+    |> where([suggestion], suggestion.group_id in subquery(visible))
+    |> order_by([suggestion], asc: suggestion.inserted_at, asc: suggestion.id)
+    |> preload([:resource, group: :group_set])
+    |> Repo.all()
+  end
+
+  @doc """
+  Accepts an open suggestion: the resource joins the group directly, as an
+  ordinary membership change by the accepting person, with the same
+  `inventory.edit` check, locking, exclusivity, and Activity as adding it by
+  hand.
+  """
+  def accept_suggestion(%Scope{} = scope, suggestion_id) do
+    managed(scope, "inventory.edit", fn ->
+      suggestion = lock_open_suggestion!(scope, suggestion_id)
+      group = lock_group!(scope, suggestion.group_id)
+
+      added =
+        insert_members!(scope, group, [suggestion.resource_id],
+          reason: "Suggested by the triage rule #{suggestion.rule_name}"
+        )
+
+      project!(scope, added)
+      {:ok, decide!(scope, suggestion, "accepted")}
+    end)
+  end
+
+  @doc """
+  Dismisses an open suggestion. Nothing changes, and the rule does not raise
+  it again until the rule changes. Needs `inventory.edit`, like accepting.
+  """
+  def dismiss_suggestion(%Scope{} = scope, suggestion_id) do
+    managed(scope, "inventory.edit", fn ->
+      suggestion = lock_open_suggestion!(scope, suggestion_id)
+      remember_dismissal!(suggestion)
+      {:ok, decide!(scope, suggestion, "dismissed")}
+    end)
+  end
+
+  @doc false
+  # Raises `rule`'s suggestion for one resource, inside the triage rules
+  # transaction. Never touches membership. A resource already directly in
+  # the group, an open suggestion, and a decision on this version of the
+  # rule are left alone; a decision on an older version is reopened.
+  def suggest!(%Scope{organization_id: organization_id}, rule, resource_id) do
+    member? =
+      Member
+      |> where([member], member.organization_id == ^organization_id)
+      |> where([member], member.group_id == ^rule.resource_group_id)
+      |> where([member], member.resource_id == ^resource_id)
+      |> Repo.exists?()
+
+    existing =
+      Suggestion
+      |> where([suggestion], suggestion.organization_id == ^organization_id)
+      |> where([suggestion], suggestion.resource_id == ^resource_id)
+      |> where([suggestion], suggestion.group_id == ^rule.resource_group_id)
+      |> lock("FOR UPDATE")
+      |> Repo.one()
+
+    cond do
+      member? -> :skipped
+      is_nil(existing) -> raise_suggestion!(organization_id, rule, resource_id)
+      existing.status == "open" -> :skipped
+      dismissed_on_this_version?(existing, rule) -> :skipped
+      decided_on_this_version?(existing, rule) -> :skipped
+      true -> reopen_suggestion!(existing, rule)
+    end
+  end
+
+  defp dismissed_on_this_version?(suggestion, rule) do
+    SuggestionDismissal
+    |> where([dismissal], dismissal.organization_id == ^suggestion.organization_id)
+    |> where([dismissal], dismissal.suggestion_id == ^suggestion.id)
+    |> where([dismissal], dismissal.rule_id == ^rule.id)
+    |> where([dismissal], dismissal.rule_updated_at >= ^rule.updated_at)
+    |> Repo.exists?()
+  end
+
+  defp decided_on_this_version?(suggestion, rule) do
+    suggestion.rule_id == rule.id and
+      DateTime.compare(suggestion.rule_updated_at, rule.updated_at) != :lt
+  end
+
+  defp raise_suggestion!(organization_id, rule, resource_id) do
+    Repo.insert!(%Suggestion{
+      organization_id: organization_id,
+      resource_id: resource_id,
+      group_id: rule.resource_group_id,
+      rule_id: rule.id,
+      rule_name: rule.name,
+      rule_updated_at: rule.updated_at
+    })
+
+    :raised
+  end
+
+  defp reopen_suggestion!(suggestion, rule) do
+    suggestion
+    |> Ecto.Changeset.change(
+      status: "open",
+      rule_id: rule.id,
+      rule_name: rule.name,
+      rule_updated_at: rule.updated_at,
+      decided_by_user_id: nil,
+      decided_at: nil
+    )
+    |> Repo.update!()
+
+    :raised
+  end
+
+  defp remember_dismissal!(%Suggestion{rule_id: nil}), do: :ok
+
+  defp remember_dismissal!(suggestion) do
+    %SuggestionDismissal{
+      organization_id: suggestion.organization_id,
+      suggestion_id: suggestion.id,
+      rule_id: suggestion.rule_id,
+      rule_updated_at: suggestion.rule_updated_at
+    }
+    |> Repo.insert!(
+      on_conflict: {:replace, [:rule_updated_at, :updated_at]},
+      conflict_target: [:suggestion_id, :rule_id]
+    )
+
+    :ok
+  end
+
+  defp lock_open_suggestion!(%Scope{organization_id: organization_id}, id) do
+    with {:ok, id} <- Ecto.UUID.cast(id || ""),
+         %Suggestion{} = suggestion <-
+           Suggestion
+           |> where([suggestion], suggestion.organization_id == ^organization_id)
+           |> where([suggestion], suggestion.id == ^id and suggestion.status == "open")
+           |> lock("FOR UPDATE")
+           |> Repo.one() do
+      suggestion
+    else
+      _missing_or_decided -> Repo.rollback(:not_found)
+    end
+  end
+
+  defp decide!(scope, suggestion, status) do
+    suggestion
+    |> Ecto.Changeset.change(
+      status: status,
+      decided_by_user_id: scope.user.id,
+      decided_at: Renga.Time.utc_now_ms()
+    )
+    |> Repo.update!()
   end
 
   ## Projection

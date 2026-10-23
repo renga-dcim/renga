@@ -253,8 +253,8 @@ defmodule RengaWeb.ChangeDescription do
   def describe(%{kind: "group_set_deleted", old_value: %{"name" => name}}),
     do: "Deleted the #{name} group set"
 
-  def describe(%{kind: "group_member_added", new_value: %{"name" => name}}),
-    do: "Added to #{name}"
+  def describe(%{kind: "group_member_added", new_value: %{"name" => name}} = event),
+    do: "Added to #{name}" <> reason(event.metadata)
 
   def describe(%{kind: "group_member_removed", metadata: %{"reason" => "group_deleted"}} = event),
     do: "Left #{event.old_value["name"]}, which was deleted"
