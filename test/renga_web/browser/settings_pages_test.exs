@@ -28,6 +28,16 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
   }, 600))
   """
 
+  @power_sources_fit %{
+    "one_line" => true,
+    "beside_name" => true,
+    "inside" => true,
+    "label" => "Power sources: 1 of 2 available",
+    "name_readable" => true
+  }
+
+  @power_sources_open %{"open" => true, "inside" => true, "hint" => true, "status" => true}
+
   defp tappable(heights), do: Enum.all?(heights, &(round(&1) >= 44))
 
   test "sign-in and registration fit a phone", %{conn: conn} do
@@ -314,9 +324,19 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
     %{agent: agent, conn: conn, long_capability: long_capability, resource: resource} =
       collector_context(conn)
 
+    put_power_sources(agent)
+
     conn
     |> visit("/settings/collectors")
     |> assert_has("body .phx-connected")
+    |> evaluate(power_sources_layout(agent), &assert(&1 == @power_sources_fit))
+    |> click("#collector-power-#{agent.source_id}")
+    |> evaluate(power_sources_popover(agent), &assert(&1 == @power_sources_open))
+    |> press("#collector-power-#{agent.source_id}", "Escape")
+    |> evaluate(
+      "document.getElementById('collector-power-#{agent.source_id}-list').matches(':popover-open')",
+      &assert(&1 == false)
+    )
     |> evaluate(
       "[document.querySelectorAll('#collector-#{agent.source_id} td')[2], document.getElementById('collector-key-#{agent.source_id}').closest('td')].every(cell => getComputedStyle(cell).display !== 'none')",
       &assert(&1 == true)
@@ -335,6 +355,7 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
           resolve({
             fits: wrapper.scrollWidth <= wrapper.clientWidth,
             collector_width: cells[0].clientWidth,
+            name_width: document.getElementById('collector-name-#{agent.source_id}').getBoundingClientRect().width,
             resource_visible: getComputedStyle(cells[2]).display !== 'none',
             key_visible: getComputedStyle(document.getElementById('collector-key-#{agent.source_id}').closest('td')).display !== 'none'
           })
@@ -344,6 +365,7 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
       fn layout ->
         assert layout["fits"] == true
         assert layout["collector_width"] >= 160
+        assert layout["name_width"] >= 96
         assert layout["resource_visible"] == true
         assert layout["key_visible"] == true
       end
@@ -415,6 +437,122 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
       @clip_tooltip,
       &assert(&1 =~ "5 dropped since restart (4 to make room, 1 after a day; queued 2d to 3h")
     )
+  end
+
+  test "collector power sources stay on the row and open with a tap at phone width", %{
+    conn: conn
+  } do
+    %{agent: agent, conn: conn} = collector_context(conn)
+    put_power_sources(agent)
+
+    conn
+    |> visit("/settings/collectors")
+    |> assert_has("body .phx-connected")
+    |> evaluate(@fits, &assert(&1 == true))
+    |> evaluate(power_sources_layout(agent), &assert(&1 == @power_sources_fit))
+    |> click("#collector-power-#{agent.source_id}")
+    |> evaluate(power_sources_popover(agent), &assert(&1 == @power_sources_open))
+  end
+
+  test "every accepted power source stays reachable on a short phone screen", %{conn: conn} do
+    %{agent: agent, conn: conn} = collector_context(conn)
+
+    # As many sources as the API accepts, with long names and hints.
+    sources =
+      for index <- 1..32 do
+        %{
+          "source" => "http://exporter-#{index}.#{String.duplicate("rack", 20)}.example:9100",
+          "status" => "unreachable"
+        }
+      end
+
+    agent
+    |> Ecto.Changeset.change(metadata: Map.put(agent.metadata, "power_sources", sources))
+    |> Renga.Repo.update!()
+
+    conn
+    |> visit("/settings/collectors")
+    |> assert_has("body .phx-connected")
+    |> click("#collector-power-#{agent.source_id}")
+    |> evaluate(
+      """
+      new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => {
+        const popover = document.getElementById('collector-power-#{agent.source_id}-list')
+        popover.scrollTop = popover.scrollHeight
+        requestAnimationFrame(() => {
+          const box = popover.getBoundingClientRect()
+          const last = document.getElementById('collector-power-#{agent.source_id}-31').getBoundingClientRect()
+          resolve({
+            open: popover.matches(':popover-open'),
+            inside: box.top >= 0 && box.bottom <= innerHeight && box.left >= 0 && box.right <= innerWidth,
+            scrolls: popover.scrollHeight > popover.clientHeight,
+            last_visible: last.top >= box.top && last.bottom <= box.bottom + 1
+          })
+        })
+      })))
+      """,
+      &assert(
+        &1 == %{"open" => true, "inside" => true, "scrolls" => true, "last_visible" => true}
+      )
+    )
+  end
+
+  # A source the agent cannot read, so the popover must show what would
+  # enable it.
+  defp put_power_sources(agent) do
+    agent
+    |> Ecto.Changeset.change(
+      metadata:
+        Map.put(agent.metadata, "power_sources", [
+          %{"source" => "power_poller/rack-pdus", "status" => "available"},
+          %{"source" => "hwmon", "status" => "not_present"}
+        ])
+    )
+    |> Renga.Repo.update!()
+  end
+
+  # The summary sits on the collector's line, so the row keeps its single-line
+  # height (or the 44px touch minimum).
+  defp power_sources_layout(agent) do
+    """
+    (() => {
+      const button = document.getElementById('collector-power-#{agent.source_id}')
+      const name = document.getElementById('collector-name-#{agent.source_id}')
+      const row = button.closest('tr').getBoundingClientRect()
+      const cell = button.closest('td').getBoundingClientRect()
+      const b = button.getBoundingClientRect()
+      const n = name.getBoundingClientRect()
+      const root = getComputedStyle(document.documentElement)
+      const height = Math.max(
+        parseFloat(root.getPropertyValue('--rg-row-h')),
+        parseFloat(root.getPropertyValue('--rg-tap-min')) || 0
+      )
+      return {
+        one_line: row.height <= height + 1,
+        beside_name: Math.abs((b.top + b.bottom) / 2 - (n.top + n.bottom) / 2) < 2,
+        inside: button.checkVisibility() && b.left >= cell.left && b.right <= cell.right,
+        label: button.getAttribute('aria-label'),
+        // The count leaves the collector's name most of the cell.
+        name_readable: n.width >= 96 && n.width >= b.width * 2
+      }
+    })()
+    """
+  end
+
+  defp power_sources_popover(agent) do
+    """
+    new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => {
+      const popover = document.getElementById('collector-power-#{agent.source_id}-list')
+      const box = popover.getBoundingClientRect()
+      const hwmon = document.getElementById('collector-power-#{agent.source_id}-1')
+      resolve({
+        open: popover.matches(':popover-open'),
+        inside: box.left >= 0 && box.right <= innerWidth && box.bottom <= innerHeight,
+        hint: hwmon.checkVisibility() && hwmon.textContent.includes('ipmi_exporter'),
+        status: hwmon.textContent.includes('Not present')
+      })
+    })))
+    """
   end
 
   defp collector_context(conn) do

@@ -7,7 +7,10 @@ pub mod hwmon;
 
 use crate::{
     cancellation::Cancellation,
-    payload::{SampleMapping, SampleWindow, TelemetryBatch, TelemetrySample, MAX_TELEMETRY_BYTES},
+    payload::{
+        PowerSourceReport, SampleMapping, SampleWindow, TelemetryBatch, TelemetrySample,
+        MAX_TELEMETRY_BYTES,
+    },
     snmp::worker::Sink,
 };
 use chrono::{DateTime, Utc};
@@ -33,6 +36,17 @@ pub struct PowerSources(Arc<Mutex<Option<hwmon::Availability>>>);
 impl PowerSources {
     pub fn hwmon(&self) -> Option<hwmon::Availability> {
         *self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Every source sampled so far, or `None` before the first sample, so a check-in keeps the
+    /// last report rather than replacing it with nothing.
+    pub fn reports(&self) -> Option<Vec<PowerSourceReport>> {
+        self.hwmon().map(|availability| {
+            vec![PowerSourceReport {
+                source: hwmon::MAPPING.into(),
+                status: availability.as_str(),
+            }]
+        })
     }
 
     fn publish(&self, availability: hwmon::Availability) {
@@ -220,6 +234,11 @@ mod tests {
     }
 
     #[test]
+    fn nothing_is_reported_before_the_first_sample() {
+        assert_eq!(PowerSources::default().reports(), None);
+    }
+
+    #[test]
     fn a_host_without_mapped_sensors_queues_nothing() {
         let root = std::env::temp_dir().join(format!("renga-power-{}", Uuid::new_v4()));
         let (sink, batches) = capture();
@@ -229,5 +248,12 @@ mod tests {
 
         assert!(batches.lock().unwrap().is_empty());
         assert_eq!(sources.hwmon(), Some(hwmon::Availability::NotPresent));
+        assert_eq!(
+            sources.reports(),
+            Some(vec![PowerSourceReport {
+                source: "hwmon".into(),
+                status: "not_present"
+            }])
+        );
     }
 }

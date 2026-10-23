@@ -69,6 +69,17 @@ defmodule Renga.Inventory.Agent do
 
   def telemetry_queue(_agent), do: nil
 
+  @doc """
+  The power sources the agent last reported and whether each can be read
+  (RFD 10, "Source status"), or `nil` when none valid is stored.
+  """
+  def power_sources(%__MODULE__{metadata: %{"power_sources" => sources}}) do
+    if AgentPayload.power_sources_errors(sources) == [],
+      do: Enum.map(sources, &%{source: &1["source"], status: &1["status"]})
+  end
+
+  def power_sources(_agent), do: nil
+
   defp queue_health(queue) do
     dropped_for_space = Map.fetch!(queue, "dropped_for_space")
     expired = Map.fetch!(queue, "expired")

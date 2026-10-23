@@ -14,9 +14,9 @@ use renga_agent::{
         CollectorResource, CollectorResourceKind, Component, DomainDisk, DomainInterface,
         DomainInterfaceType, DomainState, HostAttributes, HypervisorStatus, Identifiers, Interface,
         JobClaim, JobReport, KeyApproval, LeaseRequest, LeaseResponse, LeasedJob, Neighbor,
-        Observation, PresentedKey, QueueReport, Reachability, ReportAck, ReportScope, ReportType,
-        ResourceKind, ScopedReport, SectionCompleteness, ServerResource, TaggingMode, TargetStatus,
-        VlanMembership, VmDomain,
+        Observation, PowerSourceReport, PresentedKey, QueueReport, Reachability, ReportAck,
+        ReportScope, ReportType, ResourceKind, ScopedReport, SectionCompleteness, ServerResource,
+        TaggingMode, TargetStatus, VlanMembership, VmDomain,
     },
     power::{self, hwmon},
 };
@@ -289,6 +289,18 @@ fn check_ins_match_the_contract() {
         "CheckIn",
         &CheckIn::new(vec![], Some(queue(None, Some((600, 360)))))
             .with_telemetry_queue(Some(queue(Some(30), Some((86_400, 3_600))))),
+    );
+    assert_conforms(
+        "CheckIn",
+        &CheckIn::new(vec![], None).with_power_sources(Some(
+            ["available", "not_permitted", "not_present", "unreachable"]
+                .into_iter()
+                .map(|status| PowerSourceReport {
+                    source: "hwmon".into(),
+                    status,
+                })
+                .collect(),
+        )),
     );
 
     let state = std::env::temp_dir().join(format!("renga-contract-{}", uuid::Uuid::new_v4()));

@@ -204,6 +204,32 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
            )
   end
 
+  test "shows which power sources each agent can read and what would enable the rest", %{
+    conn: conn,
+    source: source,
+    agent: agent
+  } do
+    cell = "#collector-power-#{source.id}"
+    {:ok, view, _html} = live(conn, ~p"/settings/collectors")
+    refute has_element?(view, cell)
+
+    agent
+    |> Ecto.Changeset.change(
+      metadata:
+        Map.put(agent.metadata, "power_sources", [
+          %{"source" => "hwmon", "status" => "not_present"}
+        ])
+    )
+    |> Repo.update!()
+
+    {:ok, view, _html} = live(conn, ~p"/settings/collectors")
+    assert has_element?(view, "#{cell}-0", "Not present")
+
+    assert view
+           |> element("#{cell}-0")
+           |> render() =~ "ipmi_exporter"
+  end
+
   test "malformed legacy queue metadata is not reported rather than crashing", %{
     conn: conn,
     source: source,

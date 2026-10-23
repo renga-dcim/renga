@@ -390,7 +390,8 @@ defmodule RengaWeb.InventoryOperationsLive do
                 state (docs/design-system.md, "Overflow"). As the table narrows
                 it drops the installation id (already in the name), then the
                 installation key, the resource, jobs, queue and inventory; the
-                name and connection always stay. The page is max-w-6xl, so the
+                name, with the agent's power sources on a line under it, and
+                the connection always stay. The page is max-w-6xl, so the
                 installation id shows only if the page grows wider. --%>
           <.table
             id="collectors"
@@ -398,10 +399,18 @@ defmodule RengaWeb.InventoryOperationsLive do
             overflow="clip"
             class="rounded-lg border border-edge bg-surface"
           >
-            <:col :let={{_id, source}} label="Collector">
-              <span class="font-medium">{source.name}</span>
-              <span class="ml-1.5 font-mono text-xs text-fg-muted">
-                {collector_version(source)}
+            <:col :let={{_id, source}} label="Collector" clip={false}>
+              <span class="flex min-w-0 items-center gap-1.5">
+                <.clip id={"collector-name-#{source.id}"}>
+                  <span class="font-medium">{source.name}</span>
+                  <span class="ml-1.5 font-mono text-xs text-fg-muted">
+                    {collector_version(source)}
+                  </span>
+                </.clip>
+                <.collector_power_sources
+                  id={"collector-power-#{source.id}"}
+                  sources={Agent.power_sources(collector_agent(source))}
+                />
               </span>
             </:col>
             <:col :let={{_id, source}} label="Connection" class="w-40">
@@ -728,6 +737,105 @@ defmodule RengaWeb.InventoryOperationsLive do
       {:error, _unknown} -> "Unknown to Renga"
     end
   end
+
+  attr :id, :string, required: true
+  attr :sources, :list, required: true
+
+  # Whether the agent can read each power source on its host (RFD 10): a
+  # compact count after the collector's name, so the name keeps the cell's
+  # width, that opens every source, its status, and what would enable a source
+  # it cannot read. Agents that report no power sources show nothing.
+  defp collector_power_sources(%{sources: nil} = assigns), do: ~H""
+
+  defp collector_power_sources(assigns) do
+    available = Enum.count(assigns.sources, &(&1.status == "available"))
+    total = length(assigns.sources)
+
+    assigns =
+      assign(assigns,
+        available: available,
+        total: total,
+        worst: worst_power_source(assigns.sources)
+      )
+
+    ~H"""
+    <span phx-click={%JS{}} class="inline-flex shrink-0 items-center">
+      <button
+        id={@id}
+        type="button"
+        popovertarget={"#{@id}-list"}
+        aria-label={"Power sources: #{@available} of #{@total} available"}
+        title={"Power sources: #{@available} of #{@total} available"}
+        class="inline-flex min-h-tap min-w-tap items-center justify-center gap-1 rounded-sm px-1 text-xs text-fg-muted transition-colors hover:bg-sunken hover:text-fg focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
+      >
+        <.icon name="hero-bolt-micro" class={"size-3 #{power_source_icon(@worst)}"} />
+        <span class="tabular-nums">{@available}/{@total}</span>
+      </button>
+      <div
+        id={"#{@id}-list"}
+        popover
+        data-anchor={@id}
+        class="fixed inset-auto m-0 w-72 max-w-[calc(100vw-1rem)] space-y-1.5 whitespace-normal rounded-md border border-edge bg-surface px-3 py-2 text-xs text-fg shadow-lg"
+      >
+        <p class="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg-subtle">
+          Power sources · {@available} of {@total} available
+        </p>
+        <ul class="space-y-2">
+          <li :for={{source, index} <- Enum.with_index(@sources)} id={"#{@id}-#{index}"}>
+            <span class="flex min-w-0 items-center justify-between gap-2">
+              <span class="min-w-0 break-all font-mono">{source.source}</span>
+              <span class="inline-flex shrink-0 items-center gap-1">
+                <span class={["size-1.5 rounded-full", power_source_dot(source.status)]} />
+                {power_source_status(source.status)}
+              </span>
+            </span>
+            <span :if={hint = power_source_hint(source)} class="mt-0.5 block text-fg-muted">
+              {hint}
+            </span>
+          </li>
+        </ul>
+      </div>
+    </span>
+    """
+  end
+
+  # The status that most needs attention, which colors the summary's bolt.
+  defp worst_power_source(sources) do
+    Enum.find(~w(unreachable not_permitted not_present available), fn status ->
+      Enum.any?(sources, &(&1.status == status))
+    end)
+  end
+
+  # The summary's bolt takes the color of the source that most needs attention.
+  defp power_source_icon("available"), do: "text-ok"
+  defp power_source_icon("unreachable"), do: "text-crit"
+  defp power_source_icon(_status), do: "text-unknown"
+
+  defp power_source_dot("available"), do: "bg-ok"
+  defp power_source_dot("unreachable"), do: "bg-crit"
+  defp power_source_dot(_status), do: "bg-unknown"
+
+  defp power_source_status("available"), do: "Available"
+  defp power_source_status("not_permitted"), do: "Not permitted"
+  defp power_source_status("not_present"), do: "Not present"
+  defp power_source_status("unreachable"), do: "Unreachable"
+
+  defp power_source_hint(%{source: "hwmon", status: "not_present"}),
+    do:
+      "No supported power supply sensor. ACPI power meters are skipped because Linux does " <>
+        "not say whether they measure input or output. A host running ipmi_exporter can be " <>
+        "read by adding it under [[exporters]] in the agent configuration."
+
+  defp power_source_hint(%{source: "hwmon", status: "not_permitted"}),
+    do: "The agent cannot read /sys/class/hwmon. Check the service's sandbox settings."
+
+  defp power_source_hint(%{status: "unreachable"}),
+    do: "The agent cannot reach this source. Check its address and that it is running."
+
+  defp power_source_hint(%{status: "not_permitted"}),
+    do: "The agent is not allowed to read this source. Check its credentials or permissions."
+
+  defp power_source_hint(_source), do: nil
 
   attr :id, :string, required: true
   attr :queue, :map, required: true

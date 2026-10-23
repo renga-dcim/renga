@@ -72,6 +72,14 @@
               "observation_queue": {
                 "$ref": "#/components/schemas/ObservationQueue"
               },
+              "power_sources": {
+                "description": "Every power source the agent samples and whether it can read it. Omitted until the agent has sampled once; each report replaces the last.",
+                "items": {
+                  "$ref": "#/components/schemas/PowerSource"
+                },
+                "maxItems": 32,
+                "type": "array"
+              },
               "telemetry_queue": {
                 "$ref": "#/components/schemas/ObservationQueue"
               }
@@ -1498,6 +1506,30 @@
           "rejected",
           "unreadable",
           "oldest_age_seconds"
+        ],
+        "type": "object"
+      },
+      "PowerSource": {
+        "title": "PowerSource",
+        "description": "Whether the agent can read one power source on its host (RFD 10, \"Source status\").",
+        "properties": {
+          "source": {
+            "description": "The source, such as `hwmon` or an exporter's URL. Must not be blank. At most 255 characters.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "available",
+              "not_permitted",
+              "not_present",
+              "unreachable"
+            ]
+          }
+        },
+        "required": [
+          "source",
+          "status"
         ],
         "type": "object"
       },
