@@ -88,6 +88,25 @@ defmodule Renga.RolesTest do
     end
   end
 
+  test "explicit permissions only share a role with each other", context do
+    assert {:error, changeset} =
+             Roles.create_role(context.owner, attrs("Ops", ["queries.run", "dcim.edit"]))
+
+    assert "can't mix explicit permissions with others" in errors_on(changeset).permissions
+
+    {:ok, role} =
+      Roles.create_role(context.admin, attrs("Queries", ~w(queries.run queries.run_sensitive)))
+
+    assert {:error, changeset} =
+             Roles.update_role(
+               context.admin,
+               role,
+               attrs("Queries", ~w(queries.run jobs.request))
+             )
+
+    assert "can't mix explicit permissions with others" in errors_on(changeset).permissions
+  end
+
   test "admins cannot grant the owner-only permissions, before or after", context do
     assert {:error, changeset} =
              Roles.create_role(context.admin, attrs("Exporter", ["organization.export"]))

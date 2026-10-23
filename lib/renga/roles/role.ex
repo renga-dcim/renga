@@ -47,6 +47,7 @@ defmodule Renga.Roles.Role do
     |> validate_subset(:permissions, Authorization.custom_role_permissions(),
       message: "can't include members.manage or roles.manage"
     )
+    |> validate_explicit_alone()
     |> unique_constraint(:name,
       name: :roles_organization_name_index,
       message: "is already a role in this organization"
@@ -57,6 +58,21 @@ defmodule Renga.Roles.Role do
     if get_field(changeset, :permissions) in [nil, []],
       do: add_error(changeset, :permissions, "choose at least one permission"),
       else: changeset
+  end
+
+  # An explicit permission (RFD 17) lives in a role of its own kind, so that
+  # giving someone a routine role never also opens operational access.
+  defp validate_explicit_alone(changeset) do
+    permissions = get_field(changeset, :permissions) || []
+    known = Enum.filter(permissions, &(&1 in Authorization.permissions()))
+
+    case Enum.split_with(known, &Authorization.explicit?/1) do
+      {[_ | _], [_ | _]} ->
+        add_error(changeset, :permissions, "can't mix explicit permissions with others")
+
+      _alone ->
+        changeset
+    end
   end
 
   defp normalize_permissions(nil), do: nil
