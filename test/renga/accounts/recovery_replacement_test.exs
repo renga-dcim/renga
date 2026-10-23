@@ -35,6 +35,19 @@ defmodule Renga.Accounts.RecoveryReplacementTest do
     end)
   end
 
+  test "the final code still replaces the lost app" do
+    with_recovering_user(:all, fn user, token ->
+      assert MFA.recovery_codes_left(user) == 0
+      assert Accounts.recovering?(user, token)
+
+      secret = MFA.new_totp_secret()
+      assert {:ok, nil} = Accounts.add_totp(user, token, secret, code(secret))
+      assert MFA.mfa?(user)
+      refute Accounts.recovering?(user, token)
+      assert :ok = MFA.verify_totp(user, code(secret, 1))
+    end)
+  end
+
   test "a passkey with a key Renga did not offer leaves the grant unspent" do
     with_recovering_user(fn user, token ->
       response =
@@ -68,11 +81,12 @@ defmodule Renga.Accounts.RecoveryReplacementTest do
   defp code(secret, steps \\ 0),
     do: NimbleTOTP.verification_code(secret, time: System.os_time(:second) + steps * 30)
 
-  defp with_recovering_user(fun) do
+  defp with_recovering_user(spend \\ 1, fun) do
     :ok = Sandbox.checkout(Repo, sandbox: false)
     user = user_fixture()
-    {_secret, [recovery_code | _]} = totp_fixture(user)
-    :ok = MFA.spend_recovery_code(user, recovery_code)
+    {_secret, codes} = totp_fixture(user)
+    spent = if spend == :all, do: codes, else: Enum.take(codes, spend)
+    Enum.each(spent, &(:ok = MFA.spend_recovery_code(user, &1)))
     token = Accounts.generate_user_session_token(user)
     :ok = Accounts.start_recovery(user, token)
 
