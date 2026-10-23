@@ -117,30 +117,75 @@ pub fn probe(_config: &OsqueryConfig) -> Option<BackendStatus> {
 #[cfg(unix)]
 mod client {
     use super::{thrift, thrift::Value, BackendStatus, Error, OsqueryConfig, Row, PROBE_TIMEOUT};
+    use socket2::{Domain, SockAddr, Socket, Type};
     use std::{
-        io::{BufReader, BufWriter, ErrorKind},
+        io::{self, BufReader, BufWriter, ErrorKind, Read, Write},
         os::unix::net::UnixStream,
         path::Path,
-        time::Duration,
+        time::{Duration, Instant},
     };
     use tracing::warn;
 
     /// A connection to osquery's extension manager.
     pub struct Client {
-        reader: BufReader<UnixStream>,
-        writer: BufWriter<UnixStream>,
+        reader: BufReader<Timed>,
+        writer: BufWriter<Timed>,
         seqid: i32,
     }
 
+    /// The socket, with every read and write given only the time left before
+    /// one deadline. Per-operation timeouts alone would let a daemon that
+    /// trickles a byte at a time hold a caller indefinitely.
+    struct Timed {
+        stream: UnixStream,
+        deadline: Instant,
+    }
+
+    impl Timed {
+        fn left(&self) -> io::Result<Duration> {
+            let left = self.deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                Err(io::Error::new(ErrorKind::TimedOut, "osquery took too long"))
+            } else {
+                Ok(left)
+            }
+        }
+    }
+
+    impl Read for Timed {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.stream.set_read_timeout(Some(self.left()?))?;
+            self.stream.read(buf)
+        }
+    }
+
+    impl Write for Timed {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.stream.set_write_timeout(Some(self.left()?))?;
+            self.stream.write(buf)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.stream.flush()
+        }
+    }
+
     impl Client {
-        /// Connects, waiting at most `timeout` for each read or write.
+        /// Connects. `timeout` bounds the whole connection, from connecting
+        /// through every call made on it: once it passes, every call fails
+        /// with a timeout. Connecting to a daemon whose listen queue is full
+        /// waits at most `timeout` too.
         pub fn connect(socket: &Path, timeout: Duration) -> Result<Self, Error> {
-            let stream = UnixStream::connect(socket)?;
-            stream.set_read_timeout(Some(timeout))?;
-            stream.set_write_timeout(Some(timeout))?;
+            let deadline = Instant::now() + timeout;
+            let raw = Socket::new(Domain::UNIX, Type::STREAM, None)?;
+            raw.connect_timeout(&SockAddr::unix(socket)?, timeout)?;
+            let stream = UnixStream::from(raw);
             Ok(Self {
-                reader: BufReader::new(stream.try_clone()?),
-                writer: BufWriter::new(stream),
+                reader: BufReader::new(Timed {
+                    stream: stream.try_clone()?,
+                    deadline,
+                }),
+                writer: BufWriter::new(Timed { stream, deadline }),
                 seqid: 0,
             })
         }
@@ -418,6 +463,81 @@ mod tests {
         };
         assert_eq!(probe(&refusing), Some(BackendStatus::NotPresent));
         server.join().unwrap();
+    }
+
+    fn socket_path() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("renga-osquery-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("osquery.em")
+    }
+
+    #[test]
+    fn a_silent_daemon_cannot_hold_a_call_past_the_deadline() {
+        let socket = socket_path();
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let hold = std::thread::spawn(move || {
+            listener.accept().map(|(stream, _)| {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                drop(stream)
+            })
+        });
+        let started = std::time::Instant::now();
+        let mut client = Client::connect(&socket, std::time::Duration::from_millis(200)).unwrap();
+        assert!(client.ping().is_err());
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        let _ = hold.join();
+    }
+
+    #[test]
+    fn a_trickled_reply_cannot_hold_a_call_past_the_deadline() {
+        use std::io::{Read, Write};
+        let socket = socket_path();
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let hold = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 64];
+            let _ = stream.read(&mut request);
+            // A valid reply header and a 1000-byte method name, sent a byte
+            // every 50 ms: no single read waits long enough to time out.
+            let _ = stream.write_all(&[0x80, 0x01, 0x00, 0x02, 0x00, 0x00, 0x03, 0xe8]);
+            for _ in 0..40 {
+                if stream.write_all(b"a").is_err() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        });
+        let started = std::time::Instant::now();
+        let mut client = Client::connect(&socket, std::time::Duration::from_millis(300)).unwrap();
+        assert!(client.ping().is_err());
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        let _ = hold.join();
+    }
+
+    #[test]
+    fn a_full_listen_queue_does_not_hold_the_probe() {
+        use socket2::{Domain, SockAddr, Socket, Type};
+        let socket = socket_path();
+        let listener = Socket::new(Domain::UNIX, Type::STREAM, None).unwrap();
+        listener.bind(&SockAddr::unix(&socket).unwrap()).unwrap();
+        listener.listen(0).unwrap();
+        // Fill the queue; nobody ever accepts.
+        let mut queued = Vec::new();
+        for _ in 0..8 {
+            let client = Socket::new(Domain::UNIX, Type::STREAM, None).unwrap();
+            client.set_nonblocking(true).unwrap();
+            if client.connect(&SockAddr::unix(&socket).unwrap()).is_err() {
+                break;
+            }
+            queued.push(client);
+        }
+        let config = OsqueryConfig {
+            enabled: true,
+            socket,
+        };
+        let started = std::time::Instant::now();
+        assert_eq!(probe(&config), Some(BackendStatus::NotPresent));
+        assert!(started.elapsed() < PROBE_TIMEOUT + std::time::Duration::from_secs(1));
     }
 
     #[test]
