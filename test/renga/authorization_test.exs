@@ -16,7 +16,7 @@ defmodule Renga.AuthorizationTest do
                   inventory.edit requests.decide catalog.expectations dcim.edit ipam.edit
                   topology.edit jobs.request views.share teams.manage triage_rules.manage
                   intake_keys.manage members.manage roles.manage organization.manage
-                  organization.export),
+                  organization.export scim.manage),
     "admin" => ~w(inventory.read inventory.reconcile findings.act catalog.author
                   inventory.edit requests.decide catalog.expectations dcim.edit ipam.edit
                   topology.edit jobs.request views.share teams.manage triage_rules.manage
