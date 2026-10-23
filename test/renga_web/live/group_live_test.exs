@@ -105,6 +105,27 @@ defmodule RengaWeb.GroupLiveTest do
 
       assert length(ResourceGroups.list_groups(context.admin)) == 2
     end
+
+    test "a stale member-removal event without an active group leaves the view alive", context do
+      {:ok, staging} = ResourceGroups.create_group(context.admin, %{name: "Staging"})
+      {:ok, 1} = ResourceGroups.add_members(context.admin, staging, [context.web.id])
+      {:ok, view, _html} = live(context.admin_conn, ~p"/settings/groups")
+
+      assert render_click(view, "remove_member", %{"id" => context.web.id}) =~
+               "Choose a group before removing members"
+
+      view |> element("#group-#{staging.id}-edit") |> render_click()
+
+      view
+      |> form("#group-form", group: %{name: "Renamed"})
+      |> render_submit()
+
+      assert render_click(view, "remove_member", %{"id" => context.web.id}) =~
+               "Choose a group before removing members"
+
+      assert [%{id: resource_id}] = ResourceGroups.list_members(context.admin, staging)
+      assert resource_id == context.web.id
+    end
   end
 
   describe "resource page" do
@@ -155,6 +176,26 @@ defmodule RengaWeb.GroupLiveTest do
 
       assert [%{direct: true}] =
                ResourceGroups.list_resource_groups(context.admin, context.web.id)
+    end
+
+    test "adding a sibling in a non-exclusive set keeps the existing membership", context do
+      {:ok, customers} = ResourceGroups.create_group_set(context.admin, %{name: "Customer"})
+
+      {:ok, acme} =
+        ResourceGroups.create_group(context.admin, %{name: "Acme", group_set_id: customers.id})
+
+      {:ok, globex} =
+        ResourceGroups.create_group(context.admin, %{name: "Globex", group_set_id: customers.id})
+
+      {:ok, 1} = ResourceGroups.add_members(context.admin, acme, [context.web.id])
+      {:ok, view, _html} = live(context.admin_conn, ~p"/inventory/#{context.web.id}")
+
+      view
+      |> form("#resource-group-form", group: %{id: globex.id})
+      |> render_submit()
+
+      assert has_element?(view, "#resource-group-#{acme.id}")
+      assert has_element?(view, "#resource-group-#{globex.id}")
     end
   end
 

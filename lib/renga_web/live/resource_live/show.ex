@@ -199,10 +199,10 @@ defmodule RengaWeb.ResourceLive.Show do
 
     result =
       with %ResourceGroups.Group{} = group <- ResourceGroups.get_group(scope, group_id) do
-        # Choosing a sibling of a direct group in the same set moves the
-        # resource, so changing environment is one step.
+        # Choosing a sibling of a direct group in the same exclusive set
+        # moves the resource, so changing environment is one step.
         sibling? =
-          group.group_set_id != nil and
+          group.group_set != nil and group.group_set.exclusive and
             Enum.any?(memberships, &(&1.direct and &1.group.group_set_id == group.group_set_id))
 
         if sibling?,

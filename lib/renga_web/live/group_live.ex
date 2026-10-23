@@ -162,13 +162,22 @@ defmodule RengaWeb.GroupLive do
     end
   end
 
-  def handle_event("remove_member", %{"id" => resource_id}, socket) do
-    %{current_scope: scope, editing: group} = socket.assigns
-
+  def handle_event(
+        "remove_member",
+        %{"id" => resource_id},
+        %{assigns: %{current_scope: scope, editing: %Group{} = group}} = socket
+      ) do
     case ResourceGroups.remove_members(scope, group, [resource_id]) do
       {:ok, _count} -> {:noreply, socket |> load_members() |> load()}
       {:error, reason} -> {:noreply, put_flash(socket, :error, refusal(reason))}
     end
+  end
+
+  def handle_event("remove_member", _params, socket) do
+    {:noreply,
+     socket
+     |> put_flash(:error, "Choose a group before removing members")
+     |> load()}
   end
 
   @impl true
