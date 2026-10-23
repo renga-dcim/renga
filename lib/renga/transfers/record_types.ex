@@ -43,6 +43,9 @@ defmodule Renga.Transfers.RecordTypes do
     {"roles", :current, ~w(id name description permissions inserted_at updated_at)},
     {"saved_views", :current,
      ~w(id user_id created_by_id area name params pinned inserted_at updated_at)},
+    {"organization_security_settings", :current,
+     ~w(id name value changed_by changed_by_user_id inserted_at updated_at)},
+    {"resource_group_sets", :current, ~w(id name description exclusive inserted_at updated_at)},
     {"sources", :current,
      ~w(id kind name status metadata inserted_at updated_at authoritative_routing_domains agent_id collector_id)},
     {"teams", :current, ~w(id name description inserted_at updated_at)},
@@ -50,10 +53,14 @@ defmodule Renga.Transfers.RecordTypes do
      ~w(id source_id name status version capabilities metadata registered_at inserted_at updated_at installation_id last_contacted_at)},
     {"cable_import_contracts", :current,
      ~w(id source_id granted_by_id granted_at revoked_by_id revoked_at inserted_at updated_at)},
+    {"resource_groups", :current, ~w(id group_set_id name description inserted_at updated_at)},
     {"resources", :current,
      ~w(id kind name display_name lifecycle_state spec generation resource_version labels annotations deletion_requested_at inserted_at updated_at owner_team_id owner_source owner_set_at owner_rule_id)},
     {"role_assignments", :current,
      ~w(id membership_id built_in_role role_id valid_until expired_at source reason created_by_user_id inserted_at)},
+    {"resource_group_members", :current,
+     ~w(id group_id resource_id added_by_user_id inserted_at)},
+    {"resource_group_memberships", :current, ~w(resource_id view group_id group_set_id)},
     {"sync_runs", :current,
      ~w(id source_id status started_at completed_at resource_count error_count metadata inserted_at updated_at)},
     {"team_memberships", :current, ~w(id team_id membership_id added_by_user_id inserted_at)},
@@ -191,7 +198,7 @@ defmodule Renga.Transfers.RecordTypes do
     {"racks", :current,
      ~w(id resource_id site_id location_id status facility_id height_units width starting_unit outer_width outer_depth dimension_unit metadata inserted_at updated_at)},
     {"triage_rules", :current,
-     ~w(id kind name enabled subnet intake_api_key_id hostname_pattern label_key label_value site_id location_id team_id created_by_user_id inserted_at updated_at)},
+     ~w(id kind name enabled subnet intake_api_key_id hostname_pattern label_key label_value site_id location_id team_id resource_group_id created_by_user_id inserted_at updated_at)},
     {"vlan_groups", :current,
      ~w(id resource_id slug scope_kind site_id location_id status description metadata inserted_at updated_at)},
     {"current_module_installations", :current,
@@ -216,6 +223,10 @@ defmodule Renga.Transfers.RecordTypes do
      ~w(id vlan_group_id start_vid end_vid inserted_at updated_at)},
     {"vlans", :current,
      ~w(id resource_id vlan_group_id vid name status role description metadata inserted_at updated_at)},
+    {"resource_group_suggestions", :current,
+     ~w(id resource_id group_id rule_id rule_name rule_updated_at status decided_by_user_id decided_at inserted_at updated_at)},
+    {"resource_group_suggestion_dismissals", :current,
+     ~w(id suggestion_id rule_id rule_updated_at inserted_at updated_at)},
     {"cable_assertions", :current,
      ~w(id sequence interface_a_id interface_b_id kind action confirmation actor_user_id source_id interface_neighbor_evidence_id asserted_at cable_type status label color length_value length_unit description metadata inserted_at cable_kind power_port_id power_outlet_id power_feed_id)},
     {"cable_plans", :current,
@@ -244,6 +255,7 @@ defmodule Renga.Transfers.RecordTypes do
     {"organization_memberships", "user_id", nil},
     {"saved_views", "user_id", nil},
     {"saved_views", "created_by_id", nil},
+    {"organization_security_settings", "changed_by_user_id", nil},
     {"cable_import_contracts", "granted_by_id", nil},
     {"cable_import_contracts", "revoked_by_id", nil},
     {"role_assignments", "created_by_user_id", nil},
@@ -265,6 +277,8 @@ defmodule Renga.Transfers.RecordTypes do
     {"desired_module_assignments", "confirmed_by_user_id", nil},
     {"job_events", "actor_id", "actor_type = 'user'"},
     {"triage_rules", "created_by_user_id", nil},
+    {"resource_group_members", "added_by_user_id", nil},
+    {"resource_group_suggestions", "decided_by_user_id", nil},
     {"expected_component_exceptions", "confirmed_by_user_id", nil},
     {"module_installation_events", "actor_user_id", nil},
     {"cable_assertions", "actor_user_id", nil},
@@ -298,7 +312,8 @@ defmodule Renga.Transfers.RecordTypes do
   # Record types whose primary key is not `id`.
   @order_by %{
     "interface_routing_domains" => ~w(interface_id),
-    "module_bay_compatible_types" => ~w(module_bay_id module_type_id)
+    "module_bay_compatible_types" => ~w(module_bay_id module_type_id),
+    "resource_group_memberships" => ~w(resource_id view group_id)
   }
 
   @excluded_fields %{
