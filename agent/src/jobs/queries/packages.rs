@@ -78,8 +78,14 @@ impl Query for Packages {
         raw: &Value,
     ) -> Result<Option<Value>, JobFailure> {
         let name = name(raw)?;
-        let deb = osquery_rows(osquery, OSQUERY_DEB_SQL).unwrap_or_default();
-        let rpm = osquery_rows(osquery, OSQUERY_RPM_SQL).unwrap_or_default();
+        // Either table failing leaves the list incomplete, so the native
+        // reading answers instead; an empty table is an answer.
+        let Some(deb) = osquery_rows(osquery, OSQUERY_DEB_SQL) else {
+            return Ok(None);
+        };
+        let Some(rpm) = osquery_rows(osquery, OSQUERY_RPM_SQL) else {
+            return Ok(None);
+        };
         let packages: Vec<Package> = deb
             .iter()
             .filter_map(|row| {
@@ -113,11 +119,12 @@ fn name(raw: &Value) -> Result<Option<String>, JobFailure> {
     Ok(params.name)
 }
 
-/// An `rpm_packages` row, with its version as `rpm`'s `%{EVR}` prints it.
+/// An `rpm_packages` row, with its version as `rpm`'s `%{EVR}` prints it:
+/// any epoch the package carries, even 0, and none when it has none.
 fn rpm_package(row: &osquery::Row) -> Option<Package> {
     let version = osquery_text(row, "version")?;
     let evr = match (osquery_text(row, "epoch"), osquery_text(row, "release")) {
-        (Some(epoch), Some(release)) if epoch != "0" => format!("{epoch}:{version}-{release}"),
+        (Some(epoch), Some(release)) => format!("{epoch}:{version}-{release}"),
         (_, Some(release)) => format!("{version}-{release}"),
         (_, None) => version.to_owned(),
     };

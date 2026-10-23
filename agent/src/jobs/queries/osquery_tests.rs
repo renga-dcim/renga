@@ -234,6 +234,87 @@ fn packages_come_from_deb_and_rpm_tables() {
     assert_eq!(server.join().unwrap(), ["query", "query"]);
 }
 
+#[test]
+fn rpm_versions_keep_an_explicit_epoch_even_zero() {
+    let (capability, server) = with_daemon(
+        packages::Packages,
+        vec![
+            ("FROM deb_packages", Vec::new()),
+            (
+                "FROM rpm_packages",
+                vec![
+                    vec![
+                        ("name", "a"),
+                        ("version", "1"),
+                        ("release", "2"),
+                        ("epoch", ""),
+                    ],
+                    vec![
+                        ("name", "b"),
+                        ("version", "1"),
+                        ("release", "2"),
+                        ("epoch", "0"),
+                    ],
+                    vec![
+                        ("name", "c"),
+                        ("version", "1"),
+                        ("release", "2"),
+                        ("epoch", "3"),
+                    ],
+                ],
+            ),
+        ],
+    );
+    let versions: Vec<_> = run(&capability, json!({}))["packages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["version"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(versions, ["1-2", "0:1-2", "3:1-2"]);
+    server.join().unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_failed_package_table_reads_natively_instead_of_answering_half() {
+    // dpkg answers, rpm fails: the answer must not be dpkg's packages alone.
+    let (capability, server) = with_daemon(
+        packages::Packages,
+        vec![(
+            "FROM deb_packages",
+            vec![vec![("name", "only-from-osquery"), ("version", "1")]],
+        )],
+    );
+    let answer = capability.run(&json!({}), &Cancellation::default());
+    assert!(!answer.is_ok_and(|v| v.to_string().contains("only-from-osquery")));
+    assert_eq!(server.join().unwrap(), ["query", "query"]);
+
+    // dpkg fails first: rpm is not asked on that connection.
+    let (capability, server) = with_daemon(packages::Packages, vec![]);
+    let _ = capability.run(&json!({}), &Cancellation::default());
+    assert_eq!(server.join().unwrap(), ["query"]);
+}
+
+#[test]
+fn a_matching_filter_with_no_hits_still_answers_from_osquery() {
+    let (capability, server) = with_daemon(
+        packages::Packages,
+        vec![
+            (
+                "FROM deb_packages",
+                vec![vec![("name", "openssl"), ("version", "3")]],
+            ),
+            ("FROM rpm_packages", Vec::new()),
+        ],
+    );
+    assert_eq!(
+        run(&capability, json!({"name": "nothing-like-this"})),
+        json!({"packages": [], "truncated": false})
+    );
+    server.join().unwrap();
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn no_systemd_units_from_osquery_reads_natively() {
