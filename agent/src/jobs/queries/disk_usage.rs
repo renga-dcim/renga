@@ -1,13 +1,32 @@
 //! `query.disk_usage@1`: capacity and use of each mounted filesystem, from
 //! PID 1's mount table and `statvfs`. Inventory sensitivity. Matches
 //! `Renga.Jobs.Queries.DiskUsage`.
+//!
+//! `statvfs` on a network or FUSE mount whose server is gone can block for
+//! good, and a thread blocked in a system call cannot be stopped. Each call
+//! therefore runs on its own thread, and the query waits for it only so
+//! long: a mount that does not answer is left out and the result says it
+//! was cut short. The stuck thread is left behind, and that mount is not
+//! asked again until it returns, so a dead mount holds at most one thread
+//! and never holds the job worker.
 
 use super::{clip, parameters, Bounded, Query, Sensitivity};
 use crate::{cancellation::Cancellation, jobs::JobFailure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::{
+    collections::BTreeSet,
+    sync::{mpsc, Mutex},
+    thread,
+    time::{Duration, Instant},
+};
 
 const MAX_FILESYSTEMS: usize = 512;
+const STATVFS_WAIT: Duration = Duration::from_secs(5);
+const POLL: Duration = Duration::from_millis(50);
+
+/// Mount points whose last probe has not returned.
+static STALLED: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 
 /// Kernel and virtual filesystems that hold no disk data, left out so the
 /// answer is about storage.
@@ -68,11 +87,54 @@ impl Query for DiskUsage {
 
     fn answer(&self, raw: &Value, cancellation: &Cancellation) -> Result<Value, JobFailure> {
         let Parameters {} = parameters(raw)?;
-        Ok(answer(read_filesystems(cancellation)?))
+        let (filesystems, stalled) = read_filesystems(cancellation)?;
+        Ok(answer(filesystems, stalled))
     }
 }
 
-fn answer(filesystems: Vec<Filesystem>) -> Value {
+/// What one bounded probe came to.
+#[derive(Debug, PartialEq)]
+enum Probe<T> {
+    Done(T),
+    /// It did not answer in time, or an earlier probe of it still hasn't.
+    Stalled,
+}
+
+/// Runs `probe` on its own thread and waits up to `wait` for it, keyed by
+/// `key` so a key whose earlier probe is still blocked is not tried again.
+fn bounded<T: Send + 'static>(
+    key: &str,
+    wait: Duration,
+    cancellation: &Cancellation,
+    probe: impl FnOnce() -> T + Send + 'static,
+) -> Result<Probe<T>, JobFailure> {
+    if !STALLED.lock().unwrap().insert(key.to_owned()) {
+        return Ok(Probe::Stalled);
+    }
+    let (sender, receiver) = mpsc::channel();
+    let owned = key.to_owned();
+    thread::spawn(move || {
+        let _ = sender.send(probe());
+        STALLED.lock().unwrap().remove(&owned);
+    });
+    let deadline = Instant::now() + wait;
+    loop {
+        if cancellation.cancelled() {
+            return Err(JobFailure::Cancelled);
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Ok(Probe::Stalled);
+        }
+        match receiver.recv_timeout(POLL.min(left)) {
+            Ok(value) => return Ok(Probe::Done(value)),
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(Probe::Stalled),
+        }
+    }
+}
+
+fn answer(filesystems: Vec<Filesystem>, stalled: bool) -> Value {
     let mut list = Bounded::new(MAX_FILESYSTEMS);
     let mut seen = std::collections::HashSet::new();
     for filesystem in filesystems {
@@ -88,7 +150,7 @@ fn answer(filesystems: Vec<Filesystem>) -> Value {
         }
     }
     let (filesystems, truncated) = list.into_parts();
-    serde_json::json!({ "filesystems": filesystems, "truncated": truncated })
+    serde_json::json!({ "filesystems": filesystems, "truncated": truncated || stalled })
 }
 
 /// What `statvfs` reports for one filesystem, in fragments and inodes.
@@ -129,7 +191,7 @@ pub fn filesystem(mount_point: &str, device: &str, fs_type: &str, usage: Usage) 
 }
 
 #[cfg(target_os = "linux")]
-fn read_filesystems(cancellation: &Cancellation) -> Result<Vec<Filesystem>, JobFailure> {
+fn read_filesystems(cancellation: &Cancellation) -> Result<(Vec<Filesystem>, bool), JobFailure> {
     use crate::collectors::filesystem_facts::{FilesystemFactsSource, ProcfsSource};
     use std::{ffi::CString, mem::MaybeUninit};
 
@@ -137,6 +199,7 @@ fn read_filesystems(cancellation: &Cancellation) -> Result<Vec<Filesystem>, JobF
         .collect()
         .map_err(|_| super::failed("could not read the mount table"))?;
     let mut filesystems = Vec::new();
+    let mut stalled = false;
     for mount in mounts {
         if cancellation.cancelled() {
             return Err(JobFailure::Cancelled);
@@ -147,15 +210,24 @@ fn read_filesystems(cancellation: &Cancellation) -> Result<Vec<Filesystem>, JobF
         let Ok(path) = CString::new(mount.mountpoint.as_str()) else {
             continue;
         };
-        let mut stat = MaybeUninit::<libc::statvfs>::uninit();
-        // SAFETY: `path` is NUL-terminated and `stat` is written by statvfs
-        // before it is read, which happens only when the call succeeds.
+        let probe = bounded(&mount.mountpoint, STATVFS_WAIT, cancellation, move || {
+            let mut stat = MaybeUninit::<libc::statvfs>::uninit();
+            // SAFETY: `path` is NUL-terminated and `stat` is written by
+            // statvfs before it is read, which happens only when the call
+            // succeeds.
+            (unsafe { libc::statvfs(path.as_ptr(), stat.as_mut_ptr()) } == 0)
+                .then(|| unsafe { stat.assume_init() })
+        })?;
         // A mount the agent cannot reach, such as one inside another
         // namespace, is skipped rather than failing the query.
-        if unsafe { libc::statvfs(path.as_ptr(), stat.as_mut_ptr()) } != 0 {
-            continue;
-        }
-        let stat = unsafe { stat.assume_init() };
+        let stat = match probe {
+            Probe::Done(Some(stat)) => stat,
+            Probe::Done(None) => continue,
+            Probe::Stalled => {
+                stalled = true;
+                continue;
+            }
+        };
         // The fields are 32 bits wide on 32-bit targets.
         #[allow(clippy::unnecessary_cast)]
         let usage = Usage {
@@ -173,11 +245,11 @@ fn read_filesystems(cancellation: &Cancellation) -> Result<Vec<Filesystem>, JobF
             usage,
         ));
     }
-    Ok(filesystems)
+    Ok((filesystems, stalled))
 }
 
 #[cfg(not(target_os = "linux"))]
-fn read_filesystems(_: &Cancellation) -> Result<Vec<Filesystem>, JobFailure> {
+fn read_filesystems(_: &Cancellation) -> Result<(Vec<Filesystem>, bool), JobFailure> {
     Err(super::failed("disk usage is only read on Linux"))
 }
 
@@ -204,7 +276,7 @@ mod tests {
 
         let boot = filesystem("/boot/efi", "/dev/sda2", "vfat", usage(512, 10, 5, 5, 0, 0));
         let run = filesystem("/run", "tmpfs", "tmpfs", usage(4096, 10, 10, 10, 10, 10));
-        let value = answer(vec![root.clone(), root, boot, run]);
+        let value = answer(vec![root.clone(), root.clone(), boot, run], false);
 
         assert_eq!(value["truncated"], json!(false));
         let mounts: Vec<&str> = value["filesystems"]
@@ -216,6 +288,63 @@ mod tests {
         assert_eq!(mounts, ["/", "/boot/efi"]);
         assert_eq!(value["filesystems"][1]["inodes_total"], Value::Null);
         super::super::contract::assert_conforms("query.disk_usage@1", "result", &value);
+
+        // A mount left out because it stalled cuts the answer short.
+        assert_eq!(answer(vec![root], true)["truncated"], json!(true));
+    }
+
+    #[test]
+    fn a_stalled_probe_frees_the_query_and_is_not_repeated() {
+        let (release, hold) = mpsc::channel::<()>();
+        let started = Instant::now();
+        let first = bounded(
+            "/stuck",
+            Duration::from_millis(100),
+            &Cancellation::default(),
+            move || hold.recv().ok(),
+        );
+        assert_eq!(first.unwrap(), Probe::Stalled);
+        assert!(started.elapsed() < Duration::from_secs(1));
+
+        // While the first is blocked, the same mount is not probed again.
+        let ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = ran.clone();
+        let again = bounded(
+            "/stuck",
+            Duration::from_millis(100),
+            &Cancellation::default(),
+            move || flag.store(true, std::sync::atomic::Ordering::SeqCst),
+        );
+        assert_eq!(again.unwrap(), Probe::Stalled);
+        assert!(!ran.load(std::sync::atomic::Ordering::SeqCst));
+
+        // Once it returns, the mount is probed as usual.
+        release.send(()).unwrap();
+        let wait = Instant::now() + Duration::from_secs(5);
+        while STALLED.lock().unwrap().contains("/stuck") && Instant::now() < wait {
+            thread::sleep(Duration::from_millis(10));
+        }
+        let ok = bounded(
+            "/stuck",
+            Duration::from_secs(1),
+            &Cancellation::default(),
+            || 7,
+        );
+        assert_eq!(ok.unwrap(), Probe::Done(7));
+    }
+
+    #[test]
+    fn cancellation_stops_waiting_for_a_probe() {
+        let stopped = Cancellation::default();
+        let trigger = stopped.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(40));
+            trigger.cancel();
+        });
+        let result = bounded("/cancel", Duration::from_secs(5), &stopped, || {
+            thread::sleep(Duration::from_millis(500))
+        });
+        assert!(matches!(result, Err(JobFailure::Cancelled)));
     }
 
     #[test]
