@@ -583,6 +583,26 @@ defmodule Renga.AccountsTest do
       assert token_inserted_at != nil
     end
 
+    test "preserves a present but unusable provider amr", %{user: user} do
+      provider =
+        Repo.insert!(%Accounts.IdentityProvider{
+          id: "session-amr",
+          kind: "oidc",
+          issuer: "https://sso.example.com/",
+          display_name: "SSO"
+        })
+
+      evidence =
+        Accounts.SessionMFA.for_provider(
+          provider,
+          %{"amr" => nil}
+        )
+
+      token = Accounts.generate_user_session_token(user, nil, nil, evidence)
+      assert {session_user, _inserted_at} = Accounts.get_user_by_session_token(token)
+      assert session_user.session_mfa.provider_amr == []
+    end
+
     test "does not return user for invalid token" do
       refute Accounts.get_user_by_session_token("oops")
     end

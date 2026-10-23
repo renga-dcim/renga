@@ -10,6 +10,7 @@ defmodule RengaWeb.UserAuth do
 
   alias Renga.Accounts
   alias Renga.Accounts.Scope
+  alias Renga.Accounts.SessionMFA
 
   # Make the remember me cookie valid for 14 days. This should match
   # the session validity setting in UserToken.
@@ -53,14 +54,22 @@ defmodule RengaWeb.UserAuth do
   organization this browser last opened, or the user's only one, so they
   skip the organization picker (`Renga.Accounts.default_organization_id/2`).
   A return-to link that could name a record opens only a sole organization.
+  `expires_at` carries an absolute provider deadline only when replacing an
+  existing session after an account change.
   """
-  def log_in_user(conn, user, params \\ %{}, method \\ nil) do
+  def log_in_user(conn, user, params \\ %{}, method \\ nil, expires_at \\ nil) do
     user_return_to = get_session(conn, :user_return_to)
 
     # A fresh sign-in names its `method`, and the session and its security
     # log entry commit together. Signing back in after a password change
-    # is not a new sign-in and passes none.
-    issue = if method, do: &Accounts.create_signed_in_session(user, &1, method)
+    # is not a new sign-in and passes none; the new session keeps the MFA
+    # evidence and absolute deadline of the one it replaces.
+    issue =
+      if method,
+        do: &Accounts.create_signed_in_session(user, &1, method),
+        else:
+          &{:ok,
+           Accounts.generate_user_session_token(user, &1, expires_at, carried_mfa(conn, user))}
 
     case create_or_extend_session(conn, user, params, issue) do
       {:ok, signed_in} ->
@@ -74,6 +83,13 @@ defmodule RengaWeb.UserAuth do
         conn
         |> put_flash(:error, "That way of signing in isn't available right now.")
         |> redirect(to: ~p"/users/log-in")
+    end
+  end
+
+  defp carried_mfa(conn, %Accounts.User{id: user_id}) do
+    case conn.assigns[:current_scope] do
+      %Scope{user: %Accounts.User{id: ^user_id, session_mfa: mfa}} -> mfa
+      _ -> nil
     end
   end
 
@@ -233,7 +249,13 @@ defmodule RengaWeb.UserAuth do
              conn,
              user,
              %{},
-             &Accounts.create_signed_in_session(user, &1, method, deadline)
+             &Accounts.create_signed_in_session(
+               user,
+               &1,
+               method,
+               deadline,
+               SessionMFA.for_provider(provider, result.claims)
+             )
            ) do
         {:ok, conn, revoked} -> {:ok, {conn, revoked, user}}
         {:error, _conn, _revoked} -> {:error, :session_failed}

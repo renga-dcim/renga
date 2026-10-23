@@ -15,9 +15,9 @@ ARG RUNNER_IMAGE="debian:${DEBIAN_VERSION}"
 
 FROM ${BUILDER_IMAGE} AS builder
 
-# git fetches the heroicons dependency.
+# git fetches the heroicons dependency, and curl the tailwind binary.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends build-essential git ca-certificates \
+  && apt-get install -y --no-install-recommends build-essential git ca-certificates curl \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -38,8 +38,16 @@ COPY config/config.exs config/${MIX_ENV}.exs config/
 RUN mix deps.compile
 
 # Only the asset binaries: assets.setup also installs Playwright for browser
-# tests, which the image never runs.
-RUN mix do tailwind.install --if-missing + esbuild.install --if-missing
+# tests, which the image never runs. curl fetches tailwind where
+# tailwind.install looks for it, because GitHub's release download redirect
+# sends more header bytes than Erlang's httpc accepts.
+RUN set -- $(mix run --no-compile --no-start -e \
+    'IO.puts("#{Tailwind.bin_path()} #{Tailwind.configured_version()}")') \
+  && target="${1##*/tailwind-}" && target="${target%-"$2"}" \
+  && curl -fsSL --retry 3 --create-dirs -o "$1" \
+    "https://github.com/tailwindlabs/tailwindcss/releases/download/v$2/tailwindcss-$target" \
+  && chmod +x "$1" \
+  && mix do tailwind.install --if-missing + esbuild.install --if-missing
 
 COPY priv priv
 COPY lib lib

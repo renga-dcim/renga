@@ -37,6 +37,9 @@ defmodule Renga.Accounts.User do
     # own provider asserts for it, filled in only by lookups within that
     # organization, such as its member list (RFD 15).
     field :organization_email, :string, virtual: true
+    # The current session's `Renga.Accounts.SessionMFA`, when the user was
+    # loaded through a session token.
+    field :session_mfa, :any, virtual: true
 
     has_many :organization_memberships, OrganizationMembership
     has_many :created_resource_overrides, ResourceOverride, foreign_key: :created_by_user_id

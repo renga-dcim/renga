@@ -174,6 +174,7 @@ defmodule RengaWeb.UserSessionController do
   # checks again because the form post is its own request.
   def update_password(conn, %{"user" => user_params}) do
     user = conn.assigns.current_scope.user
+    expires_at = Accounts.session_deadline(get_session(conn, :user_token))
 
     with true <-
            Accounts.authorized_account_change?(
@@ -190,7 +191,7 @@ defmodule RengaWeb.UserSessionController do
       conn
       |> put_session(:user_return_to, ~p"/users/settings")
       |> put_flash(:info, "Password updated successfully!")
-      |> UserAuth.log_in_user(user, user_params)
+      |> UserAuth.log_in_user(user, user_params, nil, expires_at)
     else
       false ->
         conn

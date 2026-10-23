@@ -9,6 +9,7 @@ defmodule Renga.Accounts.UserToken do
 
   use Ecto.Schema
   import Ecto.Query
+  alias Renga.Accounts.SessionMFA
   alias Renga.Accounts.UserToken
 
   @hash_algorithm :sha256
@@ -30,6 +31,12 @@ defmodule Renga.Accounts.UserToken do
     field :browser_session_id, :binary_id
     # When a session from a provider sign-in ends (RFD 15); nil otherwise.
     field :expires_at, :utc_datetime_usec
+    # What the sign-in proved about a second factor (RFD 19); see
+    # `Renga.Accounts.SessionMFA`.
+    field :second_factor_at, :utc_datetime_usec
+    field :provider_id, :string
+    field :provider_organization_id, :binary_id
+    field :provider_amr, {:array, :string}
     belongs_to :user, Renga.Accounts.User
     # The only organization a session from an organization provider's
     # sign-in may open (RFD 15); nil for every other session.
@@ -83,6 +90,8 @@ defmodule Renga.Accounts.UserToken do
   Checks if the token is valid and returns its underlying lookup query.
 
   The query returns the user found by the token, if any, along with the token's creation time.
+  The user carries the session's `authenticated_at` and its MFA evidence
+  (`Renga.Accounts.SessionMFA`) in virtual fields.
 
   The token is valid if it matches the value in the database and it has
   not expired (after @session_validity_in_days).
@@ -93,13 +102,21 @@ defmodule Renga.Accounts.UserToken do
         join: user in assoc(token, :user),
         where: token.inserted_at > ago(@session_validity_in_days, "day"),
         where: is_nil(token.expires_at) or token.expires_at > ^Renga.Time.utc_now_ms(),
-        select:
-          {%{
-             user
-             | authenticated_at: token.authenticated_at,
-               session_organization_id: token.scoped_organization_id,
-               session_expires_at: token.expires_at
-           }, token.inserted_at}
+        select: {
+          %{
+            user
+            | authenticated_at: token.authenticated_at,
+              session_organization_id: token.scoped_organization_id,
+              session_expires_at: token.expires_at,
+              session_mfa: %SessionMFA{
+                second_factor_at: token.second_factor_at,
+                provider_id: token.provider_id,
+                provider_organization_id: token.provider_organization_id,
+                provider_amr: token.provider_amr
+              }
+          },
+          token.inserted_at
+        }
 
     {:ok, query}
   end
