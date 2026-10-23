@@ -964,6 +964,9 @@ defmodule RengaWeb.SitePowerLive do
       power_factor_form:
         to_form(%{"default_power_factor" => default_power_factor || ""}, as: :organization)
     )
+    # An open trend follows its feed: a feed whose supply changed now reads
+    # another series, in another unit.
+    |> load_trend()
   end
 
   defp panel_form(params) do

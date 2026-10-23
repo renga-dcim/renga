@@ -334,6 +334,12 @@ defmodule RengaWeb.SitePowerLiveTest do
     view |> element("#measured-trend-range-7d") |> render_click()
     assert_patched(view, ~p"/places/sites/#{site.id}/power?trend=7d")
     assert has_element?(view, "#measured-trend-summary", "Over the last 7 days")
+
+    # The feed becomes DC elsewhere: its VA history is not shown as watts.
+    {:ok, _feed} = Power.update_feed(scope, a1, %{supply: "dc", phase: nil, voltage: "48"})
+    send(view.pid, {:inventory_changed, organization.id})
+    refute has_element?(view, "#measured-trend-summary", "VA")
+    refute has_element?(view, "#measured-trend-summary", "1,300")
   end
 
   defp count_lines(svg), do: length(Regex.scan(~r/stroke-accent/, svg))
