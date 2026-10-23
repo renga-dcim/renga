@@ -26,8 +26,8 @@ const IPV6_ROUTES: &[&str] = &["-j", "-6", "route", "show", "table", "all"];
 const VRFS: &[&str] = &["-j", "-d", "link", "show", "type", "vrf"];
 
 /// Where iproute2 keeps `rt_tables` and `rt_tables.d/*.conf`: its packaged
-/// defaults (the path varies by version and distribution), then `/etc`,
-/// whose entries win.
+/// defaults (the path varies by version and distribution) and `/etc`. Every
+/// candidate is read; a name they give different numbers is ambiguous.
 const RT_TABLES_DIRS: &[&str] = &["/usr/lib/iproute2", "/usr/share/iproute2", "/etc/iproute2"];
 
 /// Local, broadcast, and multicast entries describe addresses, not where
@@ -169,23 +169,25 @@ fn parse_rt_tables(text: &str) -> impl Iterator<Item = (String, u32)> + '_ {
 }
 
 /// A table as `ip` prints it: a number, a reserved name, or a name from
-/// `rt_tables`. A name the files leave unknown or ambiguous fails.
+/// `rt_tables`. `rt_tables` may also give a number-like or reserved name to
+/// another table, so its reading and the plain one must agree; a name with
+/// no reading, or two that differ, fails.
 fn table_id(name: &str, names: &HashMap<String, Option<u32>>) -> Result<u32, JobFailure> {
-    match name {
-        "main" => Ok(254),
-        "local" => Ok(255),
-        "default" => Ok(253),
-        name => name
-            .parse()
-            .ok()
-            .or_else(|| names.get(name).copied().flatten())
-            .ok_or_else(|| {
-                failed(&format!(
-                    "could not tell which routing table \"{}\" is: rt_tables names it \
-                     with no number, or with more than one",
-                    clip(name, 64)
-                ))
-            }),
+    let plain = match name {
+        "main" => Some(254),
+        "local" => Some(255),
+        "default" => Some(253),
+        number => number.parse().ok(),
+    };
+    match (plain, names.get(name)) {
+        (Some(plain), None) => Ok(plain),
+        (Some(plain), Some(Some(configured))) if plain == *configured => Ok(plain),
+        (None, Some(Some(configured))) => Ok(*configured),
+        _ => Err(failed(&format!(
+            "could not tell which routing table \"{}\" is: rt_tables names it \
+             with no number, or with more than one",
+            clip(name, 64)
+        ))),
     }
 }
 
@@ -349,6 +351,35 @@ mod tests {
                 "{table}"
             );
         }
+    }
+
+    #[test]
+    fn a_reserved_or_numeric_name_rt_tables_reassigns_fails() {
+        let resolve = |entries: &[(&str, Option<u32>)], table: &str| {
+            let names: HashMap<String, Option<u32>> = entries
+                .iter()
+                .map(|(name, id)| (name.to_string(), *id))
+                .collect();
+            table_id(table, &names).ok()
+        };
+        // The usual reserved entries agree with the plain reading.
+        let standard = [
+            ("main", Some(254)),
+            ("local", Some(255)),
+            ("default", Some(253)),
+        ];
+        assert_eq!(resolve(&standard, "main"), Some(254));
+        assert_eq!(resolve(&standard, "200"), Some(200));
+        // "254 main" and "100 main": ip prints "main" for table 100.
+        assert_eq!(resolve(&[("main", None)], "main"), None);
+        // "100 main" alone: also not table 254.
+        assert_eq!(resolve(&[("main", Some(100))], "main"), None);
+        // "100 200": ip prints "200" for table 100.
+        assert_eq!(resolve(&[("200", Some(100))], "200"), None);
+        // "200 200" agrees with itself.
+        assert_eq!(resolve(&[("200", Some(200))], "200"), Some(200));
+        // "unspec" is only a configured name.
+        assert_eq!(resolve(&[("unspec", Some(0))], "unspec"), Some(0));
     }
 
     #[test]
