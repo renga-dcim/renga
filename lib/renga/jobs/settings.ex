@@ -3,8 +3,9 @@ defmodule Renga.Jobs.Settings do
   An organization's job settings, stored under `"jobs"` in its settings map.
 
   Until an owner sets them, an organization allows every registered `observe`
-  capability and no `operate` or `interactive` one, and keeps job history for
-  90 days (RFD 9). Deriving the default on read, rather than writing it at
+  capability except queries, which RFD 12 keeps off until enabled one by one,
+  and no `operate` or `interactive` one, and keeps job history for 90 days
+  (RFD 9). Deriving the default on read, rather than writing it at
   creation, means existing organizations get it too and a newly registered
   `observe` capability is allowed without a migration.
   """
@@ -21,7 +22,7 @@ defmodule Renga.Jobs.Settings do
   def allowed_capabilities(%Organization{settings: settings}) do
     case get_in(settings || %{}, ["jobs", "allowed_capabilities"]) do
       allowed when is_list(allowed) -> allowed
-      _default -> Registry.keys_with_risk(:observe)
+      _default -> Registry.default_allowed_keys()
     end
   end
 

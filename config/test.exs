@@ -73,8 +73,7 @@ config :renga, :power_finding_sweeper_enabled, false
 config :renga, :telemetry_pruner_enabled, false
 
 # Tests add an imperative capability to exercise retry classes.
-config :renga, Renga.Jobs.Registry,
-  capabilities: [Renga.Jobs.Capabilities.InventoryCollect, Renga.Jobs.TestCapabilities.Restart]
+config :renga, Renga.Jobs.Registry, extra_capabilities: [Renga.Jobs.TestCapabilities.Restart]
 
 # Disable swoosh api client as it is only required for production adapters
 config :swoosh, :api_client, false
