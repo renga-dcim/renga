@@ -16,6 +16,7 @@ defmodule Renga.Transfers.ImportTest do
   alias Renga.Jobs
   alias Renga.Jobs.Job
   alias Renga.Jobs.TargetBinding
+  alias Renga.ResourceGroups
   alias Renga.SavedViews
   alias Renga.Teams
   alias Renga.Topology
@@ -60,6 +61,13 @@ defmodule Renga.Transfers.ImportTest do
     cable_fixture(owner, eth0, host_eth0)
     prefix_fixture(owner, "10.0.0.0/24")
 
+    {:ok, set} = ResourceGroups.create_group_set(owner, %{name: "Environment", exclusive: true})
+
+    {:ok, group} =
+      ResourceGroups.create_group(owner, %{name: "Production", group_set_id: set.id})
+
+    {:ok, 1} = ResourceGroups.add_members(owner, group, [server.id])
+
     %{
       source: source,
       owner: owner,
@@ -98,12 +106,23 @@ defmodule Renga.Transfers.ImportTest do
 
   defp target, do: Renga.InventoryFixtures.organization_fixture()
 
+  defp group_memberships(organization) do
+    ResourceGroups.Membership
+    |> where(organization_id: ^organization.id)
+    |> select([m], {m.resource_id, m.view, m.group_id, m.group_set_id})
+    |> order_by([m], [m.resource_id, m.view, m.group_id])
+    |> Repo.all()
+  end
+
   defp count(schema, organization),
     do: Repo.aggregate(where(schema, organization_id: ^organization.id), :count)
 
   test "an archive lands whole, with its records, history, and people", context do
     revisions_before =
       context.source |> resources_by_version() |> Enum.map(& &1.id)
+
+    memberships_before = group_memberships(context.source)
+    assert memberships_before != []
 
     path = export_and_remove(context)
     target = target()
@@ -165,6 +184,17 @@ defmodule Renga.Transfers.ImportTest do
 
     assert count(Renga.Catalog.ComponentTemplate, target) == 1
     assert count(Renga.Topology.Cable, target) == 1
+
+    # Resource groups keep their direct members and the effective
+    # membership that access boundaries read (RFD 18).
+    assert [%{group_set: %{exclusive: true}}] =
+             ResourceGroups.Group
+             |> where(organization_id: ^target.id)
+             |> preload(:group_set)
+             |> Repo.all()
+
+    assert count(ResourceGroups.Member, target) == 1
+    assert group_memberships(target) == memberships_before
 
     assert [[nil, principal_id]] =
              Repo.query!(
