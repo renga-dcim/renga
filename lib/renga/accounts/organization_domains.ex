@@ -150,30 +150,32 @@ defmodule Renga.Accounts.OrganizationDomains do
     |> Enum.each(&recheck/1)
   end
 
+  # A DNS answer only speaks for the verification it was asked about. By the
+  # time it arrives, a sweep on another node may have unverified the claim
+  # and its owner verified it again, so the result applies only while the
+  # claim still carries the `verified_at` this sweep read.
   defp recheck(claim) do
     case check(claim) do
       {:ok, :found} ->
-        Repo.update_all(where(OrganizationDomain, id: ^claim.id),
-          set: [checked_at: Renga.Time.utc_now_ms()]
-        )
+        Repo.update_all(same_verification(claim), set: [checked_at: Renga.Time.utc_now_ms()])
 
       {:ok, :missing} ->
-        Repo.transaction(fn -> unverify_if_verified(claim.id) end)
+        Repo.transaction(fn -> unverify_if_unchanged(claim) end)
 
       {:ok, :unavailable} ->
         :ok
     end
   end
 
-  defp unverify_if_verified(id) do
-    case Repo.one(
-           from d in OrganizationDomain,
-             where: d.id == ^id and not is_nil(d.verified_at),
-             lock: "FOR UPDATE"
-         ) do
+  defp unverify_if_unchanged(claim) do
+    case claim |> same_verification() |> lock("FOR UPDATE") |> Repo.one() do
       nil -> :ok
-      claim -> unverify!(claim)
+      current -> unverify!(current)
     end
+  end
+
+  defp same_verification(%OrganizationDomain{id: id, verified_at: verified_at}) do
+    where(OrganizationDomain, [d], d.id == ^id and d.verified_at == ^verified_at)
   end
 
   defp unverify!(claim) do
