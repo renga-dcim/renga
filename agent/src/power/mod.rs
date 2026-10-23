@@ -4,6 +4,7 @@
 //! set as one telemetry batch, so a slow sensor never holds up inventory or lease check-ins.
 
 pub mod hwmon;
+pub mod pdu;
 
 use crate::{
     cancellation::Cancellation,
@@ -160,6 +161,8 @@ fn to_sample(reading: &hwmon::Reading, now: DateTime<Utc>) -> TelemetrySample {
         quantity: "real_power",
         unit: Some("W"),
         component: None,
+        leg: None,
+        coverage: None,
         status,
         origin: "native",
         value,

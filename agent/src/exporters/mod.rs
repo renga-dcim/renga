@@ -337,6 +337,8 @@ fn to_sample(reading: &Reading, failed: bool, now: DateTime<Utc>) -> TelemetrySa
             kind: "power_port",
             name,
         }),
+        leg: None,
+        coverage: None,
         status,
         origin: "exporter",
         value: if status == "valid" { value } else { None },

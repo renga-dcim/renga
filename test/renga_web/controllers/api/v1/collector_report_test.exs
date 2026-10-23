@@ -793,6 +793,28 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
       end
     end
 
+    test "accepts a PDU as the agent's power poller reports it", %{scope: scope, token: token} do
+      resource = "test/fixtures/collectors/recorded_pdu.json" |> File.read!() |> Jason.decode!()
+
+      assert %{
+               "reconciliation" => %{
+                 "resources" => [%{"status" => "succeeded", "resource_id" => id}]
+               }
+             } =
+               token
+               |> post_observation(
+                 switch_report([resource],
+                   collector_id: "rack-pdus",
+                   kind: "power_poller",
+                   complete: true
+                 )
+               )
+               |> valid_api_response(202)
+
+      assert Inventory.get_resource!(scope, id).kind == "pdu"
+      assert [%{kind: "power_poller"}] = Collectors.list_streams(scope)
+    end
+
     test "two pollers reporting one chassis serial reconcile to one switch", %{
       scope: scope,
       token: token

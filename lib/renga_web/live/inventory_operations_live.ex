@@ -829,6 +829,11 @@ defmodule RengaWeb.InventoryOperationsLive do
   defp power_source_hint(%{source: "hwmon", status: "not_permitted"}),
     do: "The agent cannot read /sys/class/hwmon. Check the service's sandbox settings."
 
+  defp power_source_hint(%{source: "power_poller/" <> _id, status: "not_present"}),
+    do:
+      "The PDUs answer SNMP but not a supported PDU MIB: Raritan PDU2-MIB or APC " <>
+        "PowerNet-MIB rPDU2."
+
   defp power_source_hint(%{status: "unreachable"}),
     do: "The agent cannot reach this source. Check its address and that it is running."
 

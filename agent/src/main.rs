@@ -18,8 +18,11 @@ use renga_agent::{
     payload::{
         CheckIn, CheckInAck, KeyApproval, KeyStatus, Observation, PresentedKey, QueueReport,
     },
-    power::{PowerModule, PowerSources},
-    queue::{DiskQueue, Drained, QueueError, QueueKind, QueueMonitor},
+    power::{pdu, PowerModule, PowerSources},
+    queue::{
+        DiskQueue, Drained, QueueError, QueueKind, QueueMonitor,
+        FLUSH_INTERVAL as QUEUE_FLUSH_INTERVAL,
+    },
     scheduler::{Job, Scheduler},
     snmp::worker::{Modules, Sink},
     transport::{encode_observation, FailureKind, HttpClient},
@@ -35,8 +38,6 @@ use std::{
 use tracing::{error, info, warn};
 use tracing_subscriber::{util::SubscriberInitExt, EnvFilter};
 
-/// How often the daemon retries observations left in the queue by a failed delivery.
-const QUEUE_FLUSH_INTERVAL: Duration = Duration::from_secs(120);
 /// The most telemetry batches one flush offers, after every queued observation, so a telemetry
 /// backlog cannot hold the delivery worker from the next inventory (RFD 10, "Measured history").
 #[cfg(not(test))]
@@ -422,6 +423,11 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
         telemetry_sink(&queue, &stopped),
         power_sources.clone(),
     );
+    let pdu_sinks = || pdu::Sinks {
+        observations: queue_sink(&queue, &stopped),
+        telemetry: telemetry_sink(&queue, &stopped),
+    };
+    let mut pdus = pdu::Pollers::start(config.power.clone(), pdu_sinks(), power_sources.clone());
     let mut relocation: Option<Relocation> = None;
     let mut resolution: Option<Resolution> = None;
     // Puts a reloaded configuration, its home, and the client for it into effect.
@@ -462,6 +468,11 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
                     telemetry_sink(&queue, &stopped),
                     power_sources.clone(),
                 );
+            }
+            if pdus.collectors() != config.power.as_slice() {
+                drop(pdus);
+                pdus =
+                    pdu::Pollers::start(config.power.clone(), pdu_sinks(), power_sources.clone());
             }
             scheduler.refresh_intervals(
                 Instant::now(),
@@ -833,6 +844,7 @@ fn reload_changes_jobs(
         snmp: _,
         gnmi: _,
         libvirt: _,
+        power: _,
         exporters: _,
     } = new;
     !old_client.sends_like(new_client) || old.labels != *labels || old.jobs != *jobs
@@ -3057,6 +3069,7 @@ mod tests {
             snmp: Vec::new(),
             gnmi: Vec::new(),
             libvirt: None,
+            power: Vec::new(),
             exporters: Vec::new(),
         }
     }

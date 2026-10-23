@@ -288,11 +288,22 @@ pub struct Collector {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CollectorKind {
+    PowerPoller,
     SwitchPoller,
     VmProvider,
 }
 
-/// A switch or VM a collector reports. The server matches it only by `serial_number`,
+impl CollectorKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PowerPoller => "power_poller",
+            Self::SwitchPoller => "switch_poller",
+            Self::VmProvider => "vm_provider",
+        }
+    }
+}
+
+/// A switch, PDU, or VM a collector reports. The server matches it only by `serial_number`,
 /// `dmi_uuid`, or `machine_id`, so one of them is required.
 #[derive(Debug, Clone, Serialize)]
 pub struct CollectorResource {
@@ -380,6 +391,7 @@ pub enum DomainInterfaceType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CollectorResourceKind {
+    Pdu,
     Switch,
     Vm,
 }
@@ -541,6 +553,17 @@ impl TelemetryBatch {
             samples,
         }
     }
+
+    /// A batch from one collector module, whose samples each name their target.
+    pub fn collector(id: &str, kind: CollectorKind, samples: Vec<TelemetrySample>) -> Self {
+        Self {
+            collector: Some(TelemetryCollector {
+                id: id.to_owned(),
+                kind: kind.as_str(),
+            }),
+            ..Self::host(samples)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -565,6 +588,12 @@ pub struct TelemetrySample {
     /// The power port or outlet the reading is about, when the source names one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub component: Option<SampleComponent>,
+    /// The phase of a `leg` reading: `a`, `b`, or `c`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub leg: Option<&'static str>,
+    /// Whether an aggregate such as a PDU inlet's meter covers all of its load (`complete`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<&'static str>,
     pub status: &'static str,
     pub origin: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]

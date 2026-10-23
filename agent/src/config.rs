@@ -6,6 +6,7 @@ use crate::{
     identity,
     jobs::{JobPolicy, Selector},
     libvirt::config::{self as libvirt_config, LibvirtCollector, RawLibvirtCollector},
+    power::pdu::POWER_INTERVALS,
     snmp::config::{self as snmp_config, RawSnmpCollector, SnmpCollector},
 };
 use serde::Deserialize;
@@ -57,6 +58,8 @@ pub struct Config {
     /// gNMI/OpenConfig switch poller modules, reporting like the SNMP ones.
     pub gnmi: Vec<GnmiCollector>,
     pub libvirt: Option<LibvirtCollector>,
+    /// SNMP PDU power modules (RFD 10), each its own `power_poller` collector stream.
+    pub power: Vec<SnmpCollector>,
     /// Local Prometheus exporters to read power from (RFD 10).
     pub exporters: Vec<Exporter>,
 }
@@ -79,6 +82,7 @@ impl fmt::Debug for Config {
             .field("snmp", &self.snmp)
             .field("gnmi", &self.gnmi)
             .field("libvirt", &self.libvirt)
+            .field("power", &self.power)
             .field("exporters", &self.exporters)
             .finish()
     }
@@ -118,6 +122,7 @@ struct RawCollectors {
     snmp: Option<Vec<RawSnmpCollector>>,
     gnmi: Option<Vec<RawGnmiCollector>>,
     libvirt: Option<RawLibvirtCollector>,
+    power: Option<Vec<RawSnmpCollector>>,
 }
 
 #[derive(Default, Deserialize)]
@@ -291,6 +296,24 @@ impl Config {
                 )));
             }
         }
+        let power = snmp_config::from_raw_section(
+            collectors.power.unwrap_or_default(),
+            "collectors.power",
+            POWER_INTERVALS,
+        )
+        .map_err(ConfigError)?;
+        if let Some(collector) = power.iter().find(|collector| {
+            snmp.iter().any(|other| other.id == collector.id)
+                || gnmi.iter().any(|other| other.id == collector.id)
+                || libvirt
+                    .as_ref()
+                    .is_some_and(|other| other.id == collector.id)
+        }) {
+            return Err(ConfigError(format!(
+                "collectors.power: id {:?} is already used by another collector module",
+                collector.id
+            )));
+        }
         Ok(Self {
             config_path,
             renga_url,
@@ -315,6 +338,7 @@ impl Config {
             snmp,
             gnmi,
             libvirt,
+            power,
             exporters: exporters::from_raw(raw.exporters.unwrap_or_default())
                 .map_err(ConfigError)?,
         })
@@ -581,6 +605,68 @@ mod tests {
         let error = Config::load(&path, &state).unwrap_err().to_string();
         fs::remove_file(path).unwrap();
         assert!(error.contains("collectors.snmp[0]: targets"), "{error}");
+    }
+
+    #[test]
+    fn reads_pdu_power_modules_from_toml() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let path = env::temp_dir().join(format!("renga-config-{}.toml", uuid::Uuid::new_v4()));
+        let state = state_directory();
+        let module = |section: &str, id: &str| {
+            format!(
+                "[[collectors.{section}]]\nid='{id}'\ntargets=['10.0.0.5']\nusername='renga'\n\
+                 auth_password_file='/etc/renga/snmp-auth'\n\
+                 privacy_password_file='/etc/renga/snmp-priv'\n"
+            )
+        };
+        let base = "renga_url='https://renga.test'\nintake_api_key='file-key'\n";
+
+        fs::write(&path, format!("{base}{}", module("power", "rack-pdus"))).unwrap();
+        let config = Config::load(&path, &state).unwrap();
+        assert_eq!(config.power.len(), 1);
+        assert_eq!(config.power[0].id, "rack-pdus");
+        // Readings go stale in minutes, so PDUs are polled every minute by default.
+        assert_eq!(config.power[0].interval, Duration::from_secs(60));
+
+        fs::write(
+            &path,
+            format!(
+                "{base}{}interval_seconds=10\n",
+                module("power", "rack-pdus")
+            ),
+        )
+        .unwrap();
+        let error = Config::load(&path, &state).unwrap_err().to_string();
+        assert!(
+            error.contains("collectors.power[0]: interval_seconds must be at least 30"),
+            "{error}"
+        );
+
+        // One ID is one stream, and a stream's kind never changes.
+        fs::write(
+            &path,
+            format!(
+                "{base}{}{}",
+                module("snmp", "core"),
+                module("power", "core")
+            ),
+        )
+        .unwrap();
+        let error = Config::load(&path, &state).unwrap_err().to_string();
+        assert!(
+            error.contains("already used by another collector module"),
+            "{error}"
+        );
+
+        let gnmi = "[[collectors.gnmi]]\nid='core'\ntargets=['10.0.0.1']\n\
+                    username='renga'\npassword_file='/etc/renga/gnmi-password'\n";
+        fs::write(&path, format!("{base}{gnmi}{}", module("power", "core"))).unwrap();
+        let error = Config::load(&path, &state).unwrap_err().to_string();
+        fs::remove_file(path).unwrap();
+        assert!(
+            error.contains("already used by another collector module"),
+            "{error}"
+        );
     }
 
     #[test]

@@ -1,0 +1,12 @@
+{
+  "attributes": {
+    "model": "PX3-5190R",
+    "vendor": "Raritan"
+  },
+  "identifiers": {
+    "hostname": "pdu-a1",
+    "serial_number": "PKE0954001"
+  },
+  "kind": "pdu",
+  "target": "10.0.0.5"
+}

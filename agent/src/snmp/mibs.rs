@@ -116,14 +116,14 @@ impl Answers {
         self.0.iter()
     }
 
-    fn scalar(&self, oid: &[u32]) -> Option<&SnmpValue> {
+    pub(crate) fn scalar(&self, oid: &[u32]) -> Option<&SnmpValue> {
         self.0
             .get(oid)
             .filter(|value| !matches!(value, SnmpValue::Missing))
     }
 
     /// A column's rows as `(index, value)`, the index being the OID after the column.
-    fn column<'a>(
+    pub(crate) fn column<'a>(
         &'a self,
         column: &[u32],
     ) -> impl Iterator<Item = (&'a [u32], &'a SnmpValue)> + use<'a> {
@@ -565,7 +565,7 @@ fn in_port_list(bitmap: &[u8], port: u32) -> bool {
         .is_some_and(|octet| octet & (0x80 >> (bit % 8)) != 0)
 }
 
-fn text(value: &SnmpValue) -> Option<String> {
+pub(crate) fn text(value: &SnmpValue) -> Option<String> {
     match value {
         SnmpValue::Octets(bytes) => {
             let text = std::str::from_utf8(bytes).ok()?;
@@ -612,7 +612,7 @@ fn mac(value: &SnmpValue) -> Option<String> {
     }
 }
 
-fn integer(value: &SnmpValue) -> Option<i64> {
+pub(crate) fn integer(value: &SnmpValue) -> Option<i64> {
     match value {
         SnmpValue::Integer(value) => Some(*value),
         SnmpValue::Unsigned(value) => i64::try_from(*value).ok(),
