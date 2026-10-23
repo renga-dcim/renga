@@ -140,6 +140,9 @@ defmodule RengaWeb.OrganizationProviderLiveTest do
     assert has_element?(view, "#provider-#{provider.id}-status", "On")
     view |> element("#provider-#{provider.id}-edit") |> render_click()
 
+    # The list leaves the callback URL out on narrow screens; editing shows it.
+    assert has_element?(view, "#provider-callback", "/users/auth/#{provider.id}/callback")
+
     view
     |> form("#provider-form", %{
       "provider" => %{"display_name" => "Acme SSO", "client_id" => "renga-2"}

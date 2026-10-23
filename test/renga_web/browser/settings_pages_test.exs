@@ -114,6 +114,50 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
     end
   end
 
+  test "identity provider rows keep each action on one line at phone width", %{conn: conn} do
+    organization = organization_fixture()
+    owner = user_fixture()
+    membership = organization_membership_fixture(owner, organization, %{role: "owner"})
+    scope = Renga.Accounts.Scope.for_membership(owner, organization, membership)
+
+    # Waiting for its test sign-in, so the row offers Test sign-in, Edit and Remove.
+    {:ok, {provider, _revision}} =
+      Renga.Accounts.OrganizationProviders.create(scope, %{
+        "id" => Renga.Accounts.OrganizationProviders.new_id(),
+        "issuer" => "https://login.acme-okta.example.com/oauth2/default",
+        "display_name" => "Acme Okta",
+        "client_id" => "renga",
+        "client_secret" => "s3cret"
+      })
+
+    conn
+    |> authenticated_conn(owner, organization)
+    |> visit("/settings/identity-providers")
+    |> assert_has("#provider-#{provider.id}-test", text: "Test sign-in")
+    |> evaluate(
+      """
+      (() => {
+        const row = document.getElementById('provider-#{provider.id}')
+        const box = document.getElementById('provider-list').closest('.overflow-x-auto').getBoundingClientRect()
+        // A label that wraps lays its text out in more than one line box.
+        const lines = action => {
+          const range = document.createRange()
+          range.selectNodeContents(action)
+          return range.getClientRects().length
+        }
+        const actions = [...row.querySelectorAll('button')]
+        return {
+          actions: actions.length,
+          one_line: actions.every(action => lines(action) === 1),
+          inside: actions.every(action => action.getBoundingClientRect().right <= box.right)
+        }
+      })()
+      """,
+      &assert(&1 == %{"actions" => 3, "one_line" => true, "inside" => true})
+    )
+    |> evaluate(@fits, &assert(&1 == true))
+  end
+
   test "member role assignments remain usable by touch and keyboard", %{conn: conn} do
     organization = organization_fixture()
     owner = user_fixture()

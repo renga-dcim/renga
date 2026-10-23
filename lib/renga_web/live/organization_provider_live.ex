@@ -311,21 +311,23 @@ defmodule RengaWeb.OrganizationProviderLive do
           row_id={&"provider-#{&1.provider.id}"}
           class="rounded-lg border border-edge bg-surface"
         >
-          <:col :let={entry} label="Provider" class="py-2">
-            <span class="block font-medium text-fg">{entry.provider.display_name}</span>
-            <span class="block truncate font-mono text-xs text-fg-muted">
-              {entry.provider.issuer}
-            </span>
+          <%!-- The actions keep their natural width; the other columns share
+                what is left and cut off, one line each. A phone too narrow
+                for every action of a provider with new settings scrolls the
+                table rather than hide one. --%>
+          <:col :let={entry} label="Provider" class="w-2/5 min-w-24 max-w-0">
+            <.clip>
+              <span class="font-medium text-fg">{entry.provider.display_name}</span>
+              <span class="ml-1.5 font-mono text-xs text-fg-muted">{entry.provider.issuer}</span>
+            </.clip>
           </:col>
-          <:col :let={entry} label="Status">
-            <span id={"provider-#{entry.provider.id}-status"} class="text-sm text-fg-muted">
+          <:col :let={entry} label="Status" class="hidden w-1/4 max-w-0 sm:table-cell">
+            <.clip id={"provider-#{entry.provider.id}-status"} class="text-sm text-fg-muted">
               {status(entry)}
-            </span>
+            </.clip>
           </:col>
-          <:col :let={entry} label="Callback URL">
-            <span class="block break-all font-mono text-xs text-fg-muted">
-              {callback_url(entry.provider.id)}
-            </span>
+          <:col :let={entry} label="Callback URL" class="hidden w-1/3 max-w-0 lg:table-cell">
+            <.clip class="font-mono text-xs text-fg-muted">{callback_url(entry.provider.id)}</.clip>
           </:col>
           <:action :let={entry}>
             <button
@@ -334,7 +336,7 @@ defmodule RengaWeb.OrganizationProviderLive do
               type="button"
               phx-click="test"
               phx-value-id={entry.provider.id}
-              class="min-h-tap cursor-pointer text-sm text-link hover:underline"
+              class="min-h-tap cursor-pointer rounded-sm text-sm text-link hover:underline focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
             >
               Test sign-in
             </button>
@@ -344,7 +346,7 @@ defmodule RengaWeb.OrganizationProviderLive do
               phx-click={
                 JS.push("edit", value: %{id: entry.provider.id}) |> show_overlay("provider-panel")
               }
-              class="min-h-tap cursor-pointer text-sm text-link hover:underline"
+              class="min-h-tap cursor-pointer rounded-sm text-sm text-link hover:underline focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
             >
               Edit
             </button>
@@ -354,7 +356,7 @@ defmodule RengaWeb.OrganizationProviderLive do
               type="button"
               phx-click="discard"
               phx-value-id={entry.provider.id}
-              class="min-h-tap cursor-pointer text-sm text-link hover:underline"
+              class="min-h-tap cursor-pointer rounded-sm text-sm text-link hover:underline focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
             >
               Discard new settings
             </button>
@@ -364,7 +366,7 @@ defmodule RengaWeb.OrganizationProviderLive do
               type="button"
               phx-click={if entry.provider.enabled, do: "disable", else: "enable"}
               phx-value-id={entry.provider.id}
-              class="min-h-tap cursor-pointer text-sm text-link hover:underline"
+              class="min-h-tap cursor-pointer rounded-sm text-sm text-link hover:underline focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
             >
               {if entry.provider.enabled, do: "Turn off", else: "Turn on"}
             </button>
@@ -372,7 +374,7 @@ defmodule RengaWeb.OrganizationProviderLive do
               id={"provider-#{entry.provider.id}-remove"}
               type="button"
               phx-click={show_overlay("remove-provider-#{entry.provider.id}")}
-              class="min-h-tap cursor-pointer text-sm text-crit hover:underline"
+              class="min-h-tap cursor-pointer rounded-sm text-sm text-crit hover:underline focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
             >
               Remove
             </button>
@@ -476,9 +478,17 @@ defmodule RengaWeb.OrganizationProviderLive do
               "Register Renga at your identity provider with this callback URL, then enter the client it gives you."
         }
       >
-        <div :if={@new_id} id="provider-callback" class="mb-4 rounded-md bg-sunken p-3">
+        <%!-- Also when editing: the provider list leaves the URL out on
+              narrow screens. --%>
+        <div
+          :if={@new_id || @editing}
+          id="provider-callback"
+          class="mb-4 rounded-md bg-sunken p-3"
+        >
           <p class="text-xs text-fg-muted">Callback URL</p>
-          <p class="break-all font-mono text-sm text-fg">{callback_url(@new_id)}</p>
+          <p class="break-all font-mono text-sm text-fg">
+            {callback_url(@new_id || @editing.id)}
+          </p>
         </div>
         <.form for={@form} id="provider-form" phx-submit="save">
           <.input field={@form[:display_name]} type="text" label="Name" required autocomplete="off" />
