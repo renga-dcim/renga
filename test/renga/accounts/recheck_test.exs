@@ -232,6 +232,7 @@ defmodule Renga.Accounts.RecheckTest do
     defp provider_result(provider, claims) do
       %{
         provider: provider,
+        revision: Accounts.IdentityProviders.active_revision(provider),
         claims:
           Map.merge(
             %{"sub" => "subject-1", "auth_time" => System.system_time(:second)},
@@ -346,6 +347,22 @@ defmodule Renga.Accounts.RecheckTest do
                  identity.id,
                  provider_result(provider, %{})
                )
+    end
+
+    test "a provider changed while the browser was there grants nothing", %{
+      user: user,
+      provider: provider,
+      identity: identity,
+      token: token
+    } do
+      stale = provider_result(provider, %{})
+
+      provider |> Ecto.Changeset.change(active_revision: 2) |> Repo.update!()
+
+      assert {:error, :provider_changed} =
+               Recheck.recheck_with_provider(user, token, identity.id, stale)
+
+      refute Recheck.authorized?(user, token, :change_email)
     end
 
     test "an identity at a disabled provider cannot re-check", %{

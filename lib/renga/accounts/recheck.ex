@@ -21,6 +21,8 @@ defmodule Renga.Accounts.Recheck do
 
   alias Renga.Accounts.AccountAuthorization
   alias Renga.Accounts.AccountChallenge
+  alias Renga.Accounts.IdentityProvider
+  alias Renga.Accounts.IdentityProviderRevision
   alias Renga.Accounts.MFA
   alias Renga.Accounts.OIDC
   alias Renga.Accounts.Passkeys
@@ -217,24 +219,53 @@ defmodule Renga.Accounts.Recheck do
   the token's subject is `identity_id`'s at the same provider, so switching
   accounts at the provider fails, and when `auth_time` shows the person
   authenticated within the re-check window.
+
+  The grant is recorded under a share lock on the provider, and only while
+  it still uses the revision the token was validated with: an operator who
+  replaced, disabled, or removed the provider while the browser was there
+  leaves nothing to grant.
   """
   def recheck_with_provider(%User{} = user, session_token, identity_id, %{
         provider: provider,
+        revision: %IdentityProviderRevision{number: number},
         claims: claims
       }) do
-    with {:ok, session} <- fetch_session(user, session_token),
-         true <- methods(user) == [:provider] || {:error, :not_available},
-         %UserIdentity{} = identity <-
-           Enum.find(provider_identities(user), &(&1.id == identity_id)) ||
-             {:error, :not_available},
-         true <-
-           (identity.provider_id == provider.id and claims["sub"] == identity.subject) ||
-             {:error, :wrong_account},
-         true <- OIDC.fresh_authentication?(claims) || {:error, :stale_authentication} do
-      grant(session, "recheck")
-    else
-      :error -> {:error, :no_session}
-      {:error, _reason} = error -> error
+    Repo.transact(fn ->
+      with {:ok, session} <- fetch_session(user, session_token),
+           :ok <- lock_current_provider(provider, number),
+           true <- methods(user) == [:provider] || {:error, :not_available},
+           %UserIdentity{} = identity <-
+             Enum.find(provider_identities(user), &(&1.id == identity_id)) ||
+               {:error, :not_available},
+           true <-
+             (identity.provider_id == provider.id and claims["sub"] == identity.subject) ||
+               {:error, :wrong_account},
+           true <- OIDC.fresh_authentication?(claims) || {:error, :stale_authentication} do
+        {:ok, grant(session, "recheck")}
+      else
+        :error -> {:error, :no_session}
+        {:error, _reason} = error -> error
+      end
+    end)
+    |> case do
+      {:ok, :ok} -> :ok
+      error -> error
+    end
+  end
+
+  def recheck_with_provider(_user, _session_token, _identity_id, _result),
+    do: {:error, :not_available}
+
+  defp lock_current_provider(%IdentityProvider{id: id}, number) do
+    Repo.one(
+      from p in IdentityProvider,
+        where: p.id == ^id and is_nil(p.organization_id) and is_nil(p.removed_at),
+        lock: "FOR SHARE"
+    )
+    |> case do
+      %{enabled: true, active_revision: ^number} -> :ok
+      %{enabled: true} -> {:error, :provider_changed}
+      _disabled_or_removed -> {:error, :not_available}
     end
   end
 
