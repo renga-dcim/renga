@@ -874,6 +874,9 @@ fn reload_changes_jobs(
         power: _,
         bmc: _,
         exporters: _,
+        // Read afresh by each pass's catalog and each check-in's probe; it never changes which
+        // keys a pass offers.
+        osquery: _,
     } = new;
     !old_client.sends_like(new_client) || old.labels != *labels || old.jobs != *jobs
 }
