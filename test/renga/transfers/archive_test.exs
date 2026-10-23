@@ -160,11 +160,43 @@ defmodule Renga.Transfers.ArchiveTest do
                Archive.open(path, tmp_dir: tmp)
     end
 
+    test "with extended or sparse entries, before :erl_tar reads their metadata", %{
+      tmp_dir: tmp
+    } do
+      # A sparse entry stores nothing but claims 2 MiB, which listing it
+      # with :erl_tar would materialize; a PAX record with a bad uid makes
+      # :erl_tar raise.
+      sparse = :binary.copy(<<0>>, 137) <> octal(2 * 1024 * 1024, 12)
+
+      path =
+        raw_tar(tmp, [
+          {"teams.ndjson", "x", "12 uid=nope\n", []},
+          {"manifest.json", "0", manifest(%{}), []},
+          {"sites.ndjson", "S", "", magic: "ustar  \0", extra: sparse}
+        ])
+
+      assert {:error, problems} = Archive.open(path, tmp_dir: tmp, max_expanded_bytes: 1_048_576)
+
+      assert Enum.map(problems, &{&1.file, &1.message}) == [
+               {"teams.ndjson", "is a PAX extended header, not a regular file"},
+               {"sites.ndjson", "is a sparse file, not a regular file"}
+             ]
+
+      assert File.ls!(tmp) == ["raw.tar.zst"]
+    end
+
+    test "with an entry whose header checksum is wrong", %{tmp_dir: tmp} do
+      path = raw_tar(tmp, [{"manifest.json", "0", manifest(%{}), checksum: 1}])
+
+      assert {:error, [%{message: "the archive does not contain a valid tar file"}]} =
+               Archive.open(path, tmp_dir: tmp)
+    end
+
     test "with too many files", %{tmp_dir: tmp} do
       files = for i <- 1..5, into: %{}, do: {"type_#{i}", [%{"id" => i}]}
       path = write(tmp, files)
 
-      assert {:error, [%{message: "the archive holds 6 files, over the limit of 4"}]} =
+      assert {:error, [%{message: "the archive holds more than 4 files"}]} =
                Archive.open(path, tmp_dir: tmp, max_files: 4)
     end
 
@@ -281,6 +313,21 @@ defmodule Renga.Transfers.ArchiveTest do
     end
   end
 
+  test "opens an archive whatever modes its entries carry", %{tmp_dir: tmp} do
+    body = "{}\n"
+    files = %{"teams.ndjson" => body}
+
+    path =
+      raw_tar(tmp, [
+        {"manifest.json", "0", manifest(files), mode: 0},
+        {"teams.ndjson", "0", body, mode: 0}
+      ])
+
+    assert {:ok, archive} = Archive.open(path, tmp_dir: tmp)
+    assert Enum.to_list(Archive.records(archive, "teams")) == [%{}]
+    Archive.close(archive)
+  end
+
   test "record types must have safe file names" do
     assert Archive.record_file("cable_plans") == "cable_plans.ndjson"
     assert_raise ArgumentError, fn -> Archive.record_file("../x") end
@@ -321,6 +368,50 @@ defmodule Renga.Transfers.ArchiveTest do
     |> Map.merge(overrides)
     |> Jason.encode!()
   end
+
+  # A tar built header by header, for entries :erl_tar never writes:
+  # {name, typeflag, body, options}. Options set the `:mode`, the `:magic`,
+  # the header bytes after the owner fields (`:extra`), or a wrong
+  # `:checksum`.
+  defp raw_tar(tmp, entries) do
+    blocks =
+      for {name, type, body, opts} <- entries do
+        [raw_header(name, type, byte_size(body), opts), body, padding(byte_size(body))]
+      end
+
+    path = Path.join(tmp, "raw.tar.zst")
+    File.write!(path, :zstd.compress(IO.iodata_to_binary([blocks, <<0::size(1024)-unit(8)>>])))
+    path
+  end
+
+  defp raw_header(name, type, size, opts) do
+    header =
+      IO.iodata_to_binary([
+        field(name, 100),
+        octal(Keyword.get(opts, :mode, 0o644), 8),
+        octal(0, 8),
+        octal(0, 8),
+        octal(size, 12),
+        octal(0, 12),
+        "        ",
+        type,
+        field("", 100),
+        Keyword.get(opts, :magic, "ustar\0" <> "00"),
+        field("", 80),
+        field(Keyword.get(opts, :extra, ""), 167)
+      ])
+
+    checksum = Keyword.get_lazy(opts, :checksum, fn -> Enum.sum(:binary.bin_to_list(header)) end)
+    <<before::binary-size(148), _spaces::binary-size(8), rest::binary>> = header
+    before <> String.pad_leading(Integer.to_string(checksum, 8), 6, "0") <> <<0, ?\s>> <> rest
+  end
+
+  defp field(value, size), do: value <> :binary.copy(<<0>>, size - byte_size(value))
+
+  defp octal(value, size),
+    do: String.pad_leading(Integer.to_string(value, 8), size - 1, "0") <> <<0>>
+
+  defp padding(size), do: :binary.copy(<<0>>, rem(512 - rem(size, 512), 512))
 
   # A hand-built archive, for shapes the writer never produces.
   defp tar(tmp, entries, name \\ "archive.tar.zst") do

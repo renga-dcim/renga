@@ -91,16 +91,22 @@ defmodule Renga.Transfers.Archive do
     dir = private_tmp_dir(opts)
 
     result =
-      with :ok <- check_compressed_size(path, limits),
-           tar = Path.join(dir, "archive.tar"),
-           :ok <- decompress(path, tar, limits),
-           {:ok, names} <- check_entries(tar, limits),
-           files = Path.join(dir, "files"),
-           :ok <- extract(tar, files, names),
-           _ = File.rm(tar),
-           {:ok, manifest} <- read_manifest(files, limits),
-           :ok <- check_files(files, names, manifest, limits) do
-        {:ok, %__MODULE__{dir: files, manifest: manifest}}
+      try do
+        with :ok <- check_compressed_size(path, limits),
+             tar = Path.join(dir, "archive.tar"),
+             :ok <- decompress(path, tar, limits),
+             {:ok, names} <- check_entries(tar, limits),
+             files = Path.join(dir, "files"),
+             :ok <- extract(tar, files, names),
+             _ = File.rm(tar),
+             {:ok, manifest} <- read_manifest(files, limits),
+             :ok <- check_files(files, names, manifest, limits) do
+          {:ok, %__MODULE__{dir: files, manifest: manifest}}
+        end
+      rescue
+        exception ->
+          File.rm_rf(dir)
+          reraise exception, __STACKTRACE__
       end
 
     case result do
@@ -228,10 +234,15 @@ defmodule Renga.Transfers.Archive do
     end
   end
 
+  # Reads the tar headers itself rather than through :erl_tar, which acts
+  # on what it lists: it materializes a sparse entry's holes and parses
+  # extended (PAX and GNU) header records, raising on some. Only plain
+  # ustar entries with valid checksums are read; any other kind of entry is
+  # reported, and nothing reaches :erl_tar until every entry is allowed.
   defp check_entries(tar, limits) do
-    case :erl_tar.table(String.to_charlist(tar), [:verbose]) do
-      {:ok, entries} ->
-        names = Enum.map(entries, &entry_name(elem(&1, 0)))
+    case File.open(tar, [:read, :binary, :raw], &scan_entries(&1, limits.max_files, [])) do
+      {:ok, {:ok, entries}} ->
+        names = Enum.map(entries, & &1.name)
 
         problems =
           List.flatten([
@@ -242,17 +253,94 @@ defmodule Renga.Transfers.Archive do
 
         if problems == [], do: {:ok, names}, else: {:error, cap(problems, limits)}
 
-      {:error, _reason} ->
+      _invalid ->
         problem("the archive does not contain a valid tar file")
     end
   end
+
+  # Reads at most one entry more than the limit, so a tar of empty entries
+  # cannot make the list grow without bound.
+  defp scan_entries(_file, max_files, entries) when length(entries) > max_files,
+    do: {:ok, Enum.reverse(entries)}
+
+  defp scan_entries(file, max_files, entries) do
+    case :file.read(file, 512) do
+      {:ok, <<0::size(512)-unit(8)>>} ->
+        {:ok, Enum.reverse(entries)}
+
+      {:ok, <<header::binary-size(512)>>} ->
+        with {:ok, entry, size} <- parse_header(header),
+             {:ok, _position} <- :file.position(file, {:cur, padded(size)}) do
+          scan_entries(file, max_files, [entry | entries])
+        end
+
+      _short_or_eof ->
+        :error
+    end
+  end
+
+  defp padded(size), do: div(size + 511, 512) * 512
+
+  defp parse_header(header) do
+    <<name::binary-size(100), _mode::binary-size(24), size::binary-size(12),
+      _mtime::binary-size(12), checksum::binary-size(8), type::binary-size(1),
+      _linkname::binary-size(100), magic::binary-size(8), _owner::binary-size(80),
+      prefix::binary-size(155), _rest::binary>> = header
+
+    with {:ok, checksum} <- octal(checksum),
+         true <- checksum == header_checksum(header),
+         true <- magic in ["ustar\0" <> "00", "ustar  \0"],
+         {:ok, size} <- octal(size) do
+      # A ustar prefix names a directory the entry is inside.
+      name = if magic == "ustar\0" <> "00", do: join_prefix(prefix, name), else: cstring(name)
+      {:ok, %{name: entry_name(name), type: entry_type(type)}, size}
+    else
+      _invalid -> :error
+    end
+  end
+
+  # The checksum covers the header with its own field read as spaces.
+  defp header_checksum(header) do
+    <<before::binary-size(148), _checksum::binary-size(8), rest::binary>> = header
+    sum = fn binary -> binary |> :binary.bin_to_list() |> Enum.sum() end
+    sum.(before) + 8 * ?\s + sum.(rest)
+  end
+
+  # Octal digits ended by NUL or space; base-256 sizes are refused, as no
+  # entry within the limits needs one.
+  defp octal(field) do
+    digits = field |> cstring() |> String.trim()
+
+    case Integer.parse(digits, 8) do
+      {value, ""} -> {:ok, value}
+      _other -> :error
+    end
+  end
+
+  defp join_prefix(prefix, name) do
+    case cstring(prefix) do
+      "" -> cstring(name)
+      directory -> directory <> "/" <> cstring(name)
+    end
+  end
+
+  defp cstring(field), do: field |> :binary.split(<<0>>) |> hd()
+
+  defp entry_type(type) when type in ["0", <<0>>], do: :regular
+  defp entry_type("1"), do: "hard link"
+  defp entry_type("2"), do: "symlink"
+  defp entry_type("5"), do: "directory"
+  defp entry_type(type) when type in ["x", "g"], do: "PAX extended header"
+  defp entry_type(type) when type in ["L", "K"], do: "GNU extended header"
+  defp entry_type("S"), do: "sparse file"
+  defp entry_type(_type), do: "special file"
 
   defp too_many_files(count, limits) when count > limits.max_files,
     do: [
       %{
         file: nil,
         line: nil,
-        message: "the archive holds #{count} files, over the limit of #{limits.max_files}"
+        message: "the archive holds more than #{limits.max_files} files"
       }
     ]
 
@@ -266,9 +354,7 @@ defmodule Renga.Transfers.Archive do
     end
   end
 
-  defp entry_problems({name, type, _size, _mtime, _mode, _uid, _gid}) do
-    name = entry_name(name)
-
+  defp entry_problems(%{name: name, type: type}) do
     cond do
       not allowed_name?(name) ->
         [%{file: printable(name), line: nil, message: "is not an allowed archive file name"}]
@@ -306,7 +392,8 @@ defmodule Renga.Transfers.Archive do
            {:cwd, String.to_charlist(dir)},
            {:files, Enum.map(names, &String.to_charlist/1)}
          ]) do
-      :ok -> :ok
+      # The archive chose each file's mode; only this process reads them.
+      :ok -> Enum.each(names, &File.chmod!(Path.join(dir, &1), 0o600))
       {:error, _reason} -> problem("the archive's files could not be extracted")
     end
   end
