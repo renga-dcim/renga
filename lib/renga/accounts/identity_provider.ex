@@ -108,7 +108,7 @@ defmodule Renga.Accounts.IdentityProvider do
   """
   def mfa_changeset(provider, attrs) do
     provider
-    |> cast(attrs, [:enforces_mfa, :mfa_amr_combinations])
+    |> cast(attrs, [:enforces_mfa, :mfa_amr_combinations], empty_values: [])
     |> validate_required([:enforces_mfa])
     |> validate_change(:enforces_mfa, fn :enforces_mfa, marked ->
       if marked and provider.kind == "github",
@@ -121,7 +121,8 @@ defmodule Renga.Accounts.IdentityProvider do
 
   defp normalize_combinations(changeset) do
     case fetch_change(changeset, :mfa_amr_combinations) do
-      {:ok, combinations} -> put_combinations(changeset, combinations || [])
+      {:ok, nil} -> add_error(changeset, :mfa_amr_combinations, "can't be blank")
+      {:ok, combinations} -> put_combinations(changeset, combinations)
       :error -> changeset
     end
   end

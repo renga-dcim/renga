@@ -539,26 +539,37 @@ defmodule Renga.Accounts.IdentityProvidersTest do
 
     test "returns validation errors for malformed values without recording a change" do
       {provider, _} = create()
+
+      {:ok, provider} =
+        IdentityProviders.set_mfa_mark(
+          provider,
+          %{"enforces_mfa" => true, "mfa_amr_combinations" => ["pwd+otp"]},
+          @operator
+        )
+
       events_before = event_kinds(provider)
+      version_before = provider.version
 
-      assert {:error, changeset} =
-               IdentityProviders.set_mfa_mark(
-                 provider,
-                 %{"enforces_mfa" => "bogus"},
-                 @operator
-               )
+      malformed = [
+        {%{"enforces_mfa" => "bogus"}, :enforces_mfa},
+        {%{"enforces_mfa" => ""}, :enforces_mfa},
+        {%{"enforces_mfa" => nil}, :enforces_mfa},
+        {%{"mfa_amr_combinations" => nil}, :mfa_amr_combinations},
+        {%{"mfa_amr_combinations" => [nil]}, :mfa_amr_combinations},
+        {%{"mfa_amr_combinations" => [""]}, :mfa_amr_combinations}
+      ]
 
-      assert errors_on(changeset).enforces_mfa
+      for {attrs, field} <- malformed do
+        assert {:error, changeset} =
+                 IdentityProviders.set_mfa_mark(provider, attrs, @operator)
 
-      assert {:error, changeset} =
-               IdentityProviders.set_mfa_mark(
-                 provider,
-                 %{"mfa_amr_combinations" => [nil]},
-                 @operator
-               )
+        assert Map.has_key?(errors_on(changeset), field)
+      end
 
-      assert errors_on(changeset).mfa_amr_combinations == ["must be a string"]
-      refute IdentityProviders.get(provider.id).enforces_mfa
+      persisted = IdentityProviders.get(provider.id)
+      assert persisted.enforces_mfa
+      assert persisted.mfa_amr_combinations == ["otp+pwd"]
+      assert persisted.version == version_before
       assert event_kinds(provider) == events_before
     end
 
