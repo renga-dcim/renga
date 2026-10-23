@@ -265,7 +265,7 @@ defmodule Renga.Transfers.ArchiveTest do
     end
 
     test "with lines that are not JSON objects, naming each line", %{tmp_dir: tmp} do
-      body = ~s({"id":1}\n[1,2]\nnot json\n\n{"id":5})
+      body = ~s({"id":1}\n[1,2]\nnot json\n\n1.5\n{"id":6})
 
       path =
         tar(tmp, [{"manifest.json", manifest(%{"teams.ndjson" => body})}, {"teams.ndjson", body}])
@@ -276,6 +276,7 @@ defmodule Renga.Transfers.ArchiveTest do
                {2, "is not a JSON object"},
                {3, "is not valid JSON"},
                {4, "is not valid JSON"},
+               {5, "is not a JSON object"},
                {nil, "does not end with a newline"}
              ]
     end

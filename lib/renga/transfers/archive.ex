@@ -604,7 +604,8 @@ defmodule Renga.Transfers.Archive do
 
   defp record_problems(line) do
     case Renga.JSON.decode(line) do
-      {:ok, record} when is_map(record) -> []
+      # A fractional number decodes as a Decimal, which is a map too.
+      {:ok, record} when is_map(record) and not is_struct(record) -> []
       {:ok, _value} -> ["is not a JSON object"]
       {:error, _error} -> ["is not valid JSON"]
     end
