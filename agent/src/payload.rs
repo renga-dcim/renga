@@ -454,10 +454,12 @@ pub struct AgentMetadata {
 }
 
 /// The query backends a host can use beyond the native queries (RFD 12).
-/// Must match `Renga.Inventory.AgentPayload`.
+/// Must match `Renga.Inventory.AgentPayload`. A backend left out is one this
+/// agent does not use; Renga replaces what it last stored with this.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct QueryBackends {
-    pub osquery: BackendStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub osquery: Option<BackendStatus>,
 }
 
 /// One power source's status as a check-in reports it. Must match
@@ -495,9 +497,10 @@ impl CheckIn {
         self
     }
 
-    /// Reports osquery's status, when `[osquery]` is enabled.
+    /// Reports osquery's status, or, when `[osquery]` is disabled, an empty
+    /// `query_backends` so Renga stops showing the status it last stored.
     pub fn with_osquery(mut self, osquery: Option<BackendStatus>) -> Self {
-        self.metadata.query_backends = osquery.map(|osquery| QueryBackends { osquery });
+        self.metadata.query_backends = Some(QueryBackends { osquery });
         self
     }
 

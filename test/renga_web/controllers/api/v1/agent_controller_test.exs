@@ -359,6 +359,12 @@ defmodule RengaWeb.Api.V1.AgentControllerTest do
 
       assert %{status: "not_permitted", version: nil} =
                scope |> Inventory.get_agent!(agent_id) |> Renga.Inventory.Agent.osquery()
+
+      # An agent with osquery turned off reports no backends, clearing the last status.
+      conn = check_in_json(build_conn(), token, %{"query_backends" => %{}})
+      assert valid_api_response(conn, 202)
+
+      assert scope |> Inventory.get_agent!(agent_id) |> Renga.Inventory.Agent.osquery() == nil
     end
 
     test "rejects malformed query backends", %{conn: conn} do
