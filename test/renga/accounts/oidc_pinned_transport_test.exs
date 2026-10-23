@@ -69,7 +69,9 @@ defmodule Renga.Accounts.OIDC.PinnedTransportTest do
     request = %{request(port) | options: Map.put(request(port).options, :receive_timeout, 300)}
     {elapsed, result} = :timer.tc(fn -> PinnedTransport.run(request) end, :millisecond)
 
-    assert {_request, %RuntimeError{}} = result
+    # The deadline may pass during a receive or between two of them; either
+    # way the request ends with a timeout.
+    assert {_request, %Mint.TransportError{reason: :timeout}} = result
     assert elapsed < 2_000
     # The connection is closed, so the provider's writes start failing.
     assert_receive :closed, 2_000
