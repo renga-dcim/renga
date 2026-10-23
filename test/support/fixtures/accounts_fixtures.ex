@@ -68,35 +68,50 @@ defmodule Renga.AccountsFixtures do
   end
 
   @doc """
-  Turns on an authenticator app for `user` with a code from the previous
-  step, so the current step is still unused. Returns `{secret, recovery_codes}`.
+  Turns on an authenticator app for `user` and leaves the current step
+  unused, so a test can still sign in with the code its app shows now.
+  Returns `{secret, recovery_codes}`.
+
+  `:now` replaces the fixture's clock, in Unix seconds, so a test can put
+  a stall between the fixture reading the time and Renga checking the code.
+  `:secret` replaces the random secret.
   """
-  def totp_fixture(user) do
-    secret = Accounts.MFA.new_totp_secret()
-    {:ok, codes} = enable_totp_with_previous_step(user, secret)
-    {secret, codes}
+  def totp_fixture(user, opts \\ []) do
+    now = Keyword.get(opts, :now, fn -> System.os_time(:second) end)
+    secret = Keyword.get_lazy(opts, :secret, &Accounts.MFA.new_totp_secret/0)
+    {secret, enable_totp_unused(user, secret, now, 3)}
   end
 
-  # Renga accepts the step before the current one, so a code for it turns
-  # two steps old, and is refused, if a boundary passes before Renga checks
-  # it. The tail of a step is waited out, and a code that crosses a boundary
-  # anyway is made again for the new step.
-  defp enable_totp_with_previous_step(user, secret) do
-    now = System.os_time(:millisecond)
-    left = 30_000 - rem(now, 30_000)
-    if left < 2_000, do: Process.sleep(left)
-
-    step = div(System.os_time(:second), 30)
-    code = NimbleTOTP.verification_code(secret, time: (step - 1) * 30)
+  # Renga accepts a code for the step it reads and the steps either side.
+  # A code for the previous step falls out of that window at the next
+  # boundary, so the fixture proves the current step's code, which lasts
+  # until a second boundary, and then marks as used the step before the
+  # earliest it read, in case the clock went back. That also keeps the
+  # current step unused if its code happened to match a later one.
+  #
+  # Only a failure the clock explains is retried: it moved more than a step
+  # during the attempt, so the code may have expired. Each retry leaves a
+  # `totp_enable_failed` event, and any other failure is raised.
+  defp enable_totp_unused(user, secret, now, attempts) do
+    step = div(now.(), 30)
+    code = NimbleTOTP.verification_code(secret, time: step * 30)
 
     case Accounts.MFA.enable_totp(user, secret, code) do
-      {:error, :invalid_code} ->
-        if div(System.os_time(:second), 30) != step,
-          do: enable_totp_with_previous_step(user, secret),
-          else: {:error, :invalid_code}
+      {:ok, codes} ->
+        {1, _} =
+          Renga.Repo.update_all(where(Accounts.UserTOTP, user_id: ^user.id),
+            set: [last_used_step: min(step, div(now.(), 30)) - 1]
+          )
 
-      result ->
-        result
+        codes
+
+      {:error, :invalid_code} when attempts > 1 ->
+        if abs(div(now.(), 30) - step) > 1,
+          do: enable_totp_unused(user, secret, now, attempts - 1),
+          else: raise("totp_fixture: Renga refused a code for the current step")
+
+      error ->
+        raise "totp_fixture: enable_totp/3 returned #{inspect(error)}"
     end
   end
 
