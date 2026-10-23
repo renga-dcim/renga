@@ -352,12 +352,13 @@ struct PxMeasurement {
 }
 
 /// Every present sensor of unit 1 in a measurements table, by its index after `pduId`, with its
-/// decimal digits from the matching configuration table.
+/// decimal digits from the matching configuration table. A sensor whose digits are missing or
+/// malformed has `None`: its raw value has no known scale.
 fn px_sensors(
     answers: &Answers,
     [available, state, value]: [&[u32]; 3],
     digits: &[u32],
-) -> Vec<(Vec<u32>, PxMeasurement, u32)> {
+) -> Vec<(Vec<u32>, PxMeasurement, Option<u32>)> {
     let states = rows(answers, state, &[1]);
     let values = rows(answers, value, &[1]);
     let digits = rows(answers, digits, &[1]);
@@ -372,8 +373,7 @@ fn px_sensors(
             let digits = digits
                 .get(&index)
                 .and_then(|value| integer(value))
-                .and_then(|digits| u32::try_from(digits).ok())
-                .unwrap_or(0);
+                .and_then(|digits| u32::try_from(digits).ok());
             (index, measurement, digits)
         })
         .collect()
@@ -389,16 +389,19 @@ fn px_quantity(sensor_type: u32) -> Option<&'static str> {
     }
 }
 
-fn px_value(measurement: PxMeasurement, digits: u32) -> Measurement {
-    match measurement {
-        PxMeasurement {
-            state: Some(PX_STATE_UNAVAILABLE) | None,
-            ..
+/// A numeric reading scaled by its decimal digits. Without them the value's scale is unknown,
+/// and 12350 might be 12.35 A, so it is a failed reading rather than a guess.
+fn px_value(measurement: PxMeasurement, digits: Option<u32>) -> Measurement {
+    match (measurement, digits) {
+        (
+            PxMeasurement {
+                state: Some(state),
+                value: Some(value),
+            },
+            Some(digits),
+        ) if state != PX_STATE_UNAVAILABLE && digits <= 6 => {
+            Measurement::Value(value as f64 / 10_f64.powi(digits as i32))
         }
-        | PxMeasurement { value: None, .. } => Measurement::Failed,
-        PxMeasurement {
-            value: Some(value), ..
-        } if digits <= 6 => Measurement::Value(value as f64 / 10_f64.powi(digits as i32)),
         _ => Measurement::Failed,
     }
 }
@@ -412,18 +415,26 @@ fn px_on_off(measurement: PxMeasurement) -> Measurement {
 }
 
 fn apc(answers: &Answers) -> Result<Pdu, MapError> {
-    let ident = apc_rows(answers, APC_IDENT_MODULE);
+    // The module columns hold each unit's configurable Display ID, which need not be 1. The
+    // host, the PDU that answered, is always the first identification row.
+    let host = answers
+        .column(APC_IDENT_MODULE)
+        .filter_map(|(index, value)| match index {
+            [row] => Some((*row, integer(value)?)),
+            _ => None,
+        })
+        .min_by_key(|(row, _)| *row);
     let ident_value = |column| {
-        ident
-            .first()
-            .and_then(|row| row_value(answers, column, *row))
+        host.and_then(|(row, _)| row_value(answers, column, row))
             .and_then(text)
     };
     let serial_number = ident_value(APC_IDENT_SERIAL)
         .ok_or_else(|| MapError("the PDU answered rPDU2 without a serial number".into()))?;
+    let module = host.map_or(1, |(_, module)| module);
+    let apc_rows = |column| apc_rows(answers, column, module);
     let mut readings = Vec::new();
 
-    if let Some(row) = apc_rows(answers, APC_DEVICE_MODULE).first() {
+    if let Some(row) = apc_rows(APC_DEVICE_MODULE).first() {
         // Hundredths of kW and kVA; -1 means the model does not measure it.
         for (column, quantity) in [
             (APC_DEVICE_POWER, "real_power"),
@@ -443,7 +454,7 @@ fn apc(answers: &Answers) -> Result<Pdu, MapError> {
     }
 
     // One phase row is the whole inlet; three are the legs of a three-phase inlet.
-    let phases: BTreeMap<i64, u32> = apc_rows(answers, APC_PHASE_MODULE)
+    let phases: BTreeMap<i64, u32> = apc_rows(APC_PHASE_MODULE)
         .into_iter()
         .filter_map(|row| {
             Some((
@@ -473,9 +484,8 @@ fn apc(answers: &Answers) -> Result<Pdu, MapError> {
         }
     }
 
-    for (number_column, row, column, quantity, scale) in apc_rows(answers, APC_METERED_MODULE)
-        .into_iter()
-        .flat_map(|row| {
+    for (number_column, row, column, quantity, scale) in
+        apc_rows(APC_METERED_MODULE).into_iter().flat_map(|row| {
             [
                 (
                     APC_METERED_NUMBER,
@@ -501,7 +511,7 @@ fn apc(answers: &Answers) -> Result<Pdu, MapError> {
             readings.push(apc_outlet(outlet, quantity, measurement));
         }
     }
-    for row in apc_rows(answers, APC_SWITCHED_MODULE) {
+    for row in apc_rows(APC_SWITCHED_MODULE) {
         let Some(outlet) = row_value(answers, APC_SWITCHED_NUMBER, row).and_then(integer) else {
             continue;
         };
@@ -534,12 +544,12 @@ fn apc_outlet(outlet: i64, quantity: &'static str, measurement: Measurement) -> 
     }
 }
 
-/// The rows of an rPDU2 table whose module column names unit 1.
-fn apc_rows(answers: &Answers, module: &[u32]) -> Vec<u32> {
+/// The rows of an rPDU2 table whose module column names the unit with Display ID `module`.
+fn apc_rows(answers: &Answers, column: &[u32], module: i64) -> Vec<u32> {
     answers
-        .column(module)
+        .column(column)
         .filter_map(|(index, value)| match index {
-            [row] if integer(value) == Some(1) => Some(*row),
+            [row] if integer(value) == Some(module) => Some(*row),
             _ => None,
         })
         .collect()
@@ -900,6 +910,87 @@ pub(crate) mod tests {
             find(&pdu, "outlet/2", "state").measurement,
             Measurement::State("off")
         );
+    }
+
+    #[test]
+    fn the_apc_host_is_the_first_unit_whatever_its_display_id() {
+        // The host's Display ID is 2.
+        let mut host = apc_answers();
+        let rows: Vec<(Oid, SnmpValue)> = host
+            .iter()
+            .map(|(index, value)| (index.clone(), value.clone()))
+            .collect();
+        for (index, value) in &rows {
+            let module = [
+                APC_IDENT_MODULE,
+                APC_DEVICE_MODULE,
+                APC_PHASE_MODULE,
+                APC_METERED_MODULE,
+                APC_SWITCHED_MODULE,
+            ]
+            .iter()
+            .any(|column| index.starts_with(column));
+            if module && integer(value) == Some(1) {
+                host.insert(index.clone(), SnmpValue::Integer(2));
+            }
+        }
+        let alone = pdu(Vendor::Apc, &host).unwrap();
+        assert_eq!(alone.serial_number, "5A1234E01234");
+        assert_eq!(
+            find(&alone, "device", "real_power").measurement,
+            Measurement::Value(420.0)
+        );
+        assert_eq!(
+            find(&alone, "outlet/1", "current").measurement,
+            Measurement::Value(1.8)
+        );
+
+        // A guest in the chain with Display ID 1, listed after the host.
+        let mut chained = host;
+        chained.insert(oid(APC_IDENT_MODULE, &[2]), SnmpValue::Integer(1));
+        chained.insert(oid(APC_IDENT_SERIAL, &[2]), octets("GUEST-SERIAL"));
+        chained.insert(oid(APC_DEVICE_MODULE, &[2]), SnmpValue::Integer(1));
+        chained.insert(oid(APC_DEVICE_POWER, &[2]), SnmpValue::Integer(99));
+        chained.insert(oid(APC_METERED_MODULE, &[3]), SnmpValue::Integer(1));
+        chained.insert(oid(APC_METERED_NUMBER, &[3]), SnmpValue::Integer(1));
+        chained.insert(oid(APC_METERED_CURRENT, &[3]), SnmpValue::Integer(77));
+        let pdu = pdu(Vendor::Apc, &chained).unwrap();
+        assert_eq!(pdu.serial_number, "5A1234E01234");
+        assert_eq!(
+            find(&pdu, "device", "real_power").measurement,
+            Measurement::Value(420.0)
+        );
+        assert_eq!(
+            pdu.readings
+                .iter()
+                .filter(|reading| reading.sensor == "outlet/1" && reading.quantity == "current")
+                .map(|reading| reading.measurement)
+                .collect::<Vec<_>>(),
+            [Measurement::Value(1.8)]
+        );
+    }
+
+    #[test]
+    fn a_raritan_reading_without_its_scale_is_failed_not_unscaled() {
+        let current = [1, 1, PX_RMS_CURRENT];
+        for digits in [SnmpValue::Missing, SnmpValue::Integer(-1), octets("3")] {
+            let mut answers = raritan_answers();
+            answers.insert(oid(PX_INLET_DIGITS, &current), digits);
+            let pdu = pdu(Vendor::Raritan, &answers).unwrap();
+            assert_eq!(
+                find(&pdu, "inlet/1", "current").measurement,
+                Measurement::Failed
+            );
+            // Explicit zero digits still scale nothing, and on/off needs no digits.
+            assert_eq!(
+                find(&pdu, "inlet/1", "real_power").measurement,
+                Measurement::Value(2_455.0)
+            );
+            assert_eq!(
+                find(&pdu, "outlet/2", "state").measurement,
+                Measurement::State("off")
+            );
+        }
     }
 
     #[test]

@@ -304,6 +304,7 @@ impl Config {
         .map_err(ConfigError)?;
         if let Some(collector) = power.iter().find(|collector| {
             snmp.iter().any(|other| other.id == collector.id)
+                || gnmi.iter().any(|other| other.id == collector.id)
                 || libvirt
                     .as_ref()
                     .is_some_and(|other| other.id == collector.id)
@@ -651,6 +652,15 @@ mod tests {
             ),
         )
         .unwrap();
+        let error = Config::load(&path, &state).unwrap_err().to_string();
+        assert!(
+            error.contains("already used by another collector module"),
+            "{error}"
+        );
+
+        let gnmi = "[[collectors.gnmi]]\nid='core'\ntargets=['10.0.0.1']\n\
+                    username='renga'\npassword_file='/etc/renga/gnmi-password'\n";
+        fs::write(&path, format!("{base}{gnmi}{}", module("power", "core"))).unwrap();
         let error = Config::load(&path, &state).unwrap_err().to_string();
         fs::remove_file(path).unwrap();
         assert!(
