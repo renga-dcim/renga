@@ -45,6 +45,7 @@ defmodule Renga.Inventory.AgentPayload do
   # collector kind reports one scope and one resource kind.
   @observation_scopes ~w(host targets hypervisor)
   @collector_kinds %{
+    "power_poller" => %{scope: "targets", resource_kind: "pdu"},
     "switch_poller" => %{scope: "targets", resource_kind: "switch"},
     "vm_provider" => %{scope: "hypervisor", resource_kind: "vm"}
   }

@@ -123,6 +123,62 @@ defmodule RengaWeb.Api.V1.TelemetryControllerTest do
       assert [%Reading{target: "10.0.0.5"}] = Readings.list_source_readings(scope, stream_id)
     end
 
+    test "a power poller's readings are about the PDU its target reports", %{
+      scope: scope,
+      token: token
+    } do
+      collector = %{"id" => "rack-pdus", "kind" => "power_poller"}
+
+      report = %{
+        "observation_id" => "pdu-poll-1",
+        "observed_at" => "2026-08-13T07:30:00Z",
+        "scope" => "targets",
+        "collector" => collector,
+        "targets" => [%{"address" => "10.0.0.5", "status" => "reachable"}],
+        "complete" => true,
+        "resources" => [
+          %{
+            "kind" => "pdu",
+            "target" => "10.0.0.5",
+            "identifiers" => %{"serial_number" => "PDU-SER-1", "hostname" => "pdu-a1"},
+            "attributes" => %{"vendor" => "Raritan", "model" => "PX3-5190R"},
+            "interfaces" => []
+          }
+        ]
+      }
+
+      assert %{
+               "reconciliation" => %{
+                 "resources" => [%{"status" => "succeeded", "resource_id" => pdu_id}]
+               }
+             } =
+               build_conn()
+               |> put_req_header("authorization", "Bearer #{token}")
+               |> put_req_header("x-renga-installation-id", @installation_id)
+               |> post(~p"/api/v1/observations", report)
+               |> valid_api_response(202)
+
+      assert Inventory.get_resource!(scope, pdu_id).kind == "pdu"
+
+      batch =
+        host_batch([
+          sample(
+            target: "10.0.0.5",
+            sensor: "outlet/3/active_power",
+            boundary: "outlet",
+            component: %{"kind" => "power_outlet", "name" => "3"},
+            value: 120,
+            mapping: %{"name" => "raritan_pdu2", "version" => 1}
+          )
+        ])
+        |> Map.put("collector", collector)
+
+      token |> post_batch(batch) |> valid_api_response(202)
+
+      assert %{^pdu_id => [%{reading: %Reading{component_name: "3"}, eligible?: true}]} =
+               Readings.for_resources(scope, [pdu_id], ~U[2026-08-13 07:31:00Z])
+    end
+
     test "a replayed batch is accepted once, and a reused replay ID is a conflict", %{
       scope: scope,
       token: token

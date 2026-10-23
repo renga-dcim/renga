@@ -11,7 +11,7 @@ defmodule RengaWeb.Api.V1.Schemas.SourceIdentity do
       properties: %{
         kind: %{
           type: [:string, :null],
-          enum: ["host_agent", "switch_poller", "vm_provider", nil],
+          enum: ["host_agent", "power_poller", "switch_poller", "vm_provider", nil],
           description:
             "`host_agent` for a host report, or the collector's kind for a scoped report."
         },

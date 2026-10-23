@@ -31,9 +31,9 @@ defmodule Renga.Inventory.Reconciler do
   @strong_identifier_kinds ~w(serial_number dmi_uuid machine_id)
   @weak_identifier_kinds ~w(hostname fqdn)
   @identity_interface_kinds ~w(ethernet)
-  # What collector streams report (RFD 11). Only stable identifiers match
-  # them, whichever side reports first.
-  @collector_resource_kinds ~w(switch vm)
+  # What collector streams report (RFD 11, and PDUs for RFD 10). Only stable
+  # identifiers match them, whichever side reports first.
+  @collector_resource_kinds ~w(switch vm pdu)
 
   @doc """
   Reconciles one scoped observation and records its immutable processing result.
