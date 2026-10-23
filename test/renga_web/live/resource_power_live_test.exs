@@ -376,6 +376,46 @@ defmodule RengaWeb.ResourcePowerLiveTest do
     refute has_element?(view, "#power-readings tr", "0.96 1")
   end
 
+  test "an open page lets readings expire and shows new ones without an inventory change",
+       %{conn: conn, scope: scope, organization: organization} do
+    server = server!(scope)
+    bmc = power_stream_fixture(organization, "bmc_power")
+    target_resource_fixture(bmc, "https://bmc-web-1", server)
+
+    supply = fn attrs ->
+      reading_fixture(
+        bmc,
+        [target: "https://bmc-web-1", boundary: "supply_input", component: {"power_port", "PSU1"}] ++
+          attrs
+      )
+    end
+
+    supply.(quantity: "real_power", sensor: "psu1-power", value: 212.4)
+    {:ok, view, _html} = live(conn, ~p"/inventory/#{server}/power")
+    [psu1, _psu2] = Power.list_device_endpoints(scope, server.id).ports
+    assert has_element?(view, "#power-supply-#{psu1.id}", "212.4 W")
+    assert has_element?(view, "#power-readings tr", "Current")
+
+    # Time passes the reading's freshness, and a supply state arrives.
+    hour_ago = DateTime.add(Renga.Time.utc_now_ms(), -3600, :second)
+
+    Repo.update_all(Renga.Power.Reading,
+      set: [
+        event_at: hour_ago,
+        window_start: hour_ago,
+        window_end: hour_ago,
+        fresh_until: DateTime.add(hour_ago, 180, :second)
+      ]
+    )
+
+    supply.(quantity: "state", unit: nil, state: "no_input")
+    send(view.pid, :refresh_readings)
+
+    refute has_element?(view, "#power-supply-#{psu1.id}", "212.4 W")
+    assert has_element?(view, "#power-supply-#{psu1.id} .text-crit", "No input")
+    assert has_element?(view, "#power-readings tr", "Stale")
+  end
+
   test "members read but cannot edit", %{conn: conn, scope: scope, organization: organization} do
     server = server!(scope)
     {member_conn, _scope} = sign_in(conn, organization, "member")

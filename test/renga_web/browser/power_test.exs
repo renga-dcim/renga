@@ -4,6 +4,7 @@ defmodule RengaWeb.Browser.PowerTest do
   import Renga.AccountsFixtures
   import Renga.CatalogFixtures
   import Renga.InventoryFixtures
+  import Renga.PowerReadingFixtures
 
   alias Renga.Accounts
   alias Renga.DCIM
@@ -17,6 +18,13 @@ defmodule RengaWeb.Browser.PowerTest do
   @floor_pdu_name "floor-pdu-upstream"
   @long_port_name "psuwithanextremelylongunbrokenidentifierthatmustwrapinthepathpaneltitlewithoutoverflow"
   @long_inlet_name "inletwithanextremelylongunbrokenidentifierthatmustwrapinthepathstopwithoutoverflow"
+  @long_sensor "redfish/Chassis/1/Power/PowerSupplies/0/PowerInputWattsWithAVeryLongVendorSuffix"
+  @tooltip """
+  new Promise(resolve => setTimeout(() => {
+    const tooltip = document.getElementById("clip-tooltip")
+    resolve(tooltip?.matches(":popover-open") ? tooltip.textContent : null)
+  }, 600))
+  """
 
   setup %{conn: conn} do
     organization = organization_fixture()
@@ -267,6 +275,42 @@ defmodule RengaWeb.Browser.PowerTest do
   end
 
   @tag browser_context_opts: @phone
+  test "power readings stay one line per row on a phone and reveal clipped values", context do
+    first = readings!(context)
+
+    context.conn
+    |> visit("/inventory/#{context.server.id}/power")
+    |> assert_has("body .phx-connected")
+    |> assert_has("#power-readings tr", text: "Current")
+    |> evaluate(readings_layout_js(), fn layout ->
+      assert layout["fits"]
+      assert layout["page_fits"]
+      # Source and Taken give way; what is measured, its value, and status stay.
+      assert layout["visible"] == ["Measures", "Value", "Status"]
+      assert length(layout["rows"]) == 2
+      assert Enum.all?(layout["rows"], &(&1 == hd(layout["rows"])))
+    end)
+    |> touch("#power-reading-#{first.id} td:first-child [data-clip]")
+    |> evaluate(@tooltip, &assert(&1 =~ @long_sensor))
+  end
+
+  test "power readings keep compact one-line rows on a desktop", context do
+    first = readings!(context)
+
+    context.conn
+    |> visit("/inventory/#{context.server.id}/power")
+    |> assert_has("body .phx-connected")
+    |> evaluate("document.documentElement.dataset.density = 'compact'")
+    |> evaluate(readings_layout_js(), fn layout ->
+      assert layout["fits"]
+      assert "Source" in layout["visible"]
+      assert Enum.all?(layout["rows"], &(&1 == 28))
+    end)
+    |> hover("#power-reading-#{first.id} td:first-child [data-clip]")
+    |> evaluate(@tooltip, &assert(&1 =~ @long_sensor))
+  end
+
+  @tag browser_context_opts: @phone
   test "an owner sets the default power factor on a phone with tappable controls", context do
     organization = Renga.Repo.get!(Renga.Accounts.Organization, context.scope.organization_id)
     owner = user_fixture()
@@ -356,6 +400,71 @@ defmodule RengaWeb.Browser.PowerTest do
         document.documentElement.scrollWidth <= document.documentElement.clientWidth;
     })()
     """
+  end
+
+  defp readings!(context) do
+    organization = Renga.Repo.get!(Renga.Accounts.Organization, context.server.organization_id)
+    bmc = power_stream_fixture(organization, "bmc_power")
+    target_resource_fixture(bmc, "https://bmc-web-1", context.server)
+
+    reading = fn attrs ->
+      reading_fixture(
+        bmc,
+        [
+          target: "https://bmc-web-1",
+          boundary: "supply_input",
+          component: {"power_port", "PSU1"},
+          mapping_name: "redfish"
+        ] ++ attrs
+      )
+    end
+
+    reading.(sensor: @long_sensor, quantity: "real_power", value: 212.4)
+    reading.(sensor: "psu1-state", quantity: "state", unit: nil, state: "ok")
+
+    context.scope
+    |> Renga.Power.Readings.for_resources([context.server.id], Renga.Time.utc_now_ms())
+    |> Map.fetch!(context.server.id)
+    |> Enum.map(& &1.reading)
+    |> Enum.find(&(&1.sensor == @long_sensor))
+  end
+
+  defp readings_layout_js do
+    """
+    (() => {
+      const body = document.getElementById('power-readings');
+      const box = body.closest('div');
+      return {
+        fits: box.scrollWidth <= box.clientWidth + 0.5,
+        page_fits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+        visible: [...box.querySelectorAll('thead th')]
+          .filter(th => getComputedStyle(th).display !== 'none')
+          .map(th => th.textContent.trim()),
+        rows: [...body.querySelectorAll('tr[data-list-row]')]
+          .map(row => row.getBoundingClientRect().height)
+      };
+    })()
+    """
+  end
+
+  defp hover(conn, selector) do
+    unwrap(conn, fn %{frame_id: frame_id} ->
+      assert {:ok, _} = PlaywrightEx.Frame.hover(frame_id, selector: selector, timeout: 2000)
+    end)
+  end
+
+  defp touch(conn, selector) do
+    unwrap(conn, fn %{frame_id: frame_id} ->
+      for type <- ~w(pointerdown pointerup) do
+        assert {:ok, _} =
+                 PlaywrightEx.Frame.dispatch_event(frame_id,
+                   selector: selector,
+                   type: type,
+                   event_init: %{pointerType: "touch", bubbles: true},
+                   timeout: 2000
+                 )
+      end
+    end)
   end
 
   defp row_heights_js do

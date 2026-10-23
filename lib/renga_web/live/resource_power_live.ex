@@ -20,7 +20,9 @@ defmodule RengaWeb.ResourcePowerLive do
   power or a supply's status, are listed with the source and mapping that
   produced them and whether they are current. A supply's own input reading
   and status also show on its port. Readings are evidence: they never
-  change the device's paths or redundancy.
+  change the device's paths or redundancy. Telemetry does not announce
+  itself and readings expire with time alone, so a connected page reloads
+  its readings on a timer rather than waiting for an inventory change.
   """
   use RengaWeb, :live_view
 
@@ -39,6 +41,8 @@ defmodule RengaWeb.ResourcePowerLive do
   alias Renga.Power.Reading
   alias Renga.Power.Readings
   alias Renga.Power.Redundancy
+
+  @readings_refresh_ms 30_000
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
@@ -62,12 +66,16 @@ defmodule RengaWeb.ResourcePowerLive do
        connect_options: [],
        selected_path: nil
      )
-     |> load_endpoints()}
+     |> load_endpoints()
+     |> schedule_readings_refresh()}
   end
 
   @impl true
   def handle_info({:inventory_changed, _organization_id}, socket),
     do: {:noreply, load_endpoints(socket)}
+
+  def handle_info(:refresh_readings, socket),
+    do: {:noreply, socket |> load_readings() |> schedule_readings_refresh()}
 
   @impl true
   def handle_event("edit_port", %{"id" => id}, socket) do
@@ -384,21 +392,26 @@ defmodule RengaWeb.ResourcePowerLive do
                 readings count toward measured load; stale or failed ones are never read as zero.
               </p>
             </div>
-            <.table id="power-readings" rows={@readings} row_id={&"power-reading-#{&1.reading.id}"}>
+            <.table
+              id="power-readings"
+              rows={@readings}
+              row_id={&"power-reading-#{&1.reading.id}"}
+              overflow="clip"
+            >
               <:col :let={entry} label="Measures">
                 <span class="text-fg">{measures_label(entry.reading)}</span>
-                <span class="block font-mono text-xs text-fg-muted">{entry.reading.sensor}</span>
+                <span class="ml-2 font-mono text-xs text-fg-muted">{entry.reading.sensor}</span>
               </:col>
-              <:col :let={entry} label="Value" class="text-right font-mono tabular-nums">
+              <:col :let={entry} label="Value" class="w-24 text-right font-mono tabular-nums">
                 {reading_value(entry.reading)}
               </:col>
-              <:col :let={entry} label="Source" hide_below="3xl">
+              <:col :let={entry} label="Source" class="w-56" hide_below="4xl">
                 <span class="text-fg">{entry.reading.source.name}</span>
-                <span class="block text-xs text-fg-muted">
+                <span class="ml-2 font-mono text-xs text-fg-muted">
                   {mapping_label(entry.reading)}
                 </span>
               </:col>
-              <:col :let={entry} label="Taken" class="whitespace-nowrap">
+              <:col :let={entry} label="Taken" class="w-24" hide_below="xl">
                 <time
                   datetime={DateTime.to_iso8601(entry.reading.event_at)}
                   title={RengaWeb.Format.datetime(entry.reading.event_at)}
@@ -406,7 +419,7 @@ defmodule RengaWeb.ResourcePowerLive do
                   {RengaWeb.Format.age(entry.reading.event_at, @now)}
                 </time>
               </:col>
-              <:col :let={entry} label="Status">
+              <:col :let={entry} label="Status" class="w-24">
                 <span
                   id={"power-reading-#{entry.reading.id}-status"}
                   class={!entry.eligible? && "text-warn-text"}
@@ -836,6 +849,26 @@ defmodule RengaWeb.ResourcePowerLive do
     selected_path_id = socket.assigns.selected_path && socket.assigns.selected_path.port.id
     allocations = Enum.map(ports, &Port.allocated_draw_w/1)
     unallocated = Enum.count(allocations, &is_nil/1)
+
+    socket
+    |> assign(
+      ports: ports,
+      outlets: outlets,
+      cables_by_port: Map.new(cables, &{&1.power_port_id, &1}),
+      paths_by_port: Map.new(paths, &{&1.port.id, &1}),
+      redundancy: Redundancy.of(paths),
+      selected_path: Enum.find(paths, &(&1.port.id == selected_path_id)),
+      cables_by_outlet:
+        for(cable <- cables, cable.power_outlet_id, into: %{}, do: {cable.power_outlet_id, cable}),
+      retired_cables: Enum.filter(cables, &retired_for_resource?(&1, socket.assigns.resource.id)),
+      unallocated: unallocated,
+      allocated_total: if(unallocated == 0, do: Enum.sum(allocations)),
+      default_power_factor: default_power_factor
+    )
+    |> load_readings()
+  end
+
+  defp load_readings(socket) do
     now = Renga.Time.utc_now_ms()
     resource_id = socket.assigns.resource.id
 
@@ -848,23 +881,14 @@ defmodule RengaWeb.ResourcePowerLive do
          &1.reading.quantity, &1.reading.window_ms}
       )
 
-    assign(socket,
-      ports: ports,
-      outlets: outlets,
-      cables_by_port: Map.new(cables, &{&1.power_port_id, &1}),
-      paths_by_port: Map.new(paths, &{&1.port.id, &1}),
-      redundancy: Redundancy.of(paths),
-      selected_path: Enum.find(paths, &(&1.port.id == selected_path_id)),
-      cables_by_outlet:
-        for(cable <- cables, cable.power_outlet_id, into: %{}, do: {cable.power_outlet_id, cable}),
-      retired_cables: Enum.filter(cables, &retired_for_resource?(&1, socket.assigns.resource.id)),
-      unallocated: unallocated,
-      allocated_total: if(unallocated == 0, do: Enum.sum(allocations)),
-      default_power_factor: default_power_factor,
-      now: now,
-      readings: readings,
-      supplies: supplies(readings)
-    )
+    assign(socket, now: now, readings: readings, supplies: supplies(readings))
+  end
+
+  defp schedule_readings_refresh(socket) do
+    if connected?(socket),
+      do: Process.send_after(self(), :refresh_readings, @readings_refresh_ms)
+
+    socket
   end
 
   defp allocation_form(nil),
@@ -926,7 +950,7 @@ defmodule RengaWeb.ResourcePowerLive do
       <span :if={@supply && @supply.draw} class="text-fg">{@supply.draw}</span>
       <span
         :if={@supply && @supply.state}
-        class={["block font-sans", @supply.state != "ok" && "font-medium text-crit"]}
+        class={["ml-1 font-sans", @supply.state != "ok" && "font-medium text-crit"]}
       >
         {String.capitalize(String.replace(@supply.state, "_", " "))}
       </span>
