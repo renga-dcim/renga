@@ -18,6 +18,8 @@ const POLL_INTERVAL: Duration = Duration::from_millis(10);
 pub struct Output {
     pub status: ExitStatus,
     pub stdout: Vec<u8>,
+    /// The program wrote more than the limit; `stdout` holds only its start.
+    pub overflowed: bool,
 }
 
 pub fn run(command: &mut Command, cancellation: &Cancellation) -> io::Result<Output> {
@@ -29,6 +31,17 @@ pub fn run_with_timeout(
     command: &mut Command,
     cancellation: &Cancellation,
     timeout: Duration,
+) -> io::Result<Output> {
+    run_with_limits(command, cancellation, timeout, MAX_OUTPUT_BYTES)
+}
+
+/// Like [`run_with_timeout`], keeping at most `max_output_bytes` of stdout
+/// and saying in [`Output::overflowed`] when there was more.
+pub fn run_with_limits(
+    command: &mut Command,
+    cancellation: &Cancellation,
+    timeout: Duration,
+    max_output_bytes: u64,
 ) -> io::Result<Output> {
     if cancellation.cancelled() {
         return Err(io::Error::new(io::ErrorKind::Interrupted, "agent stopping"));
@@ -43,9 +56,10 @@ pub fn run_with_timeout(
         .spawn()?;
     let stdout = child.stdout.take().expect("piped stdout");
     let reader = thread::spawn(move || {
+        // One byte past the limit tells a full answer from a cut one.
         let mut bytes = Vec::new();
         stdout
-            .take(MAX_OUTPUT_BYTES)
+            .take(max_output_bytes + 1)
             .read_to_end(&mut bytes)
             .map(|_| bytes)
     });
@@ -76,10 +90,16 @@ pub fn run_with_timeout(
     };
     // A short-lived collector must not leave descendants holding its output pipe open.
     terminate_command_tree(&mut child);
-    let stdout = reader
+    let mut stdout = reader
         .join()
         .map_err(|_| io::Error::other("output reader panicked"))??;
-    Ok(Output { status, stdout })
+    let overflowed = stdout.len() as u64 > max_output_bytes;
+    stdout.truncate(max_output_bytes as usize);
+    Ok(Output {
+        status,
+        stdout,
+        overflowed,
+    })
 }
 
 fn terminate_command_tree(child: &mut std::process::Child) {
@@ -107,6 +127,29 @@ mod tests {
         .unwrap();
         assert!(output.status.success());
         assert_eq!(output.stdout, b"ok");
+    }
+
+    #[test]
+    fn says_when_output_is_cut_at_the_limit() {
+        let run = |script: &str| {
+            run_with_limits(
+                Command::new("sh").args(["-c", script]),
+                &Cancellation::default(),
+                Duration::from_secs(1),
+                4,
+            )
+            .unwrap()
+        };
+        let exact = run("printf abcd");
+        assert_eq!(
+            (exact.stdout.as_slice(), exact.overflowed),
+            (&b"abcd"[..], false)
+        );
+        let over = run("printf abcde");
+        assert_eq!(
+            (over.stdout.as_slice(), over.overflowed),
+            (&b"abcd"[..], true)
+        );
     }
 
     #[test]

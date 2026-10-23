@@ -9,8 +9,8 @@
 //! parameter picks which of the two route commands runs; it never becomes an
 //! argument.
 
-use super::{clip, failed, parameters, Bounded, Query, Sensitivity};
-use crate::{cancellation::Cancellation, command, jobs::JobFailure};
+use super::{clip, failed, parameters, run_program, Bounded, Query, Sensitivity};
+use crate::{cancellation::Cancellation, jobs::JobFailure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::HashMap, fs, path::Path, process::Command, time::Duration};
@@ -70,41 +70,47 @@ impl Query for Routes {
         let params: Parameters = parameters(raw)?;
         let mut tables = Vec::new();
         if params.family != Some(Family::Ipv6) {
-            tables.push(("ipv4", ip(IPV4_ROUTES, cancellation)?));
+            let routes = ip(IPV4_ROUTES, cancellation)?;
+            tables.push(("ipv4", routes.ok_or_else(refused)?));
         }
         if params.family != Some(Family::Ipv4) {
-            // A host without IPv6 answers with its IPv4 routes alone.
-            match ip(IPV6_ROUTES, cancellation) {
-                Ok(routes) => tables.push(("ipv6", routes)),
-                Err(JobFailure::Cancelled) => return Err(JobFailure::Cancelled),
-                Err(_) if params.family.is_none() => {}
-                Err(error) => return Err(error),
+            // A host without IPv6 makes `ip -6` exit non-zero; it then
+            // answers with its IPv4 routes alone. Any other failure, such
+            // as an answer too large to read, fails the query.
+            match ip(IPV6_ROUTES, cancellation)? {
+                Some(routes) => tables.push(("ipv6", routes)),
+                None if params.family.is_none() => {}
+                None => return Err(refused()),
             }
         }
-        let vrfs = ip(VRFS, cancellation).unwrap_or(Value::Null);
+        // VRF names are extra detail; routes without them still answer.
+        let vrfs = ip(VRFS, cancellation).ok().flatten().unwrap_or(Value::Null);
         Ok(answer(&tables, &vrfs, &table_names()))
     }
 }
 
-fn ip(args: &[&str], cancellation: &Cancellation) -> Result<Value, JobFailure> {
-    let output = command::run_with_timeout(Command::new("ip").args(args), cancellation, IP_TIMEOUT)
-        .map_err(|error| {
-            if cancellation.cancelled() {
-                JobFailure::Cancelled
-            } else if error.kind() == std::io::ErrorKind::NotFound {
-                failed("iproute2 (ip) is not installed")
-            } else {
-                failed("could not read the routing tables")
-            }
-        })?;
+fn refused() -> JobFailure {
+    failed("could not read the routing tables")
+}
+
+/// `ip`'s JSON answer, or `None` when `ip` itself exited non-zero.
+fn ip(args: &[&str], cancellation: &Cancellation) -> Result<Option<Value>, JobFailure> {
+    let output = run_program(
+        Command::new("ip").args(args),
+        cancellation,
+        IP_TIMEOUT,
+        "the routing tables",
+    )?;
     if !output.status.success() {
-        return Err(failed("could not read the routing tables"));
+        return Ok(None);
     }
     // `ip -j` prints nothing at all for an empty selection.
     if output.stdout.iter().all(u8::is_ascii_whitespace) {
-        return Ok(Value::Array(Vec::new()));
+        return Ok(Some(Value::Array(Vec::new())));
     }
-    serde_json::from_slice(&output.stdout).map_err(|_| failed("ip's answer was not JSON"))
+    serde_json::from_slice(&output.stdout)
+        .map(Some)
+        .map_err(|_| failed("ip's answer was not JSON"))
 }
 
 /// The table names `ip` may print, from the files it reads them from.

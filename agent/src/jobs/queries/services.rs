@@ -3,8 +3,8 @@
 //! `busctl` with fixed arguments. Sensitive. Matches
 //! `Renga.Jobs.Queries.Services`.
 
-use super::{clip, failed, parameters, Bounded, Query, Sensitivity};
-use crate::{cancellation::Cancellation, command, jobs::JobFailure};
+use super::{clip, failed, parameters, run_program, Bounded, Query, Sensitivity};
+use crate::{cancellation::Cancellation, jobs::JobFailure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::HashMap, process::Command, time::Duration};
@@ -78,20 +78,12 @@ impl Query for Services {
 }
 
 fn busctl(args: &[&str], cancellation: &Cancellation) -> Result<Value, JobFailure> {
-    let output = command::run_with_timeout(
+    let output = run_program(
         Command::new("busctl").args(args),
         cancellation,
         BUSCTL_TIMEOUT,
-    )
-    .map_err(|error| {
-        if cancellation.cancelled() {
-            JobFailure::Cancelled
-        } else if error.kind() == std::io::ErrorKind::NotFound {
-            failed("busctl is not installed; systemd is required")
-        } else {
-            failed("could not reach systemd over D-Bus")
-        }
-    })?;
+        "systemd's units",
+    )?;
     if !output.status.success() {
         return Err(failed("systemd refused the unit list over D-Bus"));
     }

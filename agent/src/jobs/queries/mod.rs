@@ -173,6 +173,41 @@ pub fn clip(value: &str, max: usize) -> String {
     value.chars().take(max).collect()
 }
 
+/// How much a query keeps of a program's answer (`ip`, `busctl`, `rpm`)
+/// before it gives up. The answer is parsed whole and then cut down to the
+/// result bound, so a cut answer would be broken JSON or a silently short
+/// list; past this limit the query fails and says so instead.
+pub const PROGRAM_OUTPUT_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Runs one of a query's fixed programs, keeping up to
+/// [`PROGRAM_OUTPUT_BYTES`]. `what` names the answer in failures, such as
+/// "the routing tables". The program's own exit status is the caller's to
+/// read.
+pub fn run_program(
+    command: &mut std::process::Command,
+    cancellation: &Cancellation,
+    timeout: Duration,
+    what: &str,
+) -> Result<crate::command::Output, JobFailure> {
+    let output =
+        crate::command::run_with_limits(command, cancellation, timeout, PROGRAM_OUTPUT_BYTES)
+            .map_err(|error| {
+                if cancellation.cancelled() {
+                    JobFailure::Cancelled
+                } else if error.kind() == std::io::ErrorKind::NotFound {
+                    failed(&format!(
+                        "could not read {what}: the program is not installed"
+                    ))
+                } else {
+                    failed(&format!("could not read {what}"))
+                }
+            })?;
+    if output.overflowed {
+        return Err(failed(&format!("{what} are too large to read")));
+    }
+    Ok(output)
+}
+
 /// A failure people can read in Renga, without the program output or paths
 /// that could reveal more than the query itself.
 pub fn failed(reason: &str) -> JobFailure {

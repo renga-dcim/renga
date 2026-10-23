@@ -7,8 +7,8 @@
 //! list is usually longer than one result holds, so `truncated` says when the
 //! list was cut and `name` narrows it.
 
-use super::{clip, failed, parameters, Bounded, Query, Sensitivity};
-use crate::{cancellation::Cancellation, command, jobs::JobFailure};
+use super::{clip, failed, parameters, run_program, Bounded, Query, Sensitivity};
+use crate::{cancellation::Cancellation, jobs::JobFailure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -205,18 +205,12 @@ pub fn parse_pacman_desc(text: &str) -> Option<Package> {
 }
 
 fn rpm(cancellation: &Cancellation) -> Result<Vec<Package>, JobFailure> {
-    let output = command::run_with_timeout(
+    let output = run_program(
         Command::new("rpm").args(RPM_QUERY),
         cancellation,
         RPM_TIMEOUT,
-    )
-    .map_err(|_| {
-        if cancellation.cancelled() {
-            JobFailure::Cancelled
-        } else {
-            failed("could not query the RPM database")
-        }
-    })?;
+        "the RPM packages",
+    )?;
     if !output.status.success() {
         return Err(failed("could not query the RPM database"));
     }
