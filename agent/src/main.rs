@@ -357,17 +357,25 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
     // Puts a reloaded configuration, its home, and the client for it into effect.
     macro_rules! adopt_reload {
         ($new_config:expr, $new_home:expr, $new_client:expr) => {{
+            let (new_config, new_client) = ($new_config, $new_client);
+            let jobs_changed = reload_changes_jobs(&config, &client, &new_config, &new_client);
             let old_checkin_interval = config.checkin_interval;
             let old_inventory_interval = config.inventory_interval;
-            config = $new_config;
+            config = new_config;
             home = $new_home;
-            client = $new_client;
-            policy_generation.advance();
-            // The socket carries the old credentials and policy.
-            if let Some(previous) = listener.take() {
-                previous.stop();
+            // A periodic refresh usually changes nothing, and advancing the generation
+            // abandons a job between its lease and its start until the lease expires. An
+            // equivalent client is not adopted either, so passes, the socket, and every later
+            // request keep using the one client they were built from.
+            if jobs_changed {
+                client = new_client;
+                policy_generation.advance();
+                // The socket carries the old credentials and policy.
+                if let Some(previous) = listener.take() {
+                    previous.stop();
+                }
+                listener = start_listener(&client, &config, &queue, &notices, &stopped);
             }
-            listener = start_listener(&client, &config, &queue, &notices, &stopped);
             // Modules keep polling through a reload unless their own settings changed.
             snmp.reload(config.snmp.clone(), &queue_sink(&queue, &stopped));
             if libvirt.collector() != config.libvirt.as_ref() {
@@ -694,6 +702,39 @@ fn leases_now(checkin: &Result<CheckInAck, Box<dyn Error>>) -> bool {
         Ok(ack) => ack.jobs_waiting != Some(false),
         Err(_) => true,
     }
+}
+
+/// Whether adopting a reload has to restart job passes and the notice socket: the new client
+/// sends differently, or the labels or `[jobs]` policy a pass and the socket are built from
+/// changed. Every field is named, so a new setting has to say which side it is on.
+fn reload_changes_jobs(
+    old: &Config,
+    old_client: &HttpClient,
+    new: &Config,
+    new_client: &HttpClient,
+) -> bool {
+    let Config {
+        // Bound into the `inventory.collect` capability a pass runs.
+        labels,
+        // Decides what a pass leases and runs, and whether the socket opens.
+        jobs,
+        // What a client is built from, which `HttpClient::sends_like` compares. `renga_url`
+        // matters only through the home it resolves to.
+        renga_url: _,
+        allow_insecure_http: _,
+        intake_api_key: _,
+        installation_id: _,
+        request_timeout: _,
+        max_retry_attempts: _,
+        // Read afresh by the reload, the scheduler, and the collector modules.
+        config_path: _,
+        inventory_interval: _,
+        checkin_interval: _,
+        config_refresh_interval: _,
+        snmp: _,
+        libvirt: _,
+    } = new;
+    !old_client.sends_like(new_client) || old.labels != *labels || old.jobs != *jobs
 }
 
 /// Opens the job notice socket when the policy enables a job capability, so
@@ -1066,7 +1107,9 @@ mod tests {
     use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine};
     use renga_agent::{
         jobs::{inventory_collect::InventoryCollect, worker::JobApi},
+        libvirt::config::LibvirtCollector,
         payload::{JobReport, LeasedJob, ReportAck, ReportType},
+        snmp::config::{Credentials, SnmpCollector},
         transport::TransportError,
     };
     use serde_json::json;
@@ -1123,6 +1166,11 @@ mod tests {
     }
 
     fn read_http_request(stream: TcpStream) -> (String, BufReader<TcpStream>) {
+        let (request_line, _body, reader) = read_http_request_body(stream);
+        (request_line, reader)
+    }
+
+    fn read_http_request_body(stream: TcpStream) -> (String, Vec<u8>, BufReader<TcpStream>) {
         let mut reader = BufReader::new(stream);
         let mut request_line = String::new();
         reader.read_line(&mut request_line).unwrap();
@@ -1141,7 +1189,7 @@ mod tests {
         }
         let mut body = vec![0; length];
         reader.read_exact(&mut body).unwrap();
-        (request_line, reader)
+        (request_line, body, reader)
     }
 
     fn answer(reader: &mut BufReader<TcpStream>, status: u16, body: &str) {
@@ -1663,6 +1711,350 @@ mod tests {
             assert!(Instant::now() < deadline, "{what} never happened");
             thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    /// What a reload test's job server and the daemon's log saw, in the order they saw it.
+    #[derive(Debug, Clone, PartialEq)]
+    enum Seen {
+        SocketOpened,
+        SocketClosed,
+        Lease,
+        /// A report on the leased job, by type.
+        Report(String),
+        Reloaded,
+    }
+
+    /// Everything seen so far, so a test waits on events instead of on the clock.
+    struct Timeline {
+        receiver: mpsc::Receiver<Seen>,
+        seen: Vec<Seen>,
+    }
+
+    impl Timeline {
+        /// Waits until `done` holds for everything seen so far.
+        fn until(&mut self, what: &str, done: impl Fn(&[Seen]) -> bool) {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while !done(&self.seen) {
+                let left = deadline.saturating_duration_since(Instant::now());
+                match self.receiver.recv_timeout(left) {
+                    Ok(seen) => self.seen.push(seen),
+                    Err(_) => panic!("{what} never happened; saw {:?}", self.seen),
+                }
+            }
+        }
+
+        fn count(&self, seen: &Seen) -> usize {
+            self.seen.iter().filter(|each| *each == seen).count()
+        }
+    }
+
+    /// Forwards the daemon's "configuration reloaded" lines to a timeline.
+    #[derive(Clone)]
+    struct ReloadLog(mpsc::Sender<Seen>);
+
+    impl Write for ReloadLog {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if String::from_utf8_lossy(buf).contains("configuration reloaded") {
+                let _ = self.0.send(Seen::Reloaded);
+            }
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Runs the daemon with its main loop's log feeding `seen`, so a test knows a reload
+    /// has been put into effect.
+    fn spawn_daemon_seeing_reloads(
+        config: PathBuf,
+        state: &Path,
+        stopped: Cancellation,
+        seen: mpsc::Sender<Seen>,
+    ) -> thread::JoinHandle<Result<(), String>> {
+        let state = state.to_path_buf();
+        thread::spawn(move || {
+            let log = tracing_subscriber::fmt()
+                .with_ansi(false)
+                .with_writer(move || ReloadLog(seen.clone()))
+                .finish();
+            tracing::subscriber::with_default(log, || {
+                run_configured(
+                    Args {
+                        config,
+                        state_directory: state,
+                        once: false,
+                        dry_run: false,
+                        command: None,
+                    },
+                    stopped,
+                )
+                .map_err(|error| error.to_string())
+            })
+        })
+    }
+
+    /// Leases one `inventory.collect` job and holds its `started` report until the test
+    /// sends on the returned channel, so a reload can land while the report is in flight.
+    #[allow(clippy::result_large_err)]
+    fn held_start_job_server(
+        stopped: Cancellation,
+        seen: mpsc::Sender<Seen>,
+    ) -> (String, mpsc::SyncSender<()>, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let home = json!({ "home": origin }).to_string();
+        let job_id = uuid::Uuid::new_v4();
+        let leased = Arc::new(AtomicBool::new(false));
+        let (release, released) = mpsc::sync_channel(1);
+        let released = Arc::new(Mutex::new(Some(released)));
+        let server = thread::spawn(move || {
+            let mut connections = Vec::new();
+            while !stopped.cancelled() {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        stream.set_nonblocking(false).unwrap();
+                        let leased = Arc::clone(&leased);
+                        let released = Arc::clone(&released);
+                        let seen = seen.clone();
+                        let home = home.clone();
+                        connections.push(thread::spawn(move || {
+                            let mut peek = [0; 256];
+                            let bytes = stream.peek(&mut peek).unwrap();
+                            let opening = String::from_utf8_lossy(&peek[..bytes]);
+                            if opening.contains("/api/v1/agent/socket/websocket") {
+                                let _ = seen.send(Seen::SocketOpened);
+                                let mut socket = tungstenite::accept_hdr(
+                                    stream,
+                                    |_request: &Request, mut response: Response| {
+                                        response.headers_mut().insert(
+                                            SEC_WEBSOCKET_PROTOCOL,
+                                            HeaderValue::from_static("phoenix"),
+                                        );
+                                        Ok(response)
+                                    },
+                                )
+                                .unwrap();
+                                let join: serde_json::Value =
+                                    serde_json::from_str(socket.read().unwrap().to_text().unwrap())
+                                        .unwrap();
+                                socket
+                                    .send(Message::text(
+                                        json!(["1", "1", join[2], "phx_reply", {
+                                            "status": "ok",
+                                            "response": {"jobs_waiting": false}
+                                        }])
+                                        .to_string(),
+                                    ))
+                                    .unwrap();
+                                while socket.read().is_ok() {}
+                                let _ = seen.send(Seen::SocketClosed);
+                                return;
+                            }
+
+                            let (request, body, mut reader) = read_http_request_body(stream);
+                            if request.contains("/api/v1/agent/home") {
+                                answer(&mut reader, 200, &home);
+                            } else if request.contains("/api/v1/agent/checkins") {
+                                answer(
+                                    &mut reader,
+                                    202,
+                                    r#"{"status":"accepted","jobs_waiting":true}"#,
+                                );
+                            } else if request.contains("/api/v1/agent/jobs/lease") {
+                                let _ = seen.send(Seen::Lease);
+                                if leased.swap(true, Ordering::SeqCst) {
+                                    answer(&mut reader, 200, r#"{"jobs":[]}"#);
+                                    return;
+                                }
+                                let job = json!({
+                                    "id": job_id,
+                                    "capability": "inventory.collect@1",
+                                    "parameters": {},
+                                    "attempt": 1,
+                                    "lease_token": "lease",
+                                    "lease_expires_at": chrono::Utc::now() + chrono::Duration::seconds(60),
+                                    "timeout_ms": 30_000,
+                                    "output_limit_bytes": 65_536
+                                });
+                                answer(&mut reader, 200, &json!({ "jobs": [job] }).to_string());
+                            } else if request.contains(&format!("/api/v1/agent/jobs/{job_id}/events")) {
+                                let report: serde_json::Value =
+                                    serde_json::from_slice(&body).unwrap();
+                                let kind = report["type"].as_str().unwrap().to_string();
+                                let _ = seen.send(Seen::Report(kind.clone()));
+                                if kind == "started" {
+                                    let held = released.lock().unwrap().take();
+                                    if let Some(held) = held {
+                                        // Bounded, so a broken test cannot hang the suite.
+                                        let _ = held.recv_timeout(Duration::from_secs(30));
+                                    }
+                                }
+                                answer(&mut reader, 200, r#"{"cancel_requested":false}"#);
+                            } else if request.contains("/api/v1/observations") {
+                                answer(&mut reader, 202, "{}");
+                            } else {
+                                answer(&mut reader, 404, "{}");
+                            }
+                        }));
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("held start job server failed: {error}"),
+                }
+            }
+            for connection in connections {
+                connection.join().unwrap();
+            }
+        });
+        (origin, release, server)
+    }
+
+    /// A daemon whose job's `started` report the server is holding.
+    struct HeldStart {
+        state: PathBuf,
+        config: PathBuf,
+        stopped: Cancellation,
+        timeline: Timeline,
+        /// Answers the held report.
+        release: mpsc::SyncSender<()>,
+        server: thread::JoinHandle<()>,
+        daemon: thread::JoinHandle<Result<(), String>>,
+    }
+
+    /// Starts the daemon against a held-start job server, and waits until the job's
+    /// `started` report is in flight and the notice socket is open.
+    fn daemon_holding_started(name: &str) -> HeldStart {
+        let state = std::env::temp_dir().join(format!("renga-{name}-{}", uuid::Uuid::new_v4()));
+        let stopped = Cancellation::default();
+        let (seen, receiver) = mpsc::channel();
+        let (origin, release, server) = held_start_job_server(stopped.clone(), seen.clone());
+        let config = write_agent_config(&state, &origin, "renga_intake_test");
+        // The held report must outlast a slow machine without timing out on its own, or the
+        // job would be dropped for that reason rather than the reload.
+        let settings = std::fs::read_to_string(&config).unwrap().replace(
+            "request_timeout_seconds = 2\n",
+            "request_timeout_seconds = 20\n",
+        );
+        assert!(settings.contains("request_timeout_seconds = 20\n"));
+        std::fs::write(&config, settings).unwrap();
+        let daemon = spawn_daemon_seeing_reloads(config.clone(), &state, stopped.clone(), seen);
+        let mut timeline = Timeline {
+            receiver,
+            seen: Vec::new(),
+        };
+        timeline.until("the started report and the notice socket", |seen| {
+            seen.contains(&Seen::Report("started".into())) && seen.contains(&Seen::SocketOpened)
+        });
+        HeldStart {
+            state,
+            config,
+            stopped,
+            timeline,
+            release,
+            server,
+            daemon,
+        }
+    }
+
+    #[test]
+    fn an_unchanged_reload_keeps_the_notice_socket_and_the_job_it_is_starting() {
+        let HeldStart {
+            state,
+            config: _,
+            stopped,
+            mut timeline,
+            release,
+            server,
+            daemon,
+        } = daemon_holding_started("reload-same");
+        // The file is untouched, so this is a periodic refresh that changes nothing.
+        let held_at = timeline.seen.len();
+        timeline.until("a reload while started is in flight", |seen| {
+            seen[held_at..].contains(&Seen::Reloaded)
+        });
+        release.send(()).unwrap();
+
+        timeline.until("the job's outcome", |seen| {
+            seen.iter()
+                .any(|each| matches!(each, Seen::Report(kind) if kind != "started"))
+        });
+        assert!(
+            timeline.seen.contains(&Seen::Report("succeeded".into())),
+            "{:?}",
+            timeline.seen
+        );
+        assert_eq!(
+            timeline.count(&Seen::SocketOpened),
+            1,
+            "{:?}",
+            timeline.seen
+        );
+        assert_eq!(
+            timeline.count(&Seen::SocketClosed),
+            0,
+            "{:?}",
+            timeline.seen
+        );
+
+        stopped.cancel();
+        daemon.join().unwrap().unwrap();
+        server.join().unwrap();
+        std::fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn a_reload_that_changes_the_labels_drops_the_job_it_is_starting_and_reconnects() {
+        let HeldStart {
+            state,
+            config,
+            stopped,
+            mut timeline,
+            release,
+            server,
+            daemon,
+        } = daemon_holding_started("reload-labels");
+        // The pass's `inventory.collect` is bound to the labels it was built with.
+        let mut changed = std::fs::read_to_string(&config).unwrap();
+        changed.push_str("\n[labels]\nteam = \"storage\"\n");
+        let staged = config.with_extension("staged");
+        std::fs::write(&staged, changed).unwrap();
+        std::fs::rename(&staged, &config).unwrap();
+        timeline.until("a socket for the new policy", |seen| {
+            seen.iter()
+                .filter(|each| **each == Seen::SocketOpened)
+                .count()
+                == 2
+        });
+        let released_at = timeline.seen.len();
+        release.send(()).unwrap();
+
+        // The old pass leases again only after finishing the job; a new pass leases at once.
+        timeline.until("a lease after the started report was answered", |seen| {
+            seen[released_at..].contains(&Seen::Lease)
+        });
+        assert!(
+            !timeline
+                .seen
+                .iter()
+                .any(|each| matches!(each, Seen::Report(kind) if kind != "started")),
+            "{:?}",
+            timeline.seen
+        );
+        assert_eq!(
+            timeline.count(&Seen::SocketClosed),
+            1,
+            "{:?}",
+            timeline.seen
+        );
+
+        stopped.cancel();
+        daemon.join().unwrap().unwrap();
+        server.join().unwrap();
+        std::fs::remove_dir_all(state).unwrap();
     }
 
     #[test]
@@ -2205,6 +2597,121 @@ mod tests {
         stopped.cancel();
         daemon.join().unwrap().unwrap();
         server.join().unwrap();
+        std::fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn only_what_jobs_are_built_from_restarts_them_on_reload() {
+        type Change = dyn Fn(&mut Config, &mut reqwest::Url);
+        let state = std::env::temp_dir().join(format!("renga-restart-{}", uuid::Uuid::new_v4()));
+        let key = Arc::new(InstallationKey::load_or_create(&state.join("key")).unwrap());
+        let other_key = Arc::new(InstallationKey::load_or_create(&state.join("other")).unwrap());
+        let config = stub_config("http://renga.test");
+        let home: reqwest::Url = "http://home.test".parse().unwrap();
+        let client = |config: &Config, home: &reqwest::Url, key: &Arc<InstallationKey>| {
+            HttpClient::for_home(config, home, Cancellation::default())
+                .unwrap()
+                .with_installation_key(Arc::clone(key))
+        };
+        let current = client(&config, &home, &key);
+        let restarts = |change: &Change| {
+            let (mut new_config, mut new_home) = (config.clone(), home.clone());
+            change(&mut new_config, &mut new_home);
+            let new_client = client(&new_config, &new_home, &key);
+            reload_changes_jobs(&config, &current, &new_config, &new_client)
+        };
+
+        // A periodic refresh rebuilds an equivalent client, and the scheduler and collector
+        // modules reread their own settings.
+        let independent: [(&str, &Change); 8] = [
+            ("nothing", &|_, _| {}),
+            ("renga_url, resolving to the same home", &|config, _| {
+                config.renga_url = "http://elsewhere.test".into()
+            }),
+            ("config_path", &|config, _| {
+                config.config_path = "elsewhere.toml".into()
+            }),
+            ("inventory_interval", &|config, _| {
+                config.inventory_interval = Duration::from_secs(5)
+            }),
+            ("checkin_interval", &|config, _| {
+                config.checkin_interval = Duration::from_secs(5)
+            }),
+            ("config_refresh_interval", &|config, _| {
+                config.config_refresh_interval = Duration::from_secs(5)
+            }),
+            ("snmp", &|config, _| {
+                config.snmp = vec![SnmpCollector {
+                    id: "switches".into(),
+                    targets: Vec::new(),
+                    credentials: Credentials::V2c {
+                        community_file: "community".into(),
+                    },
+                    interval: Duration::from_secs(60),
+                    timeout: Duration::from_secs(5),
+                    max_concurrent_targets: 1,
+                }]
+            }),
+            ("libvirt", &|config, _| {
+                config.libvirt = Some(LibvirtCollector {
+                    id: "hypervisor".into(),
+                    uri: "qemu:///system".into(),
+                    interval: Duration::from_secs(60),
+                    timeout: Duration::from_secs(5),
+                })
+            }),
+        ];
+        for (what, change) in independent {
+            assert!(!restarts(change), "{what} restarted jobs");
+        }
+
+        let relevant: [(&str, &Change); 7] = [
+            ("the home", &|_, home| {
+                *home = "http://other.test".parse().unwrap()
+            }),
+            ("intake_api_key", &|config, _| {
+                config.intake_api_key = "renga_intake_rotated".into()
+            }),
+            ("installation_id", &|config, _| {
+                config.installation_id = uuid::Uuid::new_v4()
+            }),
+            ("request_timeout", &|config, _| {
+                config.request_timeout = Duration::from_secs(1)
+            }),
+            ("max_retry_attempts", &|config, _| {
+                config.max_retry_attempts = 3
+            }),
+            ("labels", &|config, _| {
+                config.labels.insert("team".into(), "storage".into());
+            }),
+            ("jobs", &|config, _| config.jobs.enabled = Some(Vec::new())),
+        ];
+        for (what, change) in relevant {
+            assert!(restarts(change), "{what} did not restart jobs");
+        }
+        assert!(
+            reload_changes_jobs(
+                &config,
+                &current,
+                &config,
+                &client(&config, &home, &other_key)
+            ),
+            "the installation key did not restart jobs"
+        );
+        // Insecure HTTP only decides whether a home is allowed; an HTTPS home is sent the same.
+        let mut secure = config.clone();
+        let secure_home: reqwest::Url = "https://home.test".parse().unwrap();
+        let secure_client = client(&secure, &secure_home, &key);
+        secure.allow_insecure_http = false;
+        assert!(
+            !reload_changes_jobs(
+                &config,
+                &secure_client,
+                &secure,
+                &client(&secure, &secure_home, &key)
+            ),
+            "allow_insecure_http restarted jobs for an HTTPS home"
+        );
         std::fs::remove_dir_all(state).unwrap();
     }
 

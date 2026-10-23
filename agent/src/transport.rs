@@ -113,20 +113,63 @@ impl fmt::Display for TransportError {
 
 impl std::error::Error for TransportError {}
 
+/// Everything a client takes from the configuration and the resolved home. A client is built
+/// from these alone, so two clients with equal settings and the same installation key send
+/// the same requests, and a reload that leaves them unchanged can keep the client it has.
+#[derive(Clone, PartialEq)]
+struct ClientSettings {
+    home: Url,
+    intake_api_key: String,
+    installation_id: uuid::Uuid,
+    request_timeout: Duration,
+    max_retry_attempts: u32,
+}
+
+impl ClientSettings {
+    /// Every configuration field is named, so a new one has to say whether a client sends it.
+    fn new(config: &Config, home: &Url) -> Result<Self, TransportError> {
+        let Config {
+            // Only decides whether `home` is allowed; a client for an allowed home is the same
+            // either way.
+            allow_insecure_http,
+            intake_api_key,
+            installation_id,
+            request_timeout,
+            max_retry_attempts,
+            // Resolved into `home` before any client is built for it.
+            renga_url: _,
+            // Read by the configuration loader, the scheduler, collector modules, and job
+            // passes, never by a client.
+            config_path: _,
+            inventory_interval: _,
+            checkin_interval: _,
+            config_refresh_interval: _,
+            labels: _,
+            jobs: _,
+            snmp: _,
+            libvirt: _,
+        } = config;
+        Ok(Self {
+            home: origin_url(home.as_str(), *allow_insecure_http, "home URL")?,
+            intake_api_key: intake_api_key.clone(),
+            installation_id: *installation_id,
+            request_timeout: *request_timeout,
+            max_retry_attempts: *max_retry_attempts,
+        })
+    }
+}
+
 #[derive(Clone)]
 pub struct HttpClient {
+    settings: ClientSettings,
     client: Client,
-    base_url: Url,
     checkin_url: Url,
     observation_url: Url,
     lease_url: Url,
     authorization: HeaderValue,
     installation_id: HeaderValue,
-    installation: uuid::Uuid,
     installation_key: Option<Arc<InstallationKey>>,
     notices: NoticeEndpoint,
-    attempts: u32,
-    request_timeout: Duration,
     cancellation: Cancellation,
     /// Raised by any clone that hears `410 moved`, so the daemon resolves the home again.
     moved: Arc<AtomicBool>,
@@ -149,45 +192,75 @@ impl HttpClient {
         home: &Url,
         cancellation: Cancellation,
     ) -> Result<Self, TransportError> {
-        let base_url = origin_url(home.as_str(), config.allow_insecure_http, "home URL")?;
-        let checkin_url = endpoint_url(&base_url, CHECKIN_PATH)?;
-        let observation_url = endpoint_url(&base_url, OBSERVATION_PATH)?;
-        let lease_url = endpoint_url(&base_url, JOB_LEASE_PATH)?;
-        let mut authorization = HeaderValue::from_str(&format!("Bearer {}", config.intake_api_key))
-            .map_err(|_| {
-                TransportError::new("invalid intake API key".into(), FailureKind::Permanent)
-            })?;
+        Self::from_settings(ClientSettings::new(config, home)?, cancellation)
+    }
+
+    fn from_settings(
+        settings: ClientSettings,
+        cancellation: Cancellation,
+    ) -> Result<Self, TransportError> {
+        let checkin_url = endpoint_url(&settings.home, CHECKIN_PATH)?;
+        let observation_url = endpoint_url(&settings.home, OBSERVATION_PATH)?;
+        let lease_url = endpoint_url(&settings.home, JOB_LEASE_PATH)?;
+        let mut authorization =
+            HeaderValue::from_str(&format!("Bearer {}", settings.intake_api_key)).map_err(
+                |_| TransportError::new("invalid intake API key".into(), FailureKind::Permanent),
+            )?;
         authorization.set_sensitive(true);
-        let installation_id =
-            HeaderValue::from_str(&config.installation_id.to_string()).map_err(|_| {
+        let installation_id = HeaderValue::from_str(&settings.installation_id.to_string())
+            .map_err(|_| {
                 TransportError::new("invalid installation ID".into(), FailureKind::Permanent)
             })?;
         let tls = pinned_tls()?;
         // The notice socket shares the same pinned TLS settings and credentials.
         let notices = NoticeEndpoint {
-            base_url: base_url.clone(),
-            intake_api_key: config.intake_api_key.clone(),
-            installation_id: config.installation_id.to_string(),
+            base_url: settings.home.clone(),
+            intake_api_key: settings.intake_api_key.clone(),
+            installation_id: settings.installation_id.to_string(),
             tls: Arc::new(tls.clone()),
-            timeout: config.request_timeout,
+            timeout: settings.request_timeout,
         };
         Ok(Self {
-            client: build_client(tls, config.request_timeout)?,
-            base_url,
+            client: build_client(tls, settings.request_timeout)?,
+            settings,
             checkin_url,
             observation_url,
             lease_url,
             authorization,
             installation_id,
-            installation: config.installation_id,
             installation_key: None,
             notices,
-            attempts: config.max_retry_attempts,
-            request_timeout: config.request_timeout,
             cancellation,
             moved: Arc::default(),
         })
     }
+
+    /// Whether `other` sends exactly what this client sends, so a reload that builds it can
+    /// keep this one, and the job passes and notice socket built from it, instead. Every
+    /// field is named, so a new one has to say whether it changes what is sent.
+    pub fn sends_like(&self, other: &HttpClient) -> bool {
+        let HttpClient {
+            settings,
+            installation_key,
+            // Built from the settings and the pinned TLS configuration alone.
+            client: _,
+            checkin_url: _,
+            observation_url: _,
+            lease_url: _,
+            authorization: _,
+            installation_id: _,
+            notices: _,
+            // The daemon's shutdown, which every client it builds shares.
+            cancellation: _,
+            // How a client reports a move, not what it sends.
+            moved: _,
+        } = other;
+        let public_key =
+            |key: &Option<Arc<InstallationKey>>| key.as_ref().map(|key| key.public_key());
+        self.settings == *settings
+            && public_key(&self.installation_key) == public_key(installation_key)
+    }
+
     /// Signs claims of privileged job offers with `key` (RFD 13). Without
     /// one, the client leases only `observe` jobs.
     pub fn with_installation_key(self, key: Arc<InstallationKey>) -> Self {
@@ -199,7 +272,7 @@ impl HttpClient {
 
     /// The origin every request goes to.
     pub fn home(&self) -> &Url {
-        &self.base_url
+        &self.settings.home
     }
 
     /// Whether a request heard `410 moved` since the last call, clearing the flag.
@@ -211,7 +284,7 @@ impl HttpClient {
     /// so a worker still holding the previous client can report a move. A client for a new home
     /// keeps its own signal, so the old home's answers are ignored.
     pub fn sharing_moved_signal(mut self, previous: &HttpClient) -> Self {
-        if self.base_url == previous.base_url {
+        if self.settings.home == previous.settings.home {
             self.moved = Arc::clone(&previous.moved);
         }
         self
@@ -271,13 +344,14 @@ impl HttpClient {
             )
         })?;
         let url = endpoint_url(
-            &self.base_url,
+            &self.settings.home,
             &format!("/api/v1/agent/jobs/{}/claims", offer.job_id),
         )?;
         let claim = JobClaim {
             lease_token: &offer.lease_token,
             nonce: &offer.nonce,
-            signature: URL_SAFE_NO_PAD.encode(key.sign(&offer.message(self.installation))),
+            signature: URL_SAFE_NO_PAD
+                .encode(key.sign(&offer.message(self.settings.installation_id))),
         };
         self.post_json(url, &claim)
     }
@@ -290,7 +364,7 @@ impl HttpClient {
         report: &JobReport<'_>,
     ) -> Result<ReportAck, TransportError> {
         let url = endpoint_url(
-            &self.base_url,
+            &self.settings.home,
             &format!("/api/v1/agent/jobs/{job_id}/events"),
         )?;
         self.post_json(url, report)
@@ -323,8 +397,8 @@ impl HttpClient {
         cancelled: impl Fn() -> bool,
     ) -> Result<(), TransportError> {
         self.noting_moved(retry(
-            self.attempts,
-            self.request_timeout,
+            self.settings.max_retry_attempts,
+            self.settings.request_timeout,
             || {
                 let response = self
                     .client
@@ -358,8 +432,8 @@ impl HttpClient {
     /// Posts JSON and returns the successful response's body.
     fn post_reading<T: Serialize>(&self, url: Url, value: &T) -> Result<Vec<u8>, TransportError> {
         self.noting_moved(retry(
-            self.attempts,
-            self.request_timeout,
+            self.settings.max_retry_attempts,
+            self.settings.request_timeout,
             || {
                 let response = self
                     .client
