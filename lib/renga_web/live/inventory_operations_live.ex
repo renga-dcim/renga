@@ -399,15 +399,19 @@ defmodule RengaWeb.InventoryOperationsLive do
             overflow="clip"
             class="rounded-lg border border-edge bg-surface"
           >
-            <:col :let={{_id, source}} label="Collector">
-              <span class="font-medium">{source.name}</span>
-              <span class="ml-1.5 font-mono text-xs text-fg-muted">
-                {collector_version(source)}
+            <:col :let={{_id, source}} label="Collector" clip={false}>
+              <span class="flex min-w-0 items-center gap-1.5">
+                <.clip id={"collector-name-#{source.id}"}>
+                  <span class="font-medium">{source.name}</span>
+                  <span class="ml-1.5 font-mono text-xs text-fg-muted">
+                    {collector_version(source)}
+                  </span>
+                </.clip>
+                <.collector_power_sources
+                  id={"collector-power-#{source.id}"}
+                  sources={Agent.power_sources(collector_agent(source))}
+                />
               </span>
-              <.collector_power_sources
-                id={"collector-power-#{source.id}"}
-                sources={Agent.power_sources(collector_agent(source))}
-              />
             </:col>
             <:col :let={{_id, source}} label="Connection" class="w-40">
               <span id={"collector-connection-#{source.id}"}>
@@ -737,27 +741,67 @@ defmodule RengaWeb.InventoryOperationsLive do
   attr :id, :string, required: true
   attr :sources, :list, required: true
 
-  # Whether the agent can read each power source on its host (RFD 10), under
-  # the collector's name so it shows at every width, wrapping rather than
-  # clipping. A source it cannot read names what would enable it. Agents that
-  # report no power sources show nothing.
+  # Whether the agent can read each power source on its host (RFD 10): a
+  # one-line summary after the collector's name that opens every source, its
+  # status, and what would enable a source it cannot read. Agents that report
+  # no power sources show nothing.
   defp collector_power_sources(%{sources: nil} = assigns), do: ~H""
 
   defp collector_power_sources(assigns) do
+    available = Enum.count(assigns.sources, &(&1.status == "available"))
+    total = length(assigns.sources)
+
+    assigns =
+      assign(assigns,
+        summary: "#{available} of #{total} available",
+        worst: worst_power_source(assigns.sources)
+      )
+
     ~H"""
-    <span id={@id} class="mt-0.5 block whitespace-normal">
-      <span
-        :for={{source, index} <- Enum.with_index(@sources)}
-        id={"#{@id}-#{index}"}
-        class="mr-2 inline-flex items-center gap-1 text-xs"
-        title={power_source_hint(source)}
+    <span phx-click={%JS{}} class="inline-flex shrink-0 items-center">
+      <button
+        id={@id}
+        type="button"
+        popovertarget={"#{@id}-list"}
+        aria-label={"Power sources: #{@summary}"}
+        class="inline-flex min-h-tap min-w-tap items-center justify-center gap-1 rounded-sm px-1 text-xs text-fg-muted transition-colors hover:bg-sunken hover:text-fg focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
       >
-        <span class={["size-1.5 rounded-full", power_source_dot(source.status)]} />
-        <span class="font-mono text-fg-muted">{source.source}</span>
-        <span class="text-fg">{power_source_status(source.status)}</span>
-      </span>
+        <span class={["size-1.5 rounded-full", power_source_dot(@worst)]} />
+        <span class="tabular-nums">Power {@summary}</span>
+      </button>
+      <div
+        id={"#{@id}-list"}
+        popover
+        data-anchor={@id}
+        class="fixed inset-auto m-0 w-72 space-y-1.5 whitespace-normal rounded-md border border-edge bg-surface px-3 py-2 text-xs text-fg shadow-lg"
+      >
+        <p class="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg-subtle">
+          Power sources
+        </p>
+        <ul class="space-y-2">
+          <li :for={{source, index} <- Enum.with_index(@sources)} id={"#{@id}-#{index}"}>
+            <span class="flex min-w-0 items-center justify-between gap-2">
+              <span class="min-w-0 break-all font-mono">{source.source}</span>
+              <span class="inline-flex shrink-0 items-center gap-1">
+                <span class={["size-1.5 rounded-full", power_source_dot(source.status)]} />
+                {power_source_status(source.status)}
+              </span>
+            </span>
+            <span :if={hint = power_source_hint(source)} class="mt-0.5 block text-fg-muted">
+              {hint}
+            </span>
+          </li>
+        </ul>
+      </div>
     </span>
     """
+  end
+
+  # The status that most needs attention, which colors the summary.
+  defp worst_power_source(sources) do
+    Enum.find(~w(unreachable not_permitted not_present available), fn status ->
+      Enum.any?(sources, &(&1.status == status))
+    end)
   end
 
   defp power_source_dot("available"), do: "bg-ok"

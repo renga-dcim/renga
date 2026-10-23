@@ -1514,8 +1514,7 @@
         "description": "Whether the agent can read one power source on its host (RFD 10, \"Source status\").",
         "properties": {
           "source": {
-            "description": "The source, such as `hwmon` or an exporter's URL.",
-            "maxLength": 255,
+            "description": "The source, such as `hwmon` or an exporter's URL. Must not be blank. At most 255 characters.",
             "minLength": 1,
             "type": "string"
           },

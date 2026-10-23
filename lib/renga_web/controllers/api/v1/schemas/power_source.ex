@@ -1,10 +1,10 @@
 defmodule RengaWeb.Api.V1.Schemas.PowerSource do
   @moduledoc false
 
-  import RengaWeb.Api.V1.Schemas, only: [contract: 0]
+  import RengaWeb.Api.V1.Schemas, only: [contract: 0, non_blank_string: 1]
 
   def json_schema do
-    %{max_string_length: max_length, power_source_statuses: statuses} = contract()
+    %{power_source_statuses: statuses} = contract()
 
     %{
       title: "PowerSource",
@@ -12,12 +12,7 @@ defmodule RengaWeb.Api.V1.Schemas.PowerSource do
         "Whether the agent can read one power source on its host (RFD 10, \"Source status\").",
       type: :object,
       properties: %{
-        source: %{
-          type: :string,
-          minLength: 1,
-          maxLength: max_length,
-          description: "The source, such as `hwmon` or an exporter's URL."
-        },
+        source: non_blank_string("The source, such as `hwmon` or an exporter's URL."),
         status: %{enum: statuses}
       },
       required: [:source, :status]
