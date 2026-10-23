@@ -177,15 +177,22 @@ defmodule Renga.Accounts.Identities do
   end
 
   # With local sign-in on, the account's email still signs it in. Otherwise
-  # another identity at a usable deployment provider must.
+  # another identity at a usable deployment provider must. Sign-in checks a
+  # provider's email-domain allowlist, which needs a verified address in it,
+  # before it looks at the subject; an identity doesn't record whether its
+  # address was verified, so one at a provider with an allowlist doesn't
+  # count.
   defp can_sign_in_without?(user, identity) do
     SignInPolicy.local_sign_in?() or
       Repo.exists?(
         from i in UserIdentity,
           join: p in assoc(i, :provider),
+          join: r in Revision,
+          on: r.provider_id == p.id and r.number == p.active_revision,
           where: i.user_id == ^user.id and i.id != ^identity.id,
           where: is_nil(p.organization_id) and is_nil(p.removed_at),
-          where: p.enabled and not is_nil(p.active_revision)
+          where: p.enabled and not is_nil(p.active_revision),
+          where: fragment("cardinality(?) = 0", r.email_domains)
       )
   end
 
