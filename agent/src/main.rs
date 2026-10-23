@@ -553,6 +553,13 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
                             home = new_home;
                             client = new_client;
                             relocation = None;
+                            // A pass built for the old home holds its client, so it would
+                            // start, run, and report jobs there. A different home always means
+                            // a client that sends differently, and the generation advances
+                            // only here, once that client is in place, so the next pass is
+                            // built for the new home. A failed resolution or the same home
+                            // again leaves the pass and socket alone.
+                            policy_generation.advance();
                             if let Some(previous) = listener.take() {
                                 previous.stop();
                             }
@@ -606,6 +613,8 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
             .min(Duration::from_millis(250));
         thread::sleep(wait);
     }
+    // Nothing after the loop adopts a resolution or starts a pass; it waits for work in flight.
+    info!("daemon stopping");
     if let Some(listener) = listener {
         listener.stop();
     }
@@ -1123,6 +1132,11 @@ mod tests {
     }
 
     fn read_http_request(stream: TcpStream) -> (String, BufReader<TcpStream>) {
+        let (request_line, _body, reader) = read_http_request_body(stream);
+        (request_line, reader)
+    }
+
+    fn read_http_request_body(stream: TcpStream) -> (String, Vec<u8>, BufReader<TcpStream>) {
         let mut reader = BufReader::new(stream);
         let mut request_line = String::new();
         reader.read_line(&mut request_line).unwrap();
@@ -1141,7 +1155,7 @@ mod tests {
         }
         let mut body = vec![0; length];
         reader.read_exact(&mut body).unwrap();
-        (request_line, reader)
+        (request_line, body, reader)
     }
 
     fn answer(reader: &mut BufReader<TcpStream>, status: u16, body: &str) {
@@ -1952,6 +1966,494 @@ mod tests {
         resolver_server.join().unwrap();
 
         assert!(result.is_err());
+        assert!(!state.join("home.json").exists());
+        std::fs::remove_dir_all(state).unwrap();
+    }
+
+    /// What the homes in a relocation test heard, in the order they heard it.
+    #[derive(Debug, Clone, PartialEq)]
+    enum Heard {
+        SocketOpened(&'static str),
+        SocketClosed(&'static str),
+        Lease(&'static str),
+        /// A report on the leased job, by type.
+        Report(&'static str, String),
+        /// An observation by ID, and the status it was answered with.
+        Observation(&'static str, String, u16),
+    }
+
+    /// Everything heard so far, so a test waits on events instead of on the clock.
+    struct Hearing {
+        receiver: mpsc::Receiver<Heard>,
+        heard: Vec<Heard>,
+    }
+
+    impl Hearing {
+        fn until(&mut self, what: &str, done: impl Fn(&[Heard]) -> bool) {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while !done(&self.heard) {
+                let left = deadline.saturating_duration_since(Instant::now());
+                match self.receiver.recv_timeout(left) {
+                    Ok(heard) => self.heard.push(heard),
+                    Err(_) => panic!("{what} never happened; heard {:?}", self.heard),
+                }
+            }
+        }
+
+        /// Takes in whatever arrived since, once every server has stopped.
+        fn drain(&mut self) {
+            self.heard.extend(self.receiver.try_iter());
+        }
+
+        fn count(&self, heard: &Heard) -> usize {
+            self.heard.iter().filter(|each| *each == heard).count()
+        }
+
+        fn reports(&self, home: &str) -> Vec<String> {
+            self.heard
+                .iter()
+                .filter_map(|each| match each {
+                    Heard::Report(at, kind) if *at == home => Some(kind.clone()),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        fn heard_from(&self, home: &str) -> bool {
+            self.heard.iter().any(|each| match each {
+                Heard::SocketOpened(at)
+                | Heard::SocketClosed(at)
+                | Heard::Lease(at)
+                | Heard::Report(at, _)
+                | Heard::Observation(at, _, _) => *at == home,
+            })
+        }
+    }
+
+    /// A home in a relocation test.
+    struct RelocationHome {
+        origin: String,
+        /// Raised once the home says the organization moved.
+        moved: Arc<AtomicBool>,
+        /// Answers the held `started` report.
+        release: mpsc::SyncSender<()>,
+        server: thread::JoinHandle<()>,
+    }
+
+    /// A home that, when it `moves`, leases one `inventory.collect` job and holds its `started`
+    /// report until released, answers its first observation with `410 moved` once that report
+    /// is held, and from then on says the organization moved to everything but job reports and
+    /// the notice socket. A home that does not move only accepts, and never has a job.
+    #[allow(clippy::result_large_err)]
+    fn relocation_home(
+        name: &'static str,
+        moves: bool,
+        stopped: Cancellation,
+        heard: mpsc::Sender<Heard>,
+    ) -> RelocationHome {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let job_id = uuid::Uuid::new_v4();
+        let leased = Arc::new(AtomicBool::new(!moves));
+        let held = Arc::new(AtomicBool::new(false));
+        let moved = Arc::new(AtomicBool::new(false));
+        let home_moved = Arc::clone(&moved);
+        let (release, released) = mpsc::sync_channel(1);
+        let released = Arc::new(Mutex::new(Some(released)));
+        let server = thread::spawn(move || {
+            let mut connections = Vec::new();
+            while !stopped.cancelled() {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        stream.set_nonblocking(false).unwrap();
+                        let leased = Arc::clone(&leased);
+                        let held = Arc::clone(&held);
+                        let moved = Arc::clone(&home_moved);
+                        let released = Arc::clone(&released);
+                        let heard = heard.clone();
+                        connections.push(thread::spawn(move || {
+                            let mut peek = [0; 256];
+                            let bytes = stream.peek(&mut peek).unwrap();
+                            let opening = String::from_utf8_lossy(&peek[..bytes]);
+                            if opening.contains("/api/v1/agent/socket/websocket") {
+                                let _ = heard.send(Heard::SocketOpened(name));
+                                let mut socket = tungstenite::accept_hdr(
+                                    stream,
+                                    |_request: &Request, mut response: Response| {
+                                        response.headers_mut().insert(
+                                            SEC_WEBSOCKET_PROTOCOL,
+                                            HeaderValue::from_static("phoenix"),
+                                        );
+                                        Ok(response)
+                                    },
+                                )
+                                .unwrap();
+                                let join: serde_json::Value =
+                                    serde_json::from_str(socket.read().unwrap().to_text().unwrap())
+                                        .unwrap();
+                                socket
+                                    .send(Message::text(
+                                        json!(["1", "1", join[2], "phx_reply", {
+                                            "status": "ok",
+                                            "response": {"jobs_waiting": false}
+                                        }])
+                                        .to_string(),
+                                    ))
+                                    .unwrap();
+                                while socket.read().is_ok() {}
+                                let _ = heard.send(Heard::SocketClosed(name));
+                                return;
+                            }
+
+                            let gone = r#"{"error":"moved"}"#;
+                            let (request, body, mut reader) = read_http_request_body(stream);
+                            if request.contains(&format!("/api/v1/agent/jobs/{job_id}/events")) {
+                                let report: serde_json::Value =
+                                    serde_json::from_slice(&body).unwrap();
+                                let kind = report["type"].as_str().unwrap().to_string();
+                                let _ = heard.send(Heard::Report(name, kind.clone()));
+                                if kind == "started" {
+                                    held.store(true, Ordering::SeqCst);
+                                    let release = released.lock().unwrap().take();
+                                    if let Some(release) = release {
+                                        // Inside the agent's 20-second request timeout, so
+                                        // the pass is still waiting when the answer comes.
+                                        release
+                                            .recv_timeout(Duration::from_secs(15))
+                                            .expect("the held start was never released");
+                                    }
+                                }
+                                answer(&mut reader, 200, r#"{"cancel_requested":false}"#);
+                            } else if request.contains("/api/v1/observations") {
+                                let observation: serde_json::Value =
+                                    serde_json::from_slice(&body).unwrap();
+                                let id = observation["observation_id"]
+                                    .as_str()
+                                    .unwrap()
+                                    .to_string();
+                                if moves && !moved.load(Ordering::SeqCst) {
+                                    let deadline = Instant::now() + Duration::from_secs(30);
+                                    while !held.load(Ordering::SeqCst) && Instant::now() < deadline
+                                    {
+                                        thread::sleep(Duration::from_millis(5));
+                                    }
+                                    moved.store(true, Ordering::SeqCst);
+                                }
+                                let status = if moved.load(Ordering::SeqCst) { 410 } else { 202 };
+                                let _ = heard.send(Heard::Observation(name, id, status));
+                                answer(&mut reader, status, if status == 410 { gone } else { "{}" });
+                            } else if moved.load(Ordering::SeqCst) {
+                                answer(&mut reader, 410, gone);
+                            } else if request.contains("/api/v1/agent/checkins") {
+                                answer(
+                                    &mut reader,
+                                    202,
+                                    r#"{"status":"accepted","jobs_waiting":true}"#,
+                                );
+                            } else if request.contains("/api/v1/agent/jobs/lease") {
+                                let _ = heard.send(Heard::Lease(name));
+                                if leased.swap(true, Ordering::SeqCst) {
+                                    answer(&mut reader, 200, r#"{"jobs":[]}"#);
+                                    return;
+                                }
+                                let job = json!({
+                                    "id": job_id,
+                                    "capability": "inventory.collect@1",
+                                    "parameters": {},
+                                    "attempt": 1,
+                                    "lease_token": "lease",
+                                    "lease_expires_at": chrono::Utc::now() + chrono::Duration::seconds(60),
+                                    "timeout_ms": 30_000,
+                                    "output_limit_bytes": 65_536
+                                });
+                                answer(&mut reader, 200, &json!({ "jobs": [job] }).to_string());
+                            } else {
+                                answer(&mut reader, 404, "{}");
+                            }
+                        }));
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("relocation home failed: {error}"),
+                }
+            }
+            for connection in connections {
+                connection.join().unwrap();
+            }
+        });
+        RelocationHome {
+            origin,
+            moved,
+            release,
+            server,
+        }
+    }
+
+    /// Signals when the daemon's main loop has stopped, from its "daemon stopping" line.
+    #[derive(Clone)]
+    struct StoppingLog(mpsc::Sender<()>);
+
+    impl Write for StoppingLog {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if String::from_utf8_lossy(buf).contains("daemon stopping") {
+                let _ = self.0.send(());
+            }
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Starts a daemon for a relocation test, with a receiver told once its main loop stops.
+    /// Reloads stay out of the way, so only the move can restart job passes or the socket;
+    /// inventory runs often, so a queued observation goes out soon after the move; and a held
+    /// report outlasts a slow machine.
+    fn relocation_daemon(
+        state: &Path,
+        resolver: &str,
+        stopped: Cancellation,
+    ) -> (thread::JoinHandle<Result<(), String>>, mpsc::Receiver<()>) {
+        let config = write_agent_config(state, resolver, "renga_intake_test");
+        let settings = std::fs::read_to_string(&config)
+            .unwrap()
+            .replace(
+                "config_refresh_interval_seconds = 1\n",
+                "config_refresh_interval_seconds = 3600\ninventory_interval_seconds = 2\n",
+            )
+            .replace(
+                "request_timeout_seconds = 2\n",
+                "request_timeout_seconds = 20\n",
+            );
+        assert!(settings.contains("config_refresh_interval_seconds = 3600\n"));
+        assert!(settings.contains("request_timeout_seconds = 20\n"));
+        std::fs::write(&config, settings).unwrap();
+        let (loop_stopped, stopping) = mpsc::channel();
+        let state = state.to_path_buf();
+        let daemon = thread::spawn(move || {
+            let log = tracing_subscriber::fmt()
+                .with_ansi(false)
+                .with_writer(move || StoppingLog(loop_stopped.clone()))
+                .finish();
+            tracing::subscriber::with_default(log, || {
+                run_configured(
+                    Args {
+                        config,
+                        state_directory: state,
+                        once: false,
+                        dry_run: false,
+                        command: None,
+                    },
+                    stopped,
+                )
+                .map_err(|error| error.to_string())
+            })
+        });
+        (daemon, stopping)
+    }
+
+    #[test]
+    fn a_move_to_a_different_home_abandons_the_pass_built_for_the_old_one() {
+        let state =
+            std::env::temp_dir().join(format!("renga-relocate-pass-{}", uuid::Uuid::new_v4()));
+        let stopped = Cancellation::default();
+        let (heard, receiver) = mpsc::channel();
+        let old = relocation_home("old", true, stopped.clone(), heard.clone());
+        let new = relocation_home("new", false, stopped.clone(), heard);
+        let asked = Arc::new(AtomicUsize::new(0));
+        let resolver_asked = Arc::clone(&asked);
+        let old_moved = Arc::clone(&old.moved);
+        let (old_origin, new_origin) = (old.origin.clone(), new.origin.clone());
+        let (resolver, resolver_server) = routed_server(stopped.clone(), move |_request| {
+            resolver_asked.fetch_add(1, Ordering::SeqCst);
+            let home = if old_moved.load(Ordering::SeqCst) {
+                &new_origin
+            } else {
+                &old_origin
+            };
+            (200, json!({ "home": home }).to_string())
+        });
+        let (daemon, _stopping) = relocation_daemon(&state, &resolver, stopped.clone());
+        let mut hearing = Hearing {
+            receiver,
+            heard: Vec::new(),
+        };
+        hearing.until("the held start and the old home's socket", |heard| {
+            heard.contains(&Heard::Report("old", "started".into()))
+                && heard.contains(&Heard::SocketOpened("old"))
+        });
+        // The old home says the organization moved only while the start is held, so the
+        // agent adopts the new home with the old pass still waiting on the old one.
+        hearing.until("the new home's socket", |heard| {
+            heard.contains(&Heard::SocketOpened("new"))
+        });
+        let refused = hearing
+            .heard
+            .iter()
+            .find_map(|each| match each {
+                Heard::Observation("old", id, 410) => Some(id.clone()),
+                _ => None,
+            })
+            .expect("the old home said the organization moved to an observation");
+        old.release.send(()).unwrap();
+
+        // Only one pass runs at a time, so a lease at the new home means the old pass ended.
+        hearing.until("a lease at the new home", |heard| {
+            heard.contains(&Heard::Lease("new"))
+        });
+        hearing.until("the refused observation at the new home", |heard| {
+            heard.contains(&Heard::Observation("new", refused.clone(), 202))
+        });
+        stopped.cancel();
+        daemon.join().unwrap().unwrap();
+        for server in [old.server, new.server, resolver_server] {
+            server.join().unwrap();
+        }
+        hearing.drain();
+
+        // Nothing past the start went to the home that said the organization moved.
+        assert_eq!(hearing.reports("old"), ["started"], "{:?}", hearing.heard);
+        assert_eq!(hearing.count(&Heard::SocketOpened("old")), 1);
+        assert_eq!(hearing.count(&Heard::SocketClosed("old")), 1);
+        assert_eq!(hearing.count(&Heard::SocketOpened("new")), 1);
+        // Every `moved` the old home said before and after the move led to one resolution.
+        assert_eq!(asked.load(Ordering::SeqCst), 2, "{:?}", hearing.heard);
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(state.join("home.json")).unwrap()).unwrap();
+        assert_eq!(persisted["home"], format!("{}/", new.origin));
+        std::fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn a_move_that_names_no_new_home_keeps_the_pass_and_the_socket() {
+        // The resolver names the old home again, or cannot answer at all.
+        for resolvable in [true, false] {
+            let state =
+                std::env::temp_dir().join(format!("renga-relocate-none-{}", uuid::Uuid::new_v4()));
+            let stopped = Cancellation::default();
+            let (heard, receiver) = mpsc::channel();
+            let old = relocation_home("old", true, stopped.clone(), heard);
+            let asked = Arc::new(AtomicUsize::new(0));
+            let resolver_asked = Arc::clone(&asked);
+            let old_moved = Arc::clone(&old.moved);
+            let old_origin = old.origin.clone();
+            let (resolver, resolver_server) = routed_server(stopped.clone(), move |_request| {
+                resolver_asked.fetch_add(1, Ordering::SeqCst);
+                if old_moved.load(Ordering::SeqCst) && !resolvable {
+                    (503, "{}".into())
+                } else {
+                    (200, json!({ "home": old_origin }).to_string())
+                }
+            });
+            let (daemon, _stopping) = relocation_daemon(&state, &resolver, stopped.clone());
+            let mut hearing = Hearing {
+                receiver,
+                heard: Vec::new(),
+            };
+            hearing.until("the held start and the socket", |heard| {
+                heard.contains(&Heard::Report("old", "started".into()))
+                    && heard.contains(&Heard::SocketOpened("old"))
+            });
+            // One resolution runs at a time, so a third ask means the first after the move
+            // has been handled.
+            wait_until(
+                "two resolutions after the move",
+                Instant::now() + Duration::from_secs(30),
+                || asked.load(Ordering::SeqCst) >= 3,
+            );
+            old.release.send(()).unwrap();
+
+            hearing.until("the job's outcome", |heard| {
+                heard
+                    .iter()
+                    .any(|each| matches!(each, Heard::Report("old", kind) if kind != "started"))
+            });
+            assert_eq!(
+                hearing.count(&Heard::SocketOpened("old")),
+                1,
+                "{resolvable}"
+            );
+            assert_eq!(
+                hearing.count(&Heard::SocketClosed("old")),
+                0,
+                "{resolvable}"
+            );
+            stopped.cancel();
+            daemon.join().unwrap().unwrap();
+            for server in [old.server, resolver_server] {
+                server.join().unwrap();
+            }
+
+            // The home that said the organization moved stays forgotten, and nothing replaced it.
+            assert!(!state.join("home.json").exists(), "{resolvable}");
+            std::fs::remove_dir_all(state).unwrap();
+        }
+    }
+
+    #[test]
+    fn stopping_while_a_move_resolves_adopts_nothing_and_runs_nothing_more() {
+        let state =
+            std::env::temp_dir().join(format!("renga-relocate-stop-{}", uuid::Uuid::new_v4()));
+        let stopped = Cancellation::default();
+        let server_stop = Cancellation::default();
+        let (heard, receiver) = mpsc::channel();
+        let old = relocation_home("old", true, server_stop.clone(), heard.clone());
+        let new = relocation_home("new", false, server_stop.clone(), heard);
+        // The resolution after the move names the new home only once released.
+        let (resolving, relocation_asked) = mpsc::channel();
+        let (answer_now, answered) = mpsc::channel::<()>();
+        let answered = Arc::new(Mutex::new(answered));
+        let old_moved = Arc::clone(&old.moved);
+        let (old_origin, new_origin) = (old.origin.clone(), new.origin.clone());
+        let (resolver, resolver_server) = routed_server(server_stop.clone(), move |_request| {
+            if !old_moved.load(Ordering::SeqCst) {
+                return (200, json!({ "home": old_origin }).to_string());
+            }
+            let _ = resolving.send(());
+            let _ = answered
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(30));
+            (200, json!({ "home": new_origin }).to_string())
+        });
+        let (daemon, loop_stopped) = relocation_daemon(&state, &resolver, stopped.clone());
+        let mut hearing = Hearing {
+            receiver,
+            heard: Vec::new(),
+        };
+        hearing.until("the held start and the socket", |heard| {
+            heard.contains(&Heard::Report("old", "started".into()))
+                && heard.contains(&Heard::SocketOpened("old"))
+        });
+        relocation_asked
+            .recv_timeout(Duration::from_secs(30))
+            .unwrap();
+
+        stopped.cancel();
+        // The answers arrive only once the main loop has stopped, so nothing is left to adopt
+        // them; shutdown then waits for the resolution and the pass they hold up.
+        loop_stopped
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the daemon's main loop never stopped");
+        answer_now.send(()).unwrap();
+        old.release.send(()).unwrap();
+        wait_until(
+            "the daemon stopping",
+            Instant::now() + Duration::from_secs(10),
+            || daemon.is_finished(),
+        );
+        daemon.join().unwrap().unwrap();
+        server_stop.cancel();
+        for server in [old.server, new.server, resolver_server] {
+            server.join().unwrap();
+        }
+        hearing.drain();
+
+        assert!(!hearing.heard_from("new"), "{:?}", hearing.heard);
+        assert_eq!(hearing.reports("old"), ["started"], "{:?}", hearing.heard);
         assert!(!state.join("home.json").exists());
         std::fs::remove_dir_all(state).unwrap();
     }
