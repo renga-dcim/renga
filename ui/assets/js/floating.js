@@ -40,6 +40,20 @@ export function place(anchor, box, viewport) {
   return {top, left}
 }
 
+// Places an anchored popover like `place`, but a list taller than the room
+// on either side opens on the roomier side with `maxHeight` set to that room,
+// so it scrolls inside the viewport instead of running off it.
+export function fit(anchor, box, viewport) {
+  const below = viewport.height - MARGIN - (anchor.bottom + GAP)
+  const above = anchor.top - GAP - MARGIN
+  if (box.height <= below || box.height <= above) return place(anchor, box, viewport)
+
+  const {left} = place(anchor, box, viewport)
+  return below >= above
+    ? {top: anchor.bottom + GAP, left, maxHeight: Math.max(below, 0)}
+    : {top: MARGIN, left, maxHeight: Math.max(above, 0)}
+}
+
 export function clipped(el) {
   return el.scrollWidth > el.clientWidth
 }
@@ -227,7 +241,17 @@ export function installFloating(doc = document, win = window) {
       const el = event.target
       if (event.newState !== "open" || !el.dataset?.anchor) return
       const anchor = doc.getElementById(el.dataset.anchor)
-      if (anchor) position(el, anchor)
+      if (!anchor) return
+      el.style.maxHeight = ""
+      el.style.overflowY = ""
+      const viewport = {width: win.innerWidth, height: win.innerHeight}
+      const {top, left, maxHeight} = fit(anchor.getBoundingClientRect(), el.getBoundingClientRect(), viewport)
+      el.style.top = `${top}px`
+      el.style.left = `${left}px`
+      if (maxHeight !== undefined) {
+        el.style.maxHeight = `${maxHeight}px`
+        el.style.overflowY = "auto"
+      }
     },
     true
   )

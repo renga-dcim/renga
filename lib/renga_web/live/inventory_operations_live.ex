@@ -742,9 +742,9 @@ defmodule RengaWeb.InventoryOperationsLive do
   attr :sources, :list, required: true
 
   # Whether the agent can read each power source on its host (RFD 10): a
-  # one-line summary after the collector's name that opens every source, its
-  # status, and what would enable a source it cannot read. Agents that report
-  # no power sources show nothing.
+  # compact count after the collector's name, so the name keeps the cell's
+  # width, that opens every source, its status, and what would enable a source
+  # it cannot read. Agents that report no power sources show nothing.
   defp collector_power_sources(%{sources: nil} = assigns), do: ~H""
 
   defp collector_power_sources(assigns) do
@@ -753,7 +753,8 @@ defmodule RengaWeb.InventoryOperationsLive do
 
     assigns =
       assign(assigns,
-        summary: "#{available} of #{total} available",
+        available: available,
+        total: total,
         worst: worst_power_source(assigns.sources)
       )
 
@@ -763,20 +764,21 @@ defmodule RengaWeb.InventoryOperationsLive do
         id={@id}
         type="button"
         popovertarget={"#{@id}-list"}
-        aria-label={"Power sources: #{@summary}"}
+        aria-label={"Power sources: #{@available} of #{@total} available"}
+        title={"Power sources: #{@available} of #{@total} available"}
         class="inline-flex min-h-tap min-w-tap items-center justify-center gap-1 rounded-sm px-1 text-xs text-fg-muted transition-colors hover:bg-sunken hover:text-fg focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring"
       >
-        <span class={["size-1.5 rounded-full", power_source_dot(@worst)]} />
-        <span class="tabular-nums">Power {@summary}</span>
+        <.icon name="hero-bolt-micro" class={"size-3 #{power_source_icon(@worst)}"} />
+        <span class="tabular-nums">{@available}/{@total}</span>
       </button>
       <div
         id={"#{@id}-list"}
         popover
         data-anchor={@id}
-        class="fixed inset-auto m-0 w-72 space-y-1.5 whitespace-normal rounded-md border border-edge bg-surface px-3 py-2 text-xs text-fg shadow-lg"
+        class="fixed inset-auto m-0 w-72 max-w-[calc(100vw-1rem)] space-y-1.5 whitespace-normal rounded-md border border-edge bg-surface px-3 py-2 text-xs text-fg shadow-lg"
       >
         <p class="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg-subtle">
-          Power sources
+          Power sources · {@available} of {@total} available
         </p>
         <ul class="space-y-2">
           <li :for={{source, index} <- Enum.with_index(@sources)} id={"#{@id}-#{index}"}>
@@ -797,12 +799,17 @@ defmodule RengaWeb.InventoryOperationsLive do
     """
   end
 
-  # The status that most needs attention, which colors the summary.
+  # The status that most needs attention, which colors the summary's bolt.
   defp worst_power_source(sources) do
     Enum.find(~w(unreachable not_permitted not_present available), fn status ->
       Enum.any?(sources, &(&1.status == status))
     end)
   end
+
+  # The summary's bolt takes the color of the source that most needs attention.
+  defp power_source_icon("available"), do: "text-ok"
+  defp power_source_icon("unreachable"), do: "text-crit"
+  defp power_source_icon(_status), do: "text-unknown"
 
   defp power_source_dot("available"), do: "bg-ok"
   defp power_source_dot("unreachable"), do: "bg-crit"
