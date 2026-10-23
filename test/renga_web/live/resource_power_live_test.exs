@@ -11,6 +11,7 @@ defmodule RengaWeb.ResourcePowerLiveTest do
   alias Renga.Catalog
   alias Renga.Power
   alias Renga.Power.Cables
+  alias Renga.Power.History
   alias Renga.Power.Port
   alias Renga.Repo
   alias Renga.Topology.CableAssertion
@@ -485,6 +486,49 @@ defmodule RengaWeb.ResourcePowerLiveTest do
     refute has_element?(view, "#power-supply-#{psu1.id}", "212.4 W")
     assert has_element?(view, "#power-supply-#{psu1.id} .text-crit", "No input")
     assert has_element?(view, "#power-readings tr", "Stale")
+  end
+
+  test "charts the device's measured input over time", %{
+    conn: conn,
+    scope: scope,
+    organization: organization
+  } do
+    server = server!(scope)
+    bmc = power_stream_fixture(organization, "bmc_power")
+    target_resource_fixture(bmc, "bmc-web-1", server)
+
+    for {name, value} <- [{"PSU1", 212}, {"PSU2", 188}] do
+      reading_fixture(bmc,
+        target: "bmc-web-1",
+        sensor: "#{name}/input",
+        boundary: "supply_input",
+        component: {"power_port", name},
+        value: value
+      )
+    end
+
+    History.record(scope)
+
+    {:ok, view, _html} = live(conn, ~p"/inventory/#{server}/power")
+
+    assert has_element?(
+             view,
+             "#power-input-trend-summary",
+             "Over the last 24 hours: average 400 W, peak 400 W."
+           )
+
+    assert has_element?(view, "#power-input-trend-range-24h[aria-current]")
+    view |> element("#power-input-trend-range-30d") |> render_click()
+    assert_patched(view, ~p"/inventory/#{server}/power?trend=30d")
+    assert has_element?(view, "#power-input-trend-summary", "Over the last 30 days")
+    assert has_element?(view, "#power-input-trend-range-30d[aria-current]")
+    refute has_element?(view, "#power-input-trend-range-24h[aria-current]")
+  end
+
+  test "a device without input readings has no trend", %{conn: conn, scope: scope} do
+    server = server!(scope)
+    {:ok, view, _html} = live(conn, ~p"/inventory/#{server}/power")
+    refute has_element?(view, "#power-input-trend")
   end
 
   test "members read but cannot edit", %{conn: conn, scope: scope, organization: organization} do
