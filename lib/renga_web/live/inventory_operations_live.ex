@@ -881,24 +881,34 @@ defmodule RengaWeb.InventoryOperationsLive do
   # enough for a column of its own. Agents that don't report it show nothing.
   defp collector_osquery(assigns) do
     ~H"""
-    <span :if={@osquery} id={@id} class="mt-0.5 block text-xs">
+    <span
+      :if={@osquery}
+      id={@id}
+      class="mt-0.5 block truncate text-xs"
+      title={osquery_title(@osquery)}
+    >
       <%= case @osquery do %>
         <% %{status: "available"} -> %>
           <span class="text-fg">osquery</span>
           <span :if={@osquery.version} class="font-mono text-fg-muted">{@osquery.version}</span>
         <% %{status: "not_permitted"} -> %>
-          <span
-            class="font-medium text-warn-text"
-            title="The agent's account can't open the extensions socket"
-          >
-            osquery not permitted
-          </span>
+          <span class="font-medium text-warn-text">osquery not permitted</span>
         <% %{status: "not_present"} -> %>
           <span class="text-fg-muted">osquery not running</span>
       <% end %>
     </span>
     """
   end
+
+  defp osquery_title(%{status: "available", version: version}) when is_binary(version),
+    do: "osquery #{version}"
+
+  defp osquery_title(%{status: "available"}), do: "osquery"
+
+  defp osquery_title(%{status: "not_permitted"}),
+    do: "osquery not permitted: the agent's account can't open the extensions socket"
+
+  defp osquery_title(%{status: "not_present"}), do: "osquery not running"
 
   attr :queue, :map, required: true
   attr :kind, :atom, default: :observations
