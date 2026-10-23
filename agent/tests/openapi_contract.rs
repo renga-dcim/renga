@@ -310,8 +310,8 @@ fn host_power_batches_match_the_contract() {
     let batch = power::batch(
         &[
             reading(
-                "power_meter/acpi:\\_SB_.PMI0/power1",
-                hwmon::Boundary::HostInput,
+                "pfe3000/acpi:\\_SB_.PCI0.I2C9.PSU0/power1",
+                hwmon::Boundary::SupplyInput,
                 Ok(245.5),
             ),
             reading(

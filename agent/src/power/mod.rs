@@ -163,20 +163,24 @@ mod tests {
 
     #[test]
     fn queues_one_host_batch_per_sample_with_failures_as_unknown() {
-        // A fake /sys with two ACPI power meters, whose name and sensors are on their ACPI
-        // devices.
+        // A fake /sys with two PMBus supplies described in the devicetree.
         let sys = std::env::temp_dir().join(format!("renga-power-{}", Uuid::new_v4()));
         let root = sys.join("class/hwmon");
         for (index, value) in [(0, "245500000"), (1, "busy")] {
             let chip = root.join(format!("hwmon{index}"));
-            let device = sys.join(format!("devices/LNXSYSTM:00/ACPI000D:0{index}"));
-            fs::create_dir_all(&chip).unwrap();
-            fs::create_dir_all(&device).unwrap();
-            fs::write(device.join("name"), "power_meter\n").unwrap();
-            fs::write(device.join("path"), format!("\\_SB_.PMI{index}\n")).unwrap();
+            let device = sys.join(format!("devices/platform/i2c-3/3-006{index}"));
+            let node = sys.join(format!(
+                "firmware/devicetree/base/i2c@1e78a400/psu@6{index}"
+            ));
+            for dir in [&chip, &device, &node] {
+                fs::create_dir_all(dir).unwrap();
+            }
+            std::os::unix::fs::symlink(&node, device.join("of_node")).unwrap();
             std::os::unix::fs::symlink(&device, chip.join("device")).unwrap();
-            fs::write(device.join("power1_average"), value).unwrap();
-            fs::write(device.join("power1_average_interval"), "30000").unwrap();
+            fs::write(chip.join("name"), "ibm_cffps1\n").unwrap();
+            fs::write(chip.join("power1_label"), "pin\n").unwrap();
+            fs::write(chip.join("power1_average"), value).unwrap();
+            fs::write(chip.join("power1_average_interval"), "30000").unwrap();
         }
         let (sink, batches) = capture();
         let sources = PowerSources::default();
@@ -198,8 +202,8 @@ mod tests {
         assert_eq!(
             batch["samples"][0],
             json!({
-                "sensor": "power_meter/acpi:\\_SB_.PMI0/power1",
-                "boundary": "host_input",
+                "sensor": "ibm_cffps1/dt:i2c@1e78a400/psu@60/power1",
+                "boundary": "supply_input",
                 "quantity": "real_power",
                 "unit": "W",
                 "status": "valid",

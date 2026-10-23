@@ -1,21 +1,25 @@
 //! Power sensors under `/sys/class/hwmon` (RFD 10, "Host agent").
 //!
 //! The files are world-readable, so this source works inside the agent's sandbox. Only drivers
-//! whose readings are known to measure a power boundary are mapped: the ACPI power meter
-//! (`ACPI000D`) reports the host's input power, and a short list of power supply drivers label
-//! their input and output power. A regulator or GPU also reports watts, but for one component
-//! rather than the host, so anything else is left unmapped rather than guessed at.
+//! whose readings are known to measure a power boundary are mapped: a short list of power supply
+//! drivers label their input and output power. A regulator or GPU also reports watts, but for
+//! one component rather than the host, so anything else is left unmapped rather than guessed at.
+//!
+//! That includes the ACPI power meter (`ACPI000D`). Firmware says whether it measures input or
+//! output power (`_PMC`) and which devices it covers (`_PMD`), but Linux does not expose the
+//! direction, so its watts may be what supplies deliver rather than what the host draws. The
+//! host's input power comes from a source that says what it measures, such as the BMC.
 //!
 //! Drivers are recognized by what sysfs shows, not by module name. Most drivers put `name` and
-//! their sensor files on the hwmon device; the ACPI power meter (`power_meter`) puts them on its
-//! parent ACPI device instead, so both directories are looked at, as node_exporter and
-//! lm-sensors do. A PMBus supply's `name` is its I2C client name: the `i2c_device_id`, or the
-//! devicetree compatible without its vendor prefix, with `-` turned into `_`.
+//! their sensor files on the hwmon device; older ones put them on its parent device instead, so
+//! both directories are looked at, as node_exporter and lm-sensors do. A PMBus supply's `name`
+//! is its I2C client name: the `i2c_device_id`, or the devicetree compatible without its vendor
+//! prefix, with `-` turned into `_`.
 //!
 //! A sensor's identity must survive reboots, so it is built from the device's firmware node
-//! (its devicetree node path or ACPI namespace path, such as `\_SB_.PMI0`), never from the
-//! `hwmonN` index, an I2C bus number, or a sysfs name such as `ACPI000D:00`, which the kernel
-//! may number differently on the next boot. A chip without a firmware node is not reported: a
+//! (its devicetree node path or ACPI namespace path, such as `\_SB_.PCI0.I2C9.PSU0`), never
+//! from the `hwmonN` index, an I2C bus number, or a sysfs name such as `PSU0000:00`, which the
+//! kernel may number differently on the next boot. A chip without a firmware node is not reported: a
 //! series that could silently swap supplies is worse than none.
 
 use std::{
@@ -32,7 +36,7 @@ pub const MAPPING_VERSION: u32 = 1;
 pub const ROOT: &str = "/sys/class/hwmon";
 
 /// The ACPI power meter's `name`, which it shows on its ACPI device rather than its hwmon
-/// device.
+/// device. Its readings are left unmapped; see the module documentation.
 pub const POWER_METER: &str = "power_meter";
 
 /// The hwmon names of power supplies whose `pin`/`pout` labels are the supply's own input and
@@ -171,7 +175,7 @@ fn chip_readings(chip: &Path) -> io::Result<Vec<Reading>> {
     let Some((attributes, name)) = attributes(chip)? else {
         return Ok(Vec::new());
     };
-    if name != POWER_METER && !SUPPLY_NAMES.contains(&name.as_str()) {
+    if !SUPPLY_NAMES.contains(&name.as_str()) {
         return Ok(Vec::new());
     }
     let Some(device) = firmware_node(chip)? else {
@@ -208,7 +212,7 @@ fn chip_readings(chip: &Path) -> io::Result<Vec<Reading>> {
 }
 
 /// The directory holding the chip's `name` and sensor files, and that name: the hwmon device's
-/// own, or else its parent device's, where older drivers such as the ACPI power meter put them.
+/// own, or else its parent device's, where older drivers put them.
 fn attributes(chip: &Path) -> io::Result<Option<(PathBuf, String)>> {
     for dir in [chip.to_path_buf(), chip.join("device")] {
         if let Some(name) = optional(read_trimmed(&dir.join("name")))? {
@@ -264,9 +268,6 @@ fn channel(file: &str) -> Option<u32> {
 
 /// The boundary a sensor of `driver` measures, by its label for a supply.
 pub fn boundary(driver: &str, label: Option<String>) -> Option<Boundary> {
-    if driver == POWER_METER {
-        return Some(Boundary::HostInput);
-    }
     if !SUPPLY_NAMES.contains(&driver) {
         return None;
     }
@@ -453,6 +454,8 @@ mod tests {
 
     const METER_PATH: &str = "LNXSYSTM:00/LNXSYBUS:00/ACPI000D:00";
     const METER_NAMESPACE: &str = "\\_SB_.PMI0";
+    const PSU0: &str = "\\_SB_.PCI0.I2C9.PSU0";
+    const PSU1: &str = "\\_SB_.PCI0.I2C9.PSU1";
 
     fn sensors(scan: &Scan) -> Vec<(&str, Boundary)> {
         scan.readings
@@ -462,7 +465,8 @@ mod tests {
     }
 
     #[test]
-    fn maps_the_acpi_power_meter_on_its_acpi_device_as_host_input() {
+    fn leaves_the_acpi_power_meter_unmapped() {
+        // Readable, with a usable interval, but nothing says whether it measures input or output.
         let sys = Sys::new();
         sys.meter(
             3,
@@ -476,15 +480,23 @@ mod tests {
 
         let scan = scan(&sys.root());
 
-        assert_eq!(scan.availability, Availability::Available);
-        assert_eq!(
-            scan.readings,
-            [Reading {
-                sensor: "power_meter/acpi:\\_SB_.PMI0/power1".into(),
-                boundary: Boundary::HostInput,
-                watts: Ok(245.0),
-                window: Duration::from_secs(1),
-            }]
+        assert!(scan.readings.is_empty());
+        assert_eq!(scan.availability, Availability::NotPresent);
+    }
+
+    /// A supply that ACPI enumerated on I2C, named in the ACPI namespace.
+    fn acpi_supply(sys: &Sys, index: u32, instance: &str, namespace: &str, files: &[(&str, &str)]) {
+        let mut files = files.to_vec();
+        files.push(("power1_label", "pin"));
+        sys.chip(
+            index,
+            Some("pfe3000"),
+            Device::AcpiI2c {
+                path: &format!("pci0000:00/i2c-9/9-00{index}0"),
+                node: &format!("LNXSYSTM:00/LNXSYBUS:00/PNP0A08:00/PSU0000:{instance}"),
+                namespace,
+            },
+            &files,
         );
     }
 
@@ -661,7 +673,7 @@ mod tests {
 
     #[test]
     fn acpi_identity_follows_the_namespace_not_sysfs_instance_numbers() {
-        let meters = |order: [(&str, &str); 2]| {
+        let supplies = |order: [(&str, &str); 2]| {
             let sys = Sys::new();
             for (index, (instance, namespace)) in order.into_iter().enumerate() {
                 let watts = if namespace.ends_with('0') {
@@ -669,9 +681,10 @@ mod tests {
                 } else {
                     "200000000"
                 };
-                sys.meter(
+                acpi_supply(
+                    &sys,
                     index as u32,
-                    &format!("LNXSYSTM:00/LNXSYBUS:00/ACPI000D:{instance}"),
+                    instance,
                     namespace,
                     &[("power1_input", watts)],
                 );
@@ -684,15 +697,21 @@ mod tests {
             readings.sort_by(|a, b| a.0.cmp(&b.0));
             readings
         };
-        // The next boot numbers the two meters' ACPI devices the other way round.
-        let first = meters([("00", "\\_SB_.PMI0"), ("01", "\\_SB_.PMI1")]);
-        let second = meters([("01", "\\_SB_.PMI0"), ("00", "\\_SB_.PMI1")]);
+        // The next boot numbers the two supplies' ACPI devices the other way round.
+        let first = supplies([("00", PSU0), ("01", PSU1)]);
+        let second = supplies([("01", PSU0), ("00", PSU1)]);
         assert_eq!(first, second);
         assert_eq!(
             first,
             [
-                ("power_meter/acpi:\\_SB_.PMI0/power1".to_owned(), 100.0),
-                ("power_meter/acpi:\\_SB_.PMI1/power1".to_owned(), 200.0),
+                (
+                    "pfe3000/acpi:\\_SB_.PCI0.I2C9.PSU0/power1".to_owned(),
+                    100.0
+                ),
+                (
+                    "pfe3000/acpi:\\_SB_.PCI0.I2C9.PSU1/power1".to_owned(),
+                    200.0
+                ),
             ]
         );
     }
@@ -766,21 +785,17 @@ mod tests {
     #[test]
     fn a_sensor_that_cannot_be_read_is_a_failure_not_zero() {
         let sys = Sys::new();
-        sys.meter(
+        acpi_supply(
+            &sys,
             0,
-            METER_PATH,
-            METER_NAMESPACE,
+            "00",
+            PSU0,
             &[
                 ("power1_average", "garbage"),
                 ("power1_average_interval", "1000"),
             ],
         );
-        sys.meter(
-            1,
-            "LNXSYSTM:00/ACPI000D:01",
-            "\\_SB_.PMI1",
-            &[("power1_input", "")],
-        );
+        acpi_supply(&sys, 1, "01", PSU1, &[("power1_input", "")]);
 
         let scan = scan(&sys.root());
 
@@ -806,7 +821,7 @@ mod tests {
             if let Some(interval) = interval {
                 files.push(("power1_average_interval", interval));
             }
-            sys.meter(0, METER_PATH, METER_NAMESPACE, &files);
+            acpi_supply(&sys, 0, "00", PSU0, &files);
 
             let [reading] = scan(&sys.root()).readings.try_into().unwrap();
             match valid {
@@ -858,7 +873,8 @@ mod tests {
         fs::set_permissions(&device, fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(availability, Availability::NotPermitted);
 
-        // The ACPI power meter's device, which holds its name, cannot be entered.
+        // An older driver's parent device, which holds its name, cannot be entered, so whether
+        // the chip is a supply is unknown. The ACPI power meter is one such driver.
         let sys = Sys::new();
         sys.meter(0, METER_PATH, METER_NAMESPACE, &[("power1_input", "1")]);
         let device = sys.0.join("devices").join(METER_PATH);
