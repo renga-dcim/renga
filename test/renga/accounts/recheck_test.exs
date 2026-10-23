@@ -42,10 +42,7 @@ defmodule Renga.Accounts.RecheckTest do
     setup do
       user = user_fixture()
       secret = MFA.new_totp_secret()
-      time = System.os_time(:second) - 30
-
-      {:ok, _codes} =
-        MFA.enable_totp(user, secret, NimbleTOTP.verification_code(secret, time: time))
+      totp_fixture(user, secret: secret)
 
       %{user: user, secret: secret, token: session_token(user)}
     end

@@ -53,7 +53,7 @@ defmodule Renga.Accounts.MFATest do
     setup do
       user = user_fixture()
       secret = MFA.new_totp_secret()
-      {:ok, _codes} = MFA.enable_totp(user, secret, code_for(secret, -1))
+      totp_fixture(user, secret: secret)
       %{user: user, secret: secret, totp: Repo.one!(where(UserTOTP, user_id: ^user.id))}
     end
 
@@ -66,7 +66,7 @@ defmodule Renga.Accounts.MFATest do
     test "a secret moved to another account accepts nothing", %{totp: totp, secret: secret} do
       other = user_fixture()
       other_secret = MFA.new_totp_secret()
-      {:ok, _codes} = MFA.enable_totp(other, other_secret, code_for(other_secret, -1))
+      totp_fixture(other, secret: other_secret)
 
       Repo.update_all(where(UserTOTP, user_id: ^other.id),
         set: [secret_ciphertext: totp.secret_ciphertext, secret_key_id: totp.secret_key_id]
@@ -85,7 +85,7 @@ defmodule Renga.Accounts.MFATest do
     setup do
       user = user_fixture()
       secret = MFA.new_totp_secret()
-      {:ok, _codes} = MFA.enable_totp(user, secret, code_for(secret, -1))
+      totp_fixture(user, secret: secret)
       %{user: user, secret: secret}
     end
 

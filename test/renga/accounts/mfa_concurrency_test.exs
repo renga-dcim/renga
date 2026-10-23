@@ -159,9 +159,8 @@ defmodule Renga.Accounts.MFAConcurrencyTest do
     :ok = Sandbox.checkout(Repo, sandbox: false)
     user = user_fixture()
     secret = MFA.new_totp_secret()
-    # Enrol on the previous step so the current one is still unspent.
-    previous = NimbleTOTP.verification_code(secret, time: System.os_time(:second) - 30)
-    {:ok, _codes} = MFA.enable_totp(user, secret, previous)
+    # Leaves the current step unspent.
+    totp_fixture(user, secret: secret)
 
     try do
       fun.(user, secret)
