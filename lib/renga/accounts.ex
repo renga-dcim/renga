@@ -653,21 +653,28 @@ defmodule Renga.Accounts do
   def confirm_session_second_factor(%User{} = user, session_token, credential)
       when is_binary(session_token) do
     with {:ok, method} <- verify_session_factor(user, credential) do
-      {count, _} =
-        Repo.update_all(
-          from(t in UserToken,
-            where: t.token == ^session_token and t.context == "session",
-            where: t.user_id == ^user.id
-          ),
-          set: [second_factor_at: Renga.Time.utc_now_ms()]
-        )
-
-      if count == 1 do
-        SecurityLog.record(user, "second_factor_confirmed", %{"method" => to_string(method)})
-        :ok
-      else
-        {:error, :no_session}
+      case Repo.transaction(fn -> confirm_session(user, session_token, method) end) do
+        {:ok, :ok} -> :ok
+        {:error, :no_session} -> {:error, :no_session}
       end
+    end
+  end
+
+  defp confirm_session(user, session_token, method) do
+    {count, _} =
+      Repo.update_all(
+        from(t in UserToken,
+          where: t.token == ^session_token and t.context == "session",
+          where: t.user_id == ^user.id
+        ),
+        set: [second_factor_at: Renga.Time.utc_now_ms()]
+      )
+
+    if count == 1 do
+      SecurityLog.record(user, "second_factor_confirmed", %{"method" => to_string(method)})
+      :ok
+    else
+      Repo.rollback(:no_session)
     end
   end
 
