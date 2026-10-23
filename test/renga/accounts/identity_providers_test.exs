@@ -508,10 +508,13 @@ defmodule Renga.Accounts.IdentityProvidersTest do
           @operator
         )
 
+      events_before = event_kinds(provider)
+
       {:ok, provider} =
         IdentityProviders.set_mfa_mark(provider, %{"enforces_mfa" => true}, @operator)
 
-      assert ["updated", "mfa_marked" | _] = event_kinds(provider)
+      assert Enum.sort(events_before) == Enum.sort(["created", "mfa_marked", "updated"])
+      assert event_kinds(provider) == events_before
       assert provider.mfa_amr_combinations == ["hwk+pin"]
     end
 
