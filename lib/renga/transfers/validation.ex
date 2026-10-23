@@ -36,7 +36,7 @@ defmodule Renga.Transfers.Validation do
 
   @uuid ~r/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i
   @mac_address ~r/\A[0-9a-f]{2}(:[0-9a-f]{2}){5}\z/i
-  @int4range ~r/\A(empty|[\[(]-?\d*,-?\d*[\])])\z/
+  @int4range ~r/\A[\[(](-?\d+)?,(-?\d+)?[\])]\z/
   @int4 {-2_147_483_648, 2_147_483_647}
   @int8 {-9_223_372_036_854_775_808, 9_223_372_036_854_775_807}
 
@@ -299,8 +299,9 @@ defmodule Renga.Transfers.Validation do
     end
   end
 
+  # PostgreSQL counts code points, not the graphemes String.length/1 counts.
   defp too_long?(value, %{max_length: max}) when is_integer(max) and is_binary(value),
-    do: String.length(value) > max
+    do: length(String.codepoints(value)) > max
 
   defp too_long?(_value, _column), do: false
 
@@ -321,7 +322,7 @@ defmodule Renga.Transfers.Validation do
   defp valid_type?(value, "inet"), do: address?(value, false)
   defp valid_type?(value, "cidr"), do: address?(value, true)
   defp valid_type?(value, "macaddr"), do: is_binary(value) and Regex.match?(@mac_address, value)
-  defp valid_type?(value, "int4range"), do: is_binary(value) and Regex.match?(@int4range, value)
+  defp valid_type?(value, "int4range"), do: int4range?(value)
 
   defp valid_type?(value, "_" <> type) when is_list(value),
     do: Enum.all?(value, &(not is_nil(&1) and valid_type?(&1, type)))
@@ -336,26 +337,56 @@ defmodule Renga.Transfers.Validation do
 
   defp timestamp?(_value), do: false
 
+  # Each bound must be an int4 and the lower no greater than the upper,
+  # as PostgreSQL requires before it canonicalizes the range.
+  defp int4range?("empty"), do: true
+
+  defp int4range?(value) when is_binary(value) do
+    case Regex.run(@int4range, value, capture: :all_but_first) do
+      nil -> false
+      bounds -> bounds |> Enum.map(&bound/1) |> valid_bounds?()
+    end
+  end
+
+  defp int4range?(_value), do: false
+
+  defp bound(""), do: nil
+  defp bound(digits), do: String.to_integer(digits)
+
+  defp valid_bounds?(bounds) do
+    Enum.all?(bounds, &(is_nil(&1) or in_range?(&1, @int4))) and
+      case bounds do
+        [lower, upper] when is_integer(lower) and is_integer(upper) -> lower <= upper
+        _open -> true
+      end
+  end
+
+  # A network (cidr) must have no bits set past its prefix length.
   defp address?(value, network?) when is_binary(value) do
     case String.split(value, "/") do
-      [address] -> not network? and ip?(address)
-      [address, length] -> ip?(address) and prefix_length?(address, length)
+      [address] -> not network? and match?({:ok, _ip}, ip(address))
+      [address, length] -> network?(ip(address), Integer.parse(length), network?)
       _other -> false
     end
   end
 
   defp address?(_value, _network?), do: false
 
-  defp ip?(address),
-    do: match?({:ok, _ip}, :inet.parse_strict_address(String.to_charlist(address)))
+  defp ip(address), do: :inet.parse_strict_address(String.to_charlist(address))
 
-  defp prefix_length?(address, length) do
-    max = if String.contains?(address, ":"), do: 128, else: 32
+  defp network?({:ok, ip}, {length, ""}, network?) do
+    bits = if tuple_size(ip) == 8, do: 128, else: 32
 
-    case Integer.parse(length) do
-      {length, ""} -> length >= 0 and length <= max
-      _other -> false
-    end
+    length >= 0 and length <= bits and
+      (not network? or host_bits_zero?(ip, bits - length))
+  end
+
+  defp network?(_ip, _length, _network?), do: false
+
+  defp host_bits_zero?(ip, host_bits) do
+    width = if tuple_size(ip) == 8, do: 16, else: 8
+    number = ip |> Tuple.to_list() |> Enum.reduce(0, &(&2 * Bitwise.bsl(1, width) + &1))
+    Bitwise.band(number, Bitwise.bsl(1, host_bits) - 1) == 0
   end
 
   defp describe("uuid"), do: "a UUID"

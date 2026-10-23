@@ -160,6 +160,68 @@ defmodule Renga.Transfers.ValidationTest do
            ]
   end
 
+  test "values must be ones PostgreSQL would store in their column", context do
+    at = "2026-10-22T19:00:00.000000Z"
+
+    occupancy = fn units ->
+      %{
+        "id" => Ecto.UUID.generate(),
+        "current_placement_id" => Ecto.UUID.generate(),
+        "rack_id" => Ecto.UUID.generate(),
+        "face" => "front",
+        "units" => units,
+        "inserted_at" => at,
+        "updated_at" => at
+      }
+    end
+
+    prefix = fn cidr ->
+      %{
+        "id" => Ecto.UUID.generate(),
+        "resource_id" => Ecto.UUID.generate(),
+        "prefix" => cidr,
+        "status" => "active",
+        "description" => nil,
+        "metadata" => %{},
+        "inserted_at" => at,
+        "updated_at" => at,
+        "vrf_id" => nil,
+        "strict" => false
+      }
+    end
+
+    archive =
+      rewrite(context, export(context), fn
+        "rack_occupancies", [] ->
+          Enum.map(["[-,)", "[2147483648,)", "[5,2)", "[1,3)", "empty", "(,4]"], occupancy)
+
+        "prefixes", [] ->
+          Enum.map(["192.0.2.1/24", "2001:db8::1/64", "192.0.2.0/24", "2001:db8::/64"], prefix)
+
+        "resources", [resource | rest] ->
+          # 255 characters as people read them, 510 as PostgreSQL counts.
+          [%{resource | "name" => String.duplicate("e\u0301", 255)} | rest]
+
+        _type, records ->
+          records
+      end)
+
+    type_messages =
+      archive
+      |> messages()
+      |> Enum.filter(fn {_file, _line, message} -> message =~ ~r/must be|longer than/ end)
+      |> Enum.sort()
+
+    assert type_messages == [
+             {"prefixes.ndjson", 1, ~s(field "prefix" must be an IP network)},
+             {"prefixes.ndjson", 2, ~s(field "prefix" must be an IP network)},
+             {"rack_occupancies.ndjson", 1, ~s(field "units" must be an integer range)},
+             {"rack_occupancies.ndjson", 2, ~s(field "units" must be an integer range)},
+             {"rack_occupancies.ndjson", 3, ~s(field "units" must be an integer range)},
+             {"resources.ndjson", 1, ~s(field "name" is longer than 255 characters)}
+           ]
+  end
+
   test "no two records of a type share an ID", context do
     archive =
       rewrite(context, export(context), fn
