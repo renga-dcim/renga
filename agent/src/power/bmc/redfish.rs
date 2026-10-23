@@ -3,8 +3,12 @@
 //!
 //! Everything here is pure, so the mapping is tested from recorded resources. The module reads
 //! the first computer system the service lists, that system's chassis, and the chassis's `Power`
-//! resource: the system's own draw from its first power control, and each installed supply's
-//! input, output, and condition.
+//! resource: the system's own draw from the chassis's one whole-chassis power control, and each
+//! installed supply's input, output, and condition.
+//!
+//! Readings are attributed to the system only when its chassis is its own. A chassis that holds
+//! several systems, such as a multi-node enclosure, shares its supplies between them, so its
+//! power is not one server's and is not reported.
 
 use crate::{
     exporters::mapping::supply_sensor,
@@ -42,6 +46,21 @@ pub fn power_link(chassis: &Value) -> Result<String, MapError> {
 
 fn odata_id(value: &Value) -> Option<String> {
     value["@odata.id"].as_str().map(str::to_owned)
+}
+
+/// Whether `chassis`'s power is `system`'s alone. `linked` says the system named this chassis
+/// itself; otherwise the chassis must name the system as its only one.
+pub fn owns(system: &Value, chassis: &Value, linked: bool) -> bool {
+    let members: Option<Vec<String>> = chassis["Links"]["ComputerSystems"]
+        .as_array()
+        .map(|systems| systems.iter().filter_map(odata_id).collect());
+    match members {
+        Some(members) if members.len() > 1 => false,
+        Some(members) if !linked => {
+            members.len() == 1 && odata_id(system).is_some_and(|id| members[0] == id)
+        }
+        _ => linked,
+    }
 }
 
 /// The server behind `system`, with the readings of its chassis's `power` resource.
@@ -92,13 +111,14 @@ pub fn device(system: &Value, power: &Value) -> Result<Device, MapError> {
 /// The system's draw and each installed supply's readings.
 pub fn readings(power: &Value) -> Vec<Reading> {
     let mut readings = Vec::new();
-    if let Some(control) = power["PowerControl"].as_array().and_then(|controls| {
-        controls
-            .iter()
-            .find(|control| control.get("PowerConsumedWatts").is_some())
-    }) {
+    if let Some((index, control)) = whole_chassis_control(power) {
+        let member = control["MemberId"]
+            .as_str()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map_or_else(|| index.to_string(), str::to_owned);
         readings.push(Reading {
-            sensor: "power_control/0".into(),
+            sensor: format!("power_control/{member}"),
             boundary: "host_input",
             quantity: "real_power",
             component: None,
@@ -133,15 +153,36 @@ pub fn readings(power: &Value) -> Vec<Reading> {
             "real_power",
             watts(&supply["PowerInputWatts"]),
         );
+        // `LastPowerOutputWatts` is an average over a period Redfish does not give, so only the
+        // instantaneous output is read.
         read(
-            "LastPowerOutputWatts",
+            "PowerOutputWatts",
             "supply_output",
             "real_power",
-            watts(&supply["LastPowerOutputWatts"]),
+            watts(&supply["PowerOutputWatts"]),
         );
         read("Status", "supply_input", "state", supply_state(supply));
     }
     readings
+}
+
+/// The power control that measures the whole chassis: one that reports consumption and names no
+/// narrower physical context, such as a CPU or memory. Several such controls are ambiguous, so
+/// none is chosen.
+fn whole_chassis_control(power: &Value) -> Option<(usize, &Value)> {
+    let mut whole = power["PowerControl"]
+        .as_array()?
+        .iter()
+        .enumerate()
+        .filter(|(_, control)| control.get("PowerConsumedWatts").is_some())
+        .filter(|(_, control)| {
+            matches!(
+                control["PhysicalContext"].as_str(),
+                None | Some("Chassis") | Some("SystemBoard")
+            )
+        });
+    let control = whole.next()?;
+    whole.next().is_none().then_some(control)
 }
 
 /// A finite, non-negative wattage; anything else, `null` included, is a failed reading.
@@ -247,7 +288,8 @@ pub(crate) mod tests {
                             "MemberId": "PSU.Slot.1",
                             "Name": "PS1 Status",
                             "PowerInputWatts": 172.0,
-                            "LastPowerOutputWatts": 156,
+                            "PowerOutputWatts": 156,
+                            "LastPowerOutputWatts": 150,
                             "LineInputVoltage": 230,
                             "Status": {"State": "Enabled", "Health": "OK"}
                         },
@@ -255,7 +297,7 @@ pub(crate) mod tests {
                             "MemberId": "PSU.Slot.2",
                             "Name": "PS2 Status",
                             "PowerInputWatts": null,
-                            "LastPowerOutputWatts": 0,
+                            "PowerOutputWatts": 0,
                             "LineInputVoltage": 0,
                             "Status": {"State": "Enabled", "Health": "Critical"}
                         }
@@ -294,7 +336,7 @@ pub(crate) mod tests {
         );
         let readings = &device.readings;
         assert_eq!(
-            find(readings, "power_control/0", "real_power").measurement,
+            find(readings, "power_control/PowerControl", "real_power").measurement,
             Measurement::Value(312.0)
         );
         let input = find(readings, "PSU1/input", "real_power");
@@ -338,6 +380,78 @@ pub(crate) mod tests {
 
     fn device_error(system: &Value) -> String {
         device(system, &json!({})).unwrap_err().0
+    }
+
+    #[test]
+    fn host_input_comes_only_from_one_whole_chassis_control() {
+        let host = |controls: Value| -> Vec<(String, Measurement)> {
+            readings(&json!({"PowerControl": controls}))
+                .into_iter()
+                .map(|reading| (reading.sensor, reading.measurement))
+                .collect()
+        };
+        // A component's control listed first is not the host's draw.
+        assert_eq!(
+            host(json!([
+                {"MemberId": "cpu", "PhysicalContext": "CPU", "PowerConsumedWatts": 90},
+                {"MemberId": "0", "PhysicalContext": "Chassis", "PowerConsumedWatts": 312}
+            ])),
+            [("power_control/0".to_owned(), Measurement::Value(312.0))]
+        );
+        // Without a MemberId the position names it.
+        assert_eq!(
+            host(json!([{"PowerConsumedWatts": 200}])),
+            [("power_control/0".to_owned(), Measurement::Value(200.0))]
+        );
+        // Two candidates, or only components, say nothing about the whole host.
+        assert!(host(json!([
+            {"MemberId": "a", "PowerConsumedWatts": 100},
+            {"MemberId": "b", "PowerConsumedWatts": 120}
+        ]))
+        .is_empty());
+        assert!(host(json!([
+            {"MemberId": "mem", "PhysicalContext": "Memory", "PowerConsumedWatts": 20}
+        ]))
+        .is_empty());
+    }
+
+    #[test]
+    fn a_chassis_is_a_systems_own_only_when_nothing_else_shares_it() {
+        let system = json!({"@odata.id": "/redfish/v1/Systems/1"});
+        let listing = |systems: &[&str]| {
+            json!({"Links": {"ComputerSystems": systems
+                .iter()
+                .map(|id| json!({"@odata.id": id}))
+                .collect::<Vec<_>>()}})
+        };
+        assert!(owns(&system, &json!({}), true));
+        assert!(owns(&system, &listing(&["/redfish/v1/Systems/1"]), true));
+        assert!(owns(&system, &listing(&["/redfish/v1/Systems/1"]), false));
+        // A multi-node enclosure shares its supplies.
+        let shared = listing(&["/redfish/v1/Systems/1", "/redfish/v1/Systems/2"]);
+        assert!(!owns(&system, &shared, true));
+        // A chassis found without the system's link must name the system.
+        assert!(!owns(&system, &json!({}), false));
+        assert!(!owns(&system, &listing(&["/redfish/v1/Systems/2"]), false));
+    }
+
+    #[test]
+    fn supply_output_is_the_instantaneous_reading_not_the_average() {
+        let power = json!({"PowerSupplies": [
+            {"Name": "PS1", "PowerOutputWatts": 156, "LastPowerOutputWatts": 150,
+             "Status": {"State": "Enabled", "Health": "OK"}},
+            {"Name": "PS2", "LastPowerOutputWatts": 150,
+             "Status": {"State": "Enabled", "Health": "OK"}}
+        ]});
+        let outputs: Vec<_> = readings(&power)
+            .into_iter()
+            .filter(|reading| reading.boundary == "supply_output")
+            .map(|reading| (reading.sensor, reading.measurement))
+            .collect();
+        assert_eq!(
+            outputs,
+            [("PSU1/output".to_owned(), Measurement::Value(156.0))]
+        );
     }
 
     #[test]

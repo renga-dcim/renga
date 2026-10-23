@@ -483,7 +483,7 @@ fn bmc_power_reports_and_batches_match_the_contract() {
     let power = json!({
         "PowerControl": [{"PowerConsumedWatts": 312}],
         "PowerSupplies": [
-            {"Name": "PS1 Status", "PowerInputWatts": 172, "LastPowerOutputWatts": 156,
+            {"Name": "PS1 Status", "PowerInputWatts": 172, "PowerOutputWatts": 156,
              "Status": {"State": "Enabled", "Health": "OK"}},
             {"Name": "PS2 Status", "PowerInputWatts": null, "LineInputVoltage": 0,
              "Status": {"State": "Enabled", "Health": "Critical"}}

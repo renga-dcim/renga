@@ -22,6 +22,7 @@ use chrono::Utc;
 use client::{Redfish, WireRedfish};
 use config::{BmcCollector, BmcTarget};
 use redfish::MapError;
+use serde_json::Value;
 use std::{thread, time::Instant};
 use tracing::warn;
 
@@ -55,13 +56,22 @@ pub fn read(service: &mut dyn Redfish) -> Result<Device, TargetError> {
     let systems = service.get(redfish::SYSTEMS)?;
     let system =
         service.get(&redfish::first_member(&systems, "computer system").map_err(unsupported)?)?;
-    let chassis = match redfish::chassis_link(&system) {
-        Some(link) => link,
-        None => redfish::first_member(&service.get(redfish::CHASSIS)?, "chassis")
-            .map_err(unsupported)?,
+    let (chassis, linked) = match redfish::chassis_link(&system) {
+        Some(link) => (link, true),
+        None => (
+            redfish::first_member(&service.get(redfish::CHASSIS)?, "chassis")
+                .map_err(unsupported)?,
+            false,
+        ),
     };
     let chassis = service.get(&chassis)?;
     let power = service.get(&redfish::power_link(&chassis).map_err(unsupported)?)?;
+    // A shared or unrelated chassis's power is not this server's, so only the server is
+    // reported.
+    if !redfish::owns(&system, &chassis, linked) {
+        warn!("the BMC's chassis is not one server's own; reporting the server without readings");
+        return redfish::device(&system, &Value::Null).map_err(unsupported);
+    }
     redfish::device(&system, &power).map_err(unsupported)
 }
 
@@ -120,7 +130,7 @@ impl Drop for Pollers {
 mod tests {
     use super::*;
     use crate::{payload::CollectorResource, snmp::config::Target};
-    use serde_json::{json, Value};
+    use serde_json::json;
     use std::{collections::BTreeMap, time::Duration};
 
     struct Recorded(BTreeMap<&'static str, Value>);
@@ -250,6 +260,40 @@ mod tests {
                 "fresh_for_seconds": 180
             })
         );
+    }
+
+    #[test]
+    fn a_shared_or_unlinked_chassis_reports_the_server_without_readings() {
+        let mut shared = redfish::tests::idrac();
+        shared
+            .get_mut("/redfish/v1/Chassis/System.Embedded.1")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .insert(
+                "Links".into(),
+                json!({"ComputerSystems": [
+                    {"@odata.id": "/redfish/v1/Systems/System.Embedded.1"},
+                    {"@odata.id": "/redfish/v1/Systems/System.Embedded.2"}
+                ]}),
+            );
+        let device = read(&mut Recorded(shared)).unwrap();
+        assert!(device.resource.identifiers.dmi_uuid.is_some());
+        assert!(device.readings.is_empty());
+
+        // No chassis link: the service's first chassis need not be this server's.
+        let mut unlinked = redfish::tests::idrac();
+        unlinked
+            .get_mut("/redfish/v1/Systems/System.Embedded.1")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .remove("Links");
+        unlinked.insert(
+            redfish::CHASSIS,
+            json!({"Members": [{"@odata.id": "/redfish/v1/Chassis/System.Embedded.1"}]}),
+        );
+        assert!(read(&mut Recorded(unlinked)).unwrap().readings.is_empty());
     }
 
     /// The recorded server as the mapper reports it. Renga's collector report tests post this
