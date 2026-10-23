@@ -33,6 +33,7 @@ defmodule RengaWeb.SecurityLiveTest do
     assert has_element?(view, "#setting-require_mfa-value", "Off")
     assert has_element?(view, "#setting-require_mfa-changed", "Default, never changed")
     assert has_element?(view, "#setting-require_mfa-form")
+    assert has_element?(view, "#setting-require_mfa-reason[required]")
   end
 
   test "an owner turns on the MFA requirement with a reason", %{conn: conn} do
@@ -60,6 +61,20 @@ defmodule RengaWeb.SecurityLiveTest do
     assert html =~ "Required multi-factor authentication for members · SOC 2 control AC-3"
   end
 
+  test "a blank reason leaves the setting unchanged", %{conn: conn} do
+    {conn, _user, organization} = member_conn(conn, "owner")
+    {:ok, view, _html} = live(conn, ~p"/settings/security")
+
+    html =
+      view
+      |> form("#setting-require_mfa-form", setting: %{value: "true", reason: "  "})
+      |> render_submit()
+
+    assert html =~ "Enter a reason for this security change."
+    refute SecuritySettings.require_mfa?(organization.id)
+    assert Repo.aggregate(where(ChangeEvent, kind: "security_setting_changed"), :count) == 0
+  end
+
   test "an owner whose session has no second factor is asked for one after turning it on", %{
     conn: conn
   } do
@@ -70,7 +85,9 @@ defmodule RengaWeb.SecurityLiveTest do
 
     assert {:error, {:redirect, %{to: "/organizations/confirm-mfa"}}} =
              view
-             |> form("#setting-require_mfa-form", setting: %{value: "true"})
+             |> form("#setting-require_mfa-form",
+               setting: %{value: "true", reason: "Organization policy"}
+             )
              |> render_submit()
   end
 
@@ -104,7 +121,9 @@ defmodule RengaWeb.SecurityLiveTest do
 
     html =
       view
-      |> form("#setting-require_mfa-form", setting: %{value: "true"})
+      |> form("#setting-require_mfa-form",
+        setting: %{value: "true", reason: "Organization policy"}
+      )
       |> render_submit()
 
     assert html =~ "needs organization.manage"

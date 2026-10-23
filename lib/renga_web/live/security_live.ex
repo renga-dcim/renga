@@ -3,7 +3,7 @@ defmodule RengaWeb.SecurityLive do
   The organization's security settings (RFD 19, "Security settings"): each
   one with its current value and who last changed it. Everyone in the
   organization can see them; changing one needs `organization.manage`,
-  and each change is recorded in Activity with an optional reason.
+  and each change is recorded in Activity with a reason.
   """
   use RengaWeb, :live_view
 
@@ -36,6 +36,12 @@ defmodule RengaWeb.SecurityLive do
         {:noreply,
          socket
          |> put_flash(:error, "Changing security settings needs organization.manage.")
+         |> load_settings()}
+
+      {:error, :reason_required} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "Enter a reason for this security change.")
          |> load_settings()}
 
       _invalid ->
@@ -140,9 +146,10 @@ defmodule RengaWeb.SecurityLive do
                 id={"setting-#{setting.name}-reason"}
                 name="setting[reason]"
                 value=""
-                label="Reason (optional)"
+                label="Reason"
                 placeholder="Recorded in Activity"
                 maxlength="500"
+                required
               />
               <.button variant="primary" size="sm" phx-disable-with="Saving…">Save</.button>
             </.form>
