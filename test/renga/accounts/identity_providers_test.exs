@@ -489,7 +489,11 @@ defmodule Renga.Accounts.IdentityProvidersTest do
       refute provider.enforces_mfa
       assert provider.mfa_amr_combinations == ["otp+pwd"]
 
-      assert [unmarked, marked | _] = IdentityProviders.list_events(provider)
+      events = IdentityProviders.list_events(provider)
+      assert Enum.sort(Enum.map(events, & &1.kind)) == ~w(created mfa_marked mfa_unmarked)
+
+      marked = Enum.find(events, &(&1.kind == "mfa_marked"))
+      unmarked = Enum.find(events, &(&1.kind == "mfa_unmarked"))
       assert {marked.kind, marked.actor} == {"mfa_marked", "operator: release"}
       assert marked.changed == ["enforces_mfa", "mfa_amr_combinations"]
       assert unmarked.kind == "mfa_unmarked"
