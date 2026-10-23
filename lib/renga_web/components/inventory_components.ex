@@ -8,6 +8,9 @@ defmodule RengaWeb.InventoryComponents do
   alias Renga.Topology.Ports
   alias RengaWeb.Format
 
+  # The kinds an agent runs on, so the kinds an operational query can ask.
+  @query_kinds ~w(server vm)
+
   @doc """
   The four-signal status strip (lifecycle, freshness, agent, drift) for a
   resource with its conditions loaded. Drift comes from `drift_count`.
@@ -62,17 +65,19 @@ defmodule RengaWeb.InventoryComponents do
   @doc """
   The frame every resource tab shares (RFD 8, "Object pages"): breadcrumb,
   title, status strip, and the domain tabs. Tabs within the resource page
-  patch; the Hardware and Ports tabs, separate pages, navigate.
+  patch; the Hardware, Ports, Power, and Queries tabs, separate pages,
+  navigate.
 
   The Hardware tab only exists for physical device kinds; the command menu
   explains its absence on other kinds. The Ports tab only exists for
-  switches, whose ports are the point of the device.
+  switches, whose ports are the point of the device. The Queries tab only
+  exists for servers and VMs, the hosts an agent runs on (RFD 12).
   """
   attr :resource, :map, required: true
 
   attr :tab, :atom,
     required: true,
-    values: [:overview, :hardware, :ports, :power, :network, :sources, :activity]
+    values: [:overview, :hardware, :ports, :power, :network, :queries, :sources, :activity]
 
   attr :hardware?, :boolean, required: true
   slot :inner_block, required: true
@@ -97,6 +102,8 @@ defmodule RengaWeb.InventoryComponents do
             assigns.hardware? && {:power, "Power", ~p"/inventory/#{resource}/power", nil},
             {:network, "Network", ~p"/inventory/#{resource}/network",
              nonzero(length(resource.interfaces))},
+            resource.kind in @query_kinds &&
+              {:queries, "Queries", ~p"/inventory/#{resource}/queries", nil},
             {:sources, "Sources", ~p"/inventory/#{resource}/sources",
              nonzero(length(resource.source_names))},
             {:activity, "Activity", ~p"/inventory/#{resource}/activity", nil}
@@ -140,7 +147,7 @@ defmodule RengaWeb.InventoryComponents do
       else: Format.humanize(resource.kind)
   end
 
-  defp separate_page?(tab), do: tab in [:hardware, :ports, :power]
+  defp separate_page?(tab), do: tab in [:hardware, :ports, :power, :queries]
 
   defp port_count(resource),
     do: resource.interfaces |> Enum.count(&(&1.kind in Ports.port_kinds())) |> nonzero()
