@@ -68,7 +68,7 @@ pub fn read(service: &mut dyn Redfish) -> Result<Device, TargetError> {
     let power = service.get(&redfish::power_link(&chassis).map_err(unsupported)?)?;
     // A shared or unrelated chassis's power is not this server's, so only the server is
     // reported.
-    if !redfish::owns(&system, &chassis, linked) {
+    if !redfish::owns(&systems, &system, &chassis, linked) {
         warn!("the BMC's chassis is not one server's own; reporting the server without readings");
         return redfish::device(&system, &Value::Null).map_err(unsupported);
     }
@@ -294,6 +294,48 @@ mod tests {
             json!({"Members": [{"@odata.id": "/redfish/v1/Chassis/System.Embedded.1"}]}),
         );
         assert!(read(&mut Recorded(unlinked)).unwrap().readings.is_empty());
+
+        // A second system with no reverse links on the chassis may share it.
+        let mut two = redfish::tests::idrac();
+        two.insert(
+            redfish::SYSTEMS,
+            json!({"Members": [
+                {"@odata.id": "/redfish/v1/Systems/System.Embedded.1"},
+                {"@odata.id": "/redfish/v1/Systems/System.Embedded.2"}
+            ]}),
+        );
+        let device = read(&mut Recorded(two)).unwrap();
+        assert!(device.resource.identifiers.dmi_uuid.is_some());
+        assert!(device.readings.is_empty());
+
+        // So may one on a page the collection does not show.
+        let mut paged = redfish::tests::idrac();
+        paged.insert(
+            redfish::SYSTEMS,
+            json!({
+                "Members": [{"@odata.id": "/redfish/v1/Systems/System.Embedded.1"}],
+                "Members@odata.count": 2,
+                "Members@odata.nextLink": "/redfish/v1/Systems?$skip=1"
+            }),
+        );
+        assert!(read(&mut Recorded(paged)).unwrap().readings.is_empty());
+
+        // Or one the chassis's empty reverse list counts but does not show.
+        let mut hidden = redfish::tests::idrac();
+        hidden
+            .get_mut("/redfish/v1/Chassis/System.Embedded.1")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .insert(
+                "Links".into(),
+                json!({
+                    "ComputerSystems": [],
+                    "ComputerSystems@odata.count": 2,
+                    "ComputerSystems@odata.nextLink": "/redfish/v1/Chassis/1/ComputerSystems"
+                }),
+            );
+        assert!(read(&mut Recorded(hidden)).unwrap().readings.is_empty());
     }
 
     /// The recorded server as the mapper reports it. Renga's collector report tests post this

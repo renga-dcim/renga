@@ -6,9 +6,11 @@
 //! resource: the system's own draw from the chassis's one whole-chassis power control, and each
 //! installed supply's input, output, and condition.
 //!
-//! Readings are attributed to the system only when its chassis is its own. A chassis that holds
-//! several systems, such as a multi-node enclosure, shares its supplies between them, so its
-//! power is not one server's and is not reported.
+//! Readings are attributed to the system only when there is positive evidence that its chassis
+//! is its own: the chassis names the system as its only one, or, when the chassis names none,
+//! the system links to it and is the only system the service has. A chassis that holds several
+//! systems, such as a multi-node enclosure, shares its supplies between them, so its power is
+//! not one server's and is not reported.
 
 use crate::{
     exporters::mapping::supply_sensor,
@@ -48,19 +50,41 @@ fn odata_id(value: &Value) -> Option<String> {
     value["@odata.id"].as_str().map(str::to_owned)
 }
 
-/// Whether `chassis`'s power is `system`'s alone. `linked` says the system named this chassis
-/// itself; otherwise the chassis must name the system as its only one.
-pub fn owns(system: &Value, chassis: &Value, linked: bool) -> bool {
-    let members: Option<Vec<String>> = chassis["Links"]["ComputerSystems"]
+/// Whether `chassis`'s power is `system`'s alone. A chassis that lists its systems must list
+/// this one only. One that lists none proves nothing by itself, since Redfish does not require
+/// the list, so it counts only when `linked` (the system named this chassis itself) and the
+/// service's complete `systems` collection holds this system alone.
+pub fn owns(systems: &Value, system: &Value, chassis: &Value, linked: bool) -> bool {
+    let Some(id) = odata_id(system) else {
+        return false;
+    };
+    let links = &chassis["Links"];
+    let listed = links["ComputerSystems"]
         .as_array()
-        .map(|systems| systems.iter().filter_map(odata_id).collect());
-    match members {
-        Some(members) if members.len() > 1 => false,
-        Some(members) if !linked => {
-            members.len() == 1 && odata_id(system).is_some_and(|id| members[0] == id)
-        }
-        _ => linked,
+        .map_or(&[][..], Vec::as_slice);
+    // An empty list still discloses members when its count or a next page says so.
+    let count = &links["ComputerSystems@odata.count"];
+    let disclosed = !listed.is_empty()
+        || !links["ComputerSystems@odata.nextLink"].is_null()
+        || !(count.is_null() || count.as_u64() == Some(0));
+    if disclosed {
+        return only(links, "ComputerSystems", listed, &id);
     }
+    linked
+        && systems["Members"]
+            .as_array()
+            .is_some_and(|members| only(systems, "Members", members, &id))
+}
+
+/// Whether `list`, the `key` array of `owner`, is complete and holds `id` alone. A count other
+/// than one, or a next page, means members this page does not show.
+fn only(owner: &Value, key: &str, list: &[Value], id: &str) -> bool {
+    let count = &owner[format!("{key}@odata.count")];
+    let next = &owner[format!("{key}@odata.nextLink")];
+    list.len() == 1
+        && odata_id(&list[0]).as_deref() == Some(id)
+        && (count.is_null() || count.as_u64() == Some(1))
+        && next.is_null()
 }
 
 /// The server behind `system`, with the readings of its chassis's `power` resource.
@@ -167,7 +191,7 @@ pub fn readings(power: &Value) -> Vec<Reading> {
 }
 
 /// The power control that measures the whole chassis: one that reports consumption and names no
-/// narrower physical context, such as a CPU or memory. Several such controls are ambiguous, so
+/// narrower physical context, such as a CPU, memory, or the system board alone. Several such controls are ambiguous, so
 /// none is chosen.
 fn whole_chassis_control(power: &Value) -> Option<(usize, &Value)> {
     let mut whole = power["PowerControl"]
@@ -176,10 +200,7 @@ fn whole_chassis_control(power: &Value) -> Option<(usize, &Value)> {
         .enumerate()
         .filter(|(_, control)| control.get("PowerConsumedWatts").is_some())
         .filter(|(_, control)| {
-            matches!(
-                control["PhysicalContext"].as_str(),
-                None | Some("Chassis") | Some("SystemBoard")
-            )
+            matches!(control["PhysicalContext"].as_str(), None | Some("Chassis"))
         });
     let control = whole.next()?;
     whole.next().is_none().then_some(control)
@@ -413,6 +434,11 @@ pub(crate) mod tests {
             {"MemberId": "mem", "PhysicalContext": "Memory", "PowerConsumedWatts": 20}
         ]))
         .is_empty());
+        // The system board is one board, not the whole chassis.
+        assert!(host(json!([
+            {"MemberId": "board", "PhysicalContext": "SystemBoard", "PowerConsumedWatts": 250}
+        ]))
+        .is_empty());
     }
 
     #[test]
@@ -424,15 +450,82 @@ pub(crate) mod tests {
                 .map(|id| json!({"@odata.id": id}))
                 .collect::<Vec<_>>()}})
         };
-        assert!(owns(&system, &json!({}), true));
-        assert!(owns(&system, &listing(&["/redfish/v1/Systems/1"]), true));
-        assert!(owns(&system, &listing(&["/redfish/v1/Systems/1"]), false));
+        let collection = |systems: &[&str]| {
+            json!({"Members": systems
+                .iter()
+                .map(|id| json!({"@odata.id": id}))
+                .collect::<Vec<_>>()})
+        };
+        let alone = collection(&["/redfish/v1/Systems/1"]);
+        let two = collection(&["/redfish/v1/Systems/1", "/redfish/v1/Systems/2"]);
+        let mine = listing(&["/redfish/v1/Systems/1"]);
+
+        // The chassis names the system as its only one.
+        assert!(owns(&two, &system, &mine, true));
+        assert!(owns(&two, &system, &mine, false));
+        // Naming none, the linked chassis of the service's only system is its own.
+        assert!(owns(&alone, &system, &json!({}), true));
+        assert!(owns(&alone, &system, &listing(&[]), true));
+        // But with another system that may link to it too, it proves nothing.
+        assert!(!owns(&two, &system, &json!({}), true));
         // A multi-node enclosure shares its supplies.
         let shared = listing(&["/redfish/v1/Systems/1", "/redfish/v1/Systems/2"]);
-        assert!(!owns(&system, &shared, true));
+        assert!(!owns(&alone, &system, &shared, true));
+        // A chassis that names another system is not this one's, linked or not.
+        assert!(!owns(
+            &alone,
+            &system,
+            &listing(&["/redfish/v1/Systems/2"]),
+            true
+        ));
         // A chassis found without the system's link must name the system.
-        assert!(!owns(&system, &json!({}), false));
-        assert!(!owns(&system, &listing(&["/redfish/v1/Systems/2"]), false));
+        assert!(!owns(&alone, &system, &json!({}), false));
+        assert!(!owns(&alone, &json!({}), &mine, true));
+        // A page of the collection, or a member without an ID, hides other systems.
+        let paged = json!({
+            "Members": [{"@odata.id": "/redfish/v1/Systems/1"}],
+            "Members@odata.count": 2,
+            "Members@odata.nextLink": "/redfish/v1/Systems?$skip=1"
+        });
+        assert!(!owns(&paged, &system, &json!({}), true));
+        let counted = json!({
+            "Members": [{"@odata.id": "/redfish/v1/Systems/1"}],
+            "Members@odata.count": 2
+        });
+        assert!(!owns(&counted, &system, &json!({}), true));
+        let next = json!({
+            "Members": [{"@odata.id": "/redfish/v1/Systems/1"}],
+            "Members@odata.nextLink": "/redfish/v1/Systems?$skip=1"
+        });
+        assert!(!owns(&next, &system, &json!({}), true));
+        let unnamed = json!({"Members": [{"@odata.id": "/redfish/v1/Systems/1"}, {}]});
+        assert!(!owns(&unnamed, &system, &json!({}), true));
+        let mut unnamed_link = listing(&["/redfish/v1/Systems/1"]);
+        unnamed_link["Links"]["ComputerSystems"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({}));
+        assert!(!owns(&alone, &system, &unnamed_link, true));
+        // Nor may an empty reverse list whose count or next page discloses members.
+        for links in [
+            json!({"Links": {
+                "ComputerSystems": [],
+                "ComputerSystems@odata.count": 2,
+                "ComputerSystems@odata.nextLink": "/redfish/v1/Chassis/1/ComputerSystems"
+            }}),
+            json!({"Links": {"ComputerSystems": [], "ComputerSystems@odata.count": 2}}),
+            json!({"Links": {"ComputerSystems@odata.count": 1}}),
+        ] {
+            assert!(!owns(&alone, &system, &links, true), "{links}");
+        }
+        let empty = json!({"Links": {"ComputerSystems": [], "ComputerSystems@odata.count": 0}});
+        assert!(owns(&alone, &system, &empty, true));
+        // A count of one confirms a complete collection.
+        let counted_one = json!({
+            "Members": [{"@odata.id": "/redfish/v1/Systems/1"}],
+            "Members@odata.count": 1
+        });
+        assert!(owns(&counted_one, &system, &json!({}), true));
     }
 
     #[test]
