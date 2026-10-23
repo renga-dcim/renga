@@ -44,25 +44,28 @@ use std::collections::BTreeSet;
 
 /// Linux tables whose query names what they open: a file or directory they
 /// read, hash, parse, or scan (`file`, `hash`, `magic`, `certificates`,
-/// `extended_attributes`, `sshd_config`, `augeas`, `yara`/`yara_file`, the
-/// `elf_*` tables of older releases, and the package-tree walkers
-/// `npm_packages`, `python_packages`, and `ai_agent_skills`), a device they
+/// `extended_attributes`, `sshd_config`, `augeas`, `yara`/`yara_file`, and
+/// `yara_process`'s rule file, `deb_package_files`, whose package name joins
+/// a path unchecked, the `elf_*` tables of older releases, and the
+/// package-tree walkers `npm_packages`, `python_packages`,
+/// `homebrew_packages`, and `ai_agent_skills`), a device they
 /// read (Sleuth Kit's `device_*`), an address they reach (`curl`,
 /// `curl_certificate`, and `ycloud_instance_metadata`, whose
 /// `metadata_endpoint` becomes the URL it fetches), or files they copy off
 /// the host (`carves`). Opening a path the query chooses can also block the
 /// daemon for good, on a FIFO for one.
 ///
-/// `deb_packages`, `deb_package_files`, and `pacman_packages` also take a
-/// database directory but read only fixed file names inside it, and the
-/// named packages query answers from `deb_packages`, so they stay enabled.
-pub const DENIED_TABLES: [&str; 24] = [
+/// `deb_packages` and `pacman_packages` also take a database directory but
+/// read only fixed file names inside it, and the named packages query
+/// answers from `deb_packages`, so they stay enabled.
+pub const DENIED_TABLES: [&str; 27] = [
     "ai_agent_skills",
     "augeas",
     "carves",
     "certificates",
     "curl",
     "curl_certificate",
+    "deb_package_files",
     "device_file",
     "device_hash",
     "device_partitions",
@@ -74,6 +77,7 @@ pub const DENIED_TABLES: [&str; 24] = [
     "extended_attributes",
     "file",
     "hash",
+    "homebrew_packages",
     "magic",
     "npm_packages",
     "python_packages",
@@ -81,6 +85,7 @@ pub const DENIED_TABLES: [&str; 24] = [
     "ycloud_instance_metadata",
     "yara",
     "yara_file",
+    "yara_process",
 ];
 
 const MAX_SQL: usize = 4096;

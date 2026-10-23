@@ -5,10 +5,10 @@ defmodule Renga.Jobs.Queries.Sql do
   request, so it is always sensitive and, like every query, off until an
   organization allows it.
 
-  Renga does not parse the SQL. Tables that read files, make network
-  requests, or copy files off the host are disabled in osquery itself, and
-  the agent refuses to run unless the daemon's `disable_tables` covers its
-  deny list. The result is a bounded table of strings: column names in the
+  Renga does not parse the SQL. Tables whose query names a file, directory,
+  device, or address for them to open, and the table that copies files off
+  the host, are disabled in osquery itself, and the agent refuses to run
+  unless the daemon's `disable_tables` covers its deny list. The result is a bounded table of strings: column names in the
   order osquery gives them, and each row's values in that order.
   """
 

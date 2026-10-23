@@ -525,10 +525,9 @@ and it answers only when all of these hold:
   names what it opens: a file or directory it reads, hashes, parses, or scans;
   a device; an address it reaches; or files it copies off the host. Opening a
   path the query chooses can also block the daemon for good, on a FIFO for
-  one. The list is in the command below. `deb_packages`, `deb_package_files`,
-  and `pacman_packages` also take a database directory but read only fixed
-  file names inside it, and the named packages query uses `deb_packages`, so
-  they stay enabled. The agent reads the daemon's flags before every
+  one. The list is in the command below. `deb_packages` and `pacman_packages`
+  also take a database directory but read only fixed file names inside it,
+  and the named packages query uses `deb_packages`, so they stay enabled. The agent reads the daemon's flags before every
   run and refuses otherwise. It does not look for table names in the SQL.
 * The daemon runs with `--carver_disable_function` (osquery's default), since
   `carve()` copies files off the host even with the `carves` table disabled.
@@ -549,9 +548,10 @@ and it answers only when all of these hold:
 
 ```sh
 osqueryd --disable_tables=ai_agent_skills,augeas,carves,certificates,curl,\
-curl_certificate,device_file,device_hash,device_partitions,elf_dynamic,elf_info,\
-elf_sections,elf_segments,elf_symbols,extended_attributes,file,hash,magic,\
-npm_packages,python_packages,sshd_config,ycloud_instance_metadata,yara,yara_file \
+curl_certificate,deb_package_files,device_file,device_hash,device_partitions,\
+elf_dynamic,elf_info,elf_sections,elf_segments,elf_symbols,extended_attributes,\
+file,hash,homebrew_packages,magic,npm_packages,python_packages,sshd_config,\
+ycloud_instance_metadata,yara,yara_file,yara_process \
   --carver_disable_function=true ...
 ```
 

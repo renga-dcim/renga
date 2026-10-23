@@ -18,8 +18,9 @@
 //! result has the same shape, request text never reaches the SQL, and any
 //! osquery failure falls back to the native reading. The one exception is
 //! [`sql`], whose SELECT is the request: it runs only through osquery, and
-//! only when the daemon disables the tables that read files, reach the
-//! network, or copy files off the host.
+//! only when the daemon disables the tables whose query names a file,
+//! directory, device, or address for them to open, or that copy files off
+//! the host.
 
 pub mod disk_usage;
 pub mod listening_sockets;
