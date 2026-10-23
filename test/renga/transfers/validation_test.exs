@@ -202,7 +202,7 @@ defmodule Renga.Transfers.ValidationTest do
         "prefixes", [] ->
           Enum.map(
             ~w(192.0.2.1/24 2001:db8::1/64 192.0.2.0/+24 0.0.0.0/-0 2001:db8::/064
-               192.0.2.0/24 2001:db8::/64 192.0.2.0/024),
+               fe80::%eth0/64 192.0.2.0/24 2001:db8::/64 192.0.2.0/024 fe80::/64),
             prefix
           )
 
@@ -229,6 +229,10 @@ defmodule Renga.Transfers.ValidationTest do
             | rest
           ]
 
+        "observations", [observation | rest] ->
+          # Erlang reads the zone, NUL and all; PostgreSQL refuses it.
+          [%{observation | "reported_from" => "fe80::1%eth\u0000"} | rest]
+
         "organization", [organization] ->
           # numeric(4,3): 9.9995 rounds to 10.000, which needs two digits.
           [%{organization | "default_power_factor" => Decimal.new("9.9995")}]
@@ -248,6 +252,7 @@ defmodule Renga.Transfers.ValidationTest do
     assert type_messages == [
              {"agents.ndjson", 1,
               ~s(field "capabilities" has an item longer than 255 characters)},
+             {"observations.ndjson", 1, ~s(field "reported_from" must be an IP address)},
              {"organization.ndjson", 1,
               ~s(field "default_power_factor" does not fit numeric\(4,3\))},
              {"prefixes.ndjson", 1, ~s(field "prefix" must be an IP network)},
@@ -255,6 +260,7 @@ defmodule Renga.Transfers.ValidationTest do
              {"prefixes.ndjson", 3, ~s(field "prefix" must be an IP network)},
              {"prefixes.ndjson", 4, ~s(field "prefix" must be an IP network)},
              {"prefixes.ndjson", 5, ~s(field "prefix" must be an IP network)},
+             {"prefixes.ndjson", 6, ~s(field "prefix" must be an IP network)},
              {"rack_occupancies.ndjson", 1, ~s(field "units" must be an integer range)},
              {"rack_occupancies.ndjson", 2, ~s(field "units" must be an integer range)},
              {"rack_occupancies.ndjson", 3, ~s(field "units" must be an integer range)},

@@ -478,7 +478,13 @@ defmodule Renga.Transfers.Validation do
 
   defp address?(_value, _network?), do: false
 
-  defp ip(address), do: :inet.parse_strict_address(String.to_charlist(address))
+  # Erlang also reads an IPv6 zone such as fe80::1%eth0, which PostgreSQL
+  # refuses.
+  defp ip(address) do
+    if String.contains?(address, "%"),
+      do: :error,
+      else: :inet.parse_strict_address(String.to_charlist(address))
+  end
 
   defp network?({:ok, ip}, length, network?) do
     bits = if tuple_size(ip) == 8, do: 128, else: 32
