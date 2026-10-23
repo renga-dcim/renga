@@ -160,6 +160,21 @@ defmodule Renga.Repo.Migrations.CreateOrganizationImports do
       ADD CONSTRAINT cable_assertions_attribution_shape CHECK (#{attribution_shape("actor_user_id IS NOT NULL")})
       """
     )
+
+    # Last, so rolling back checks it first: without imported_at and its
+    # trigger, imported jobs would lease and run as ordinary work.
+    execute(
+      "SELECT 1",
+      """
+      DO $$
+      BEGIN
+        IF EXISTS (SELECT 1 FROM organization_imports) THEN
+          RAISE EXCEPTION 'organizations were imported; remove them before rolling back this migration';
+        END IF;
+      END
+      $$
+      """
+    )
   end
 
   # An operator's cable claim names who made it; an import or neighbor
