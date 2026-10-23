@@ -33,7 +33,26 @@ defmodule RengaWeb.Parsers do
   def init(opts), do: opts
 
   @impl true
-  def call(%Plug.Conn{path_info: ["scim" | _rest]} = conn, _opts) do
+  def call(conn, _opts) do
+    if scim_path?(conn.path_info),
+      do: parse_scim(conn),
+      else: Plug.Parsers.call(conn, @default)
+  end
+
+  # The router percent-decodes path segments before matching, so
+  # /%73cim/v2/... reaches the SCIM routes too and must get the SCIM bound.
+  defp scim_path?(["scim" | _rest]), do: true
+
+  defp scim_path?([segment | _rest]) do
+    URI.decode(segment) == "scim"
+  rescue
+    # The router refuses a malformed segment itself.
+    ArgumentError -> false
+  end
+
+  defp scim_path?([]), do: false
+
+  defp parse_scim(conn) do
     Plug.Parsers.call(conn, @scim)
   rescue
     Plug.Parsers.RequestTooLargeError ->
@@ -46,6 +65,4 @@ defmodule RengaWeb.Parsers do
       |> Response.error(400, "The request body is not valid JSON", "invalidSyntax")
       |> Plug.Conn.halt()
   end
-
-  def call(conn, _opts), do: Plug.Parsers.call(conn, @default)
 end

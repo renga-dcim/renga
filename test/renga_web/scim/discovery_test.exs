@@ -171,6 +171,19 @@ defmodule RengaWeb.Scim.DiscoveryTest do
 
       assert_scim_error(conn, 413)
     end
+
+    # The router decodes /%73cim to /scim, so the bound must apply there too.
+    test "a percent-encoded SCIM path gets the same bound and errors", %{conn: conn} do
+      conn = put_req_header(conn, "content-type", "application/scim+json")
+
+      body =
+        Jason.encode!(%{"filler" => String.duplicate("a", RengaWeb.Parsers.scim_max_bytes())})
+
+      assert_scim_error(post(conn, "/%73cim/v2/Me", body), 413)
+
+      assert %{"scimType" => "invalidSyntax"} =
+               assert_scim_error(post(conn, "/%73cim/v2/Me", "{not json"), 400)
+    end
   end
 
   describe "rate limit" do
