@@ -17,12 +17,13 @@ defmodule RengaWeb.ResourceQueriesLiveTest do
   @disk "query.disk_usage@1"
   @sockets "query.listening_sockets@1"
   @packages "query.packages@1"
+  @sql "query.sql@1"
 
   setup do
     %{organization: organization, scope: owner, system_scope: system} =
       job_organization_fixture()
 
-    agent = agent_fixture(organization, ["host.inventory", @disk, @sockets, @packages])
+    agent = agent_fixture(organization, ["host.inventory", @disk, @sockets, @packages, @sql])
     resource = reported_resource_fixture(organization, agent)
     {:ok, _} = Jobs.update_settings(owner, %{allowed_capabilities: [@disk, @sockets]})
 
@@ -229,6 +230,39 @@ defmodule RengaWeb.ResourceQueriesLiveTest do
     assert has_element?(view, "#query-result th", "FS type")
     assert has_element?(view, "#query-result th", "Available")
     refute has_element?(view, "#query-result-truncated")
+  end
+
+  test "reads an osquery SQL result as a table of its columns", context do
+    {:ok, _} = Jobs.update_settings(context.owner, %{allowed_capabilities: [@sql]})
+    grant(context.owner, context.runner, ~w(queries.run_sensitive))
+    runner = Accounts.scope_for_user(context.runner.user, context.organization.id)
+
+    {:ok, job} =
+      Jobs.create_job(
+        runner,
+        context.agent.id,
+        @sql,
+        %{"sql" => "SELECT name, pid, path FROM processes"},
+        resource_id: context.resource.id
+      )
+
+    succeed(context, job, %{
+      "columns" => ["name", "pid", "path", "_bytes", ""],
+      "rows" => [
+        ["sshd", "812", "/usr/sbin/sshd", "1", ""],
+        ["chronyd", "640", "/usr/sbin/chronyd", "2", ""]
+      ],
+      "truncated" => false
+    })
+
+    conn = conn_for(context.conn, runner, context.organization)
+    {:ok, view, _html} = live(conn, ~p"/inventory/#{context.resource}/queries?run=#{job.id}")
+
+    assert has_element?(view, "#query-result th", "PID")
+    assert has_element?(view, "#query-result th", "Path")
+    assert has_element?(view, "#query-result-rows-0 td:nth-child(2)", "812")
+    assert has_element?(view, "#query-result-rows-1 td:nth-child(3)", "/usr/sbin/chronyd")
+    refute has_element?(view, "#query-result-fields")
   end
 
   test "a reader without the permissions sees who ran it, not what it found", context do

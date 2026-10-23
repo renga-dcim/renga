@@ -441,19 +441,22 @@ defmodule RengaWeb.ResourceQueriesLive do
     """
   end
 
-  @acronyms %{"fs" => "FS", "pid" => "PID", "vrf" => "VRF"}
+  @acronyms %{"fs" => "FS", "pid" => "PID", "sql" => "SQL", "vrf" => "VRF"}
 
   # A field's name as a label: `fs_type` reads "FS type", and a unit the
-  # value already shows (`size_bytes`, `offset_us`) is left off.
+  # value already shows (`size_bytes`, `offset_us`) is left off. An osquery
+  # SQL column names itself, so it can be blank or nothing but a unit.
   defp label(field) do
-    <<first::utf8, rest::binary>> =
-      field
-      |> to_string()
-      |> String.replace(~r/_(bytes|us)$/, "")
-      |> String.split("_")
-      |> Enum.map_join(" ", &Map.get(@acronyms, &1, &1))
+    name = to_string(field)
+    stripped = String.replace(name, ~r/_(bytes|us)$/, "")
 
-    String.upcase(<<first::utf8>>) <> rest
+    case stripped
+         |> then(&if(&1 == "", do: name, else: &1))
+         |> String.split("_")
+         |> Enum.map_join(" ", &Map.get(@acronyms, &1, &1)) do
+      <<first::utf8, rest::binary>> -> String.upcase(<<first::utf8>>) <> rest
+      "" -> ""
+    end
   end
 
   attr :run, :map, required: true
@@ -549,6 +552,23 @@ defmodule RengaWeb.ResourceQueriesLive do
 
       {name, {:list, {:object, _} = item, _opts}, _required?}, parts ->
         list = %{name: name, columns: Schema.fields(item), rows: result[name] || []}
+        %{parts | lists: parts.lists ++ [list]}
+
+      # A table of strings (`query.sql@1`): `columns` names each row's cells
+      # in order, so the two read as one table rather than as two fields.
+      {"columns", {:list, _item, _opts}, _required?}, parts ->
+        parts
+
+      {name, {:list, {:list, _cell, _cell_opts}, _opts}, _required?}, parts ->
+        names = result["columns"] || []
+        rows = for row <- result[name] || [], do: Map.new(Enum.zip(names, row))
+
+        list = %{
+          name: name,
+          columns: for(column <- names, do: {column, :string, true}),
+          rows: rows
+        }
+
         %{parts | lists: parts.lists ++ [list]}
 
       {name, _type, _required?}, parts ->
