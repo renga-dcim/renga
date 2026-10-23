@@ -28,6 +28,8 @@ defmodule RengaWeb.ResourceLive.Show do
   import RengaWeb.JobComponents, only: [collect_notice: 1, job_change: 1, job_change?: 1]
   import RengaWeb.TargetBindingComponents, only: [target_binding: 1]
 
+  alias Renga.Accounts.User
+
   alias Renga.Authorization
   alias Renga.Catalog
   alias Renga.Inventory
@@ -1222,7 +1224,7 @@ defmodule RengaWeb.ResourceLive.Show do
         <p class="mt-0.5 text-xs text-fg-muted">
           {Format.datetime(event.occurred_at)}<span :if={event.source}> · via {event.source.name}</span><span :if={
             event.actor_user
-          }> · by {event.actor_user.email}</span>
+          }> · by {User.label(event.actor_user)}</span>
         </p>
       </li>
       <li :if={@events == []} class="text-sm text-fg-muted">No changes recorded yet.</li>
@@ -1534,13 +1536,15 @@ defmodule RengaWeb.ResourceLive.Show do
 
   defp field_label(field), do: @host_fields |> List.keyfind(field, 0) |> elem(1)
 
-  defp override_author(%{created_by_user: %{email: email}}), do: email
+  defp override_author(%{created_by_user: %User{} = user}), do: User.label(user)
   defp override_author(_override), do: "someone no longer in the organization"
 
   defp finding_count_label(1), do: "1 open finding"
   defp finding_count_label(count), do: "#{count} open findings"
 
-  defp exception_author(%{exception_by_user: %{email: email}}), do: "Accepted by #{email}"
+  defp exception_author(%{exception_by_user: %User{} = user}),
+    do: "Accepted by #{User.label(user)}"
+
   defp exception_author(_workflow), do: "Accepted"
 
   defp drift_label(1), do: "1 open hardware finding"

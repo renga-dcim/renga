@@ -14,6 +14,8 @@ defmodule RengaWeb.ActivityLive do
 
   import RengaWeb.JobComponents, only: [job_change: 1, job_change?: 1]
 
+  alias Renga.Accounts.User
+
   alias Renga.Inventory
   alias Renga.Inventory.Changes
   alias RengaWeb.ChangeDescription
@@ -138,7 +140,7 @@ defmodule RengaWeb.ActivityLive do
 
   # A person when someone acted, otherwise the source that reported it, or
   # Renga itself for changes it derived.
-  defp actor(%{actor_user: %{email: email}}), do: email
+  defp actor(%{actor_user: %User{} = user}), do: User.label(user)
   defp actor(%{metadata: %{"agent" => agent}}) when is_binary(agent), do: agent
   defp actor(%{metadata: %{"operator" => operator}}) when is_binary(operator), do: operator
   defp actor(%{kind: "rule_applied", metadata: %{"rule_name" => name}}), do: "Rule #{name}"

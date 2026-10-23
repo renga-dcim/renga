@@ -2471,6 +2471,16 @@ defmodule Renga.Inventory do
     |> limit(^Keyword.get(opts, :limit, 50))
     |> preload([:resource, :source, :actor_user])
     |> Repo.all()
+    |> put_actor_organization_emails(organization_id)
+  end
+
+  defp put_actor_organization_emails(events, organization_id) do
+    actors =
+      events
+      |> Enum.map(& &1.actor_user)
+      |> Renga.Accounts.put_organization_emails(organization_id)
+
+    Enum.zip_with(events, actors, &%{&1 | actor_user: &2})
   end
 
   defp activity_since(query, nil), do: query

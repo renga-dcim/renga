@@ -10,6 +10,8 @@ defmodule RengaWeb.TeamLive do
 
   on_mount {RengaWeb.UserAuth, :require_organization}
 
+  alias Renga.Accounts.User
+
   alias Renga.Inventory.Changes
   alias Renga.Members
   alias Renga.Teams
@@ -265,7 +267,7 @@ defmodule RengaWeb.TeamLive do
               id={"team-person-#{person.id}"}
               class="flex items-center gap-2 py-1.5"
             >
-              <span class="min-w-0 flex-1 truncate text-sm text-fg">{person.user.email}</span>
+              <span class="min-w-0 flex-1 truncate text-sm text-fg">{User.label(person.user)}</span>
               <button
                 id={"team-person-#{person.id}-remove"}
                 type="button"
@@ -292,7 +294,9 @@ defmodule RengaWeb.TeamLive do
               class="h-control min-h-tap min-w-0 flex-1 rounded-md border border-edge bg-surface px-2 text-sm text-fg"
             >
               <option value="">Choose a member…</option>
-              <option :for={person <- @candidates} value={person.id}>{person.user.email}</option>
+              <option :for={person <- @candidates} value={person.id}>
+                {User.label(person.user)}
+              </option>
             </select>
             <.button id="team-add-person-submit" size="sm">Add</.button>
           </form>

@@ -424,7 +424,7 @@ defmodule RengaWeb.MemberLive do
             <:col :let={invitation} label="Email" class="py-2">
               <span class="block truncate text-fg">{invitation.email}</span>
               <span :if={invitation.invited_by_user} class="block truncate text-xs text-fg-muted">
-                Invited by {invitation.invited_by_user.email}
+                Invited by {User.label(invitation.invited_by_user)}
               </span>
               <span
                 :if={invitation.invited_by_operator}

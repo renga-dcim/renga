@@ -22,6 +22,8 @@ defmodule RengaWeb.InboxLive do
 
   on_mount {RengaWeb.UserAuth, :require_organization}
 
+  alias Renga.Accounts.User
+
   alias Renga.Authorization
   alias Renga.Findings
   alias Renga.DCIM
@@ -431,7 +433,7 @@ defmodule RengaWeb.InboxLive do
   defp assigned_message(socket, user_id) do
     case Enum.find(socket.assigns.assignees, &(&1.id == user_id)) do
       nil -> "Assigned"
-      user -> "Assigned to #{user.email}"
+      user -> "Assigned to #{User.label(user)}"
     end
   end
 
@@ -974,7 +976,7 @@ defmodule RengaWeb.InboxLive do
             label="Assignee"
             class="hidden max-w-40 truncate text-fg-muted sm:table-cell"
           >
-            <span :if={assignee(finding)} data-assignee>{assignee(finding).email}</span>
+            <span :if={assignee(finding)} data-assignee>{User.label(assignee(finding))}</span>
             <span :if={!assignee(finding)} class="text-fg-subtle">Unassigned</span>
           </:col>
           <:col
@@ -1343,7 +1345,7 @@ defmodule RengaWeb.InboxLive do
                   value={user.id}
                   selected={assignee(@finding) && assignee(@finding).id == user.id}
                 >
-                  {user.email}
+                  {User.label(user)}
                 </option>
               </select>
               <.button id="finding-assign-me" type="button" phx-click="assign_me">
@@ -1579,7 +1581,7 @@ defmodule RengaWeb.InboxLive do
     end
   end
 
-  defp person(%{email: email}), do: email
+  defp person(%User{} = user), do: User.label(user)
   defp person(_missing), do: "Someone no longer in the organization"
 
   defp assignee(%{workflow: %{assignee_user: %{} = user}}), do: user

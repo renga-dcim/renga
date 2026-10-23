@@ -81,6 +81,7 @@ defmodule Renga.Findings do
     scope
     |> Accounts.list_active_members("findings.act")
     |> Enum.map(& &1.user)
+    |> Accounts.put_organization_emails(scope.organization_id)
   end
 
   ## Reading
@@ -115,7 +116,7 @@ defmodule Renga.Findings do
       |> offset(^((page - 1) * @per_page))
       |> select_finding()
       |> Repo.all()
-      |> build_findings(now)
+      |> build_findings(scope, now)
 
     {findings, total}
   end
@@ -141,7 +142,7 @@ defmodule Renga.Findings do
       |> limit(@address_finding_limit)
       |> select_finding()
       |> Repo.all()
-      |> build_findings(now)
+      |> build_findings(scope, now)
 
     {findings, total}
   end
@@ -235,7 +236,7 @@ defmodule Renga.Findings do
            |> where([finding: finding], finding.domain == ^domain and finding.id == ^id)
            |> select_finding()
            |> Repo.one() do
-      [finding] = build_findings([row], Renga.Time.utc_now_ms())
+      [finding] = build_findings([row], scope, Renga.Time.utc_now_ms())
       finding
     else
       _missing -> nil
@@ -256,7 +257,7 @@ defmodule Renga.Findings do
     |> order_by([finding: finding], desc: finding.last_observed_at)
     |> select_finding()
     |> Repo.all()
-    |> build_findings(now)
+    |> build_findings(scope, now)
   end
 
   @doc "Workflow changes recorded for a finding's identity, newest first."
@@ -470,7 +471,7 @@ defmodule Renga.Findings do
   defp audit_state("finding_assigned", workflow) do
     case workflow.assignee_user_id do
       nil -> nil
-      id -> %{"assignee_user_id" => id, "assignee" => user_email(id)}
+      id -> %{"assignee_user_id" => id, "assignee" => user_label(id, workflow.organization_id)}
     end
   end
 
@@ -489,8 +490,14 @@ defmodule Renga.Findings do
     }
   end
 
-  defp user_email(id),
-    do: Repo.one(from user in Accounts.User, where: user.id == ^id, select: user.email)
+  # History keeps the name the assignee had then, including the address the
+  # organization's provider asserts for an account without a global email.
+  defp user_label(id, organization_id) do
+    case Repo.get(Accounts.User, id) do
+      nil -> nil
+      user -> Accounts.label_in_organization(user, organization_id)
+    end
+  end
 
   defp validate_assignee(_scope, nil), do: :ok
 
@@ -810,12 +817,13 @@ defmodule Renga.Findings do
     )
   end
 
-  defp build_findings(rows, now) do
+  defp build_findings(rows, %Scope{organization_id: organization_id}, now) do
     workflows =
       rows
       |> Enum.map(& &1.workflow)
       |> Enum.reject(&is_nil/1)
       |> Repo.preload([:assignee_user, :exception_by_user])
+      |> put_people_labels(organization_id)
       |> Map.new(&{&1.id, &1})
 
     Enum.map(rows, fn %{finding: row, workflow: workflow} = result ->
@@ -840,6 +848,20 @@ defmodule Renga.Findings do
         last_observed_at: row.last_observed_at,
         resolved_at: row.resolved_at
       }
+    end)
+  end
+
+  # People named on a finding without a global email get the address the
+  # organization's provider asserts, as in the assignee picker (RFD 15).
+  defp put_people_labels(workflows, organization_id) do
+    people =
+      workflows
+      |> Enum.flat_map(&[&1.assignee_user, &1.exception_by_user])
+      |> Accounts.put_organization_emails(organization_id)
+      |> Enum.chunk_every(2)
+
+    Enum.zip_with(workflows, people, fn workflow, [assignee, excepted_by] ->
+      %{workflow | assignee_user: assignee, exception_by_user: excepted_by}
     end)
   end
 

@@ -307,6 +307,29 @@ defmodule RengaWeb.OrganizationSignInTest do
       {:ok, _view, html} = live(recycle(conn), ~p"/inbox")
       assert html =~ "sam@acme.example"
       refute html =~ "Account without an email"
+
+      # Owners see what the member did in Activity, named the same way.
+      event =
+        Repo.insert!(%Renga.Inventory.ChangeEvent{
+          organization_id: organization.id,
+          actor_user_id: user.id,
+          kind: "organization_domain_changed",
+          field: "acme.example",
+          metadata: %{"domain" => "acme.example", "change" => "added"},
+          occurred_at: Renga.Time.utc_now_ms()
+        })
+
+      owner_conn =
+        build_conn()
+        |> log_in_user(owner.user)
+        |> Plug.Conn.put_session(:current_organization_id, organization.id)
+
+      # A change made to them names them too, as it was recorded then.
+      {:ok, _member} = Members.change_role(owner, member.id, "viewer")
+
+      {:ok, view, _html} = live(owner_conn, ~p"/activity")
+      assert has_element?(view, "#events-#{event.id} [data-actor=person]", "sam@acme.example")
+      assert has_element?(view, "#activity-events", "sam@acme.example became viewer")
     end
 
     test "not with an address the provider didn't verify", %{

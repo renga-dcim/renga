@@ -12,6 +12,8 @@ defmodule RengaWeb.JobComponents do
 
   import RengaUI.CoreComponents, only: [icon: 1]
 
+  alias Renga.Accounts.User
+
   alias Renga.Jobs
   alias Renga.Jobs.Job
   alias RengaWeb.Format
@@ -138,7 +140,7 @@ defmodule RengaWeb.JobComponents do
   """
   def requester(%Job{requested_by_type: "system"}, _viewer_id), do: "Renga"
   def requester(%Job{requested_by_user_id: id}, id) when is_binary(id), do: "you"
-  def requester(%Job{requested_by_user: %{email: email}}, _viewer_id), do: email
+  def requester(%Job{requested_by_user: %User{} = user}, _viewer_id), do: User.label(user)
   def requester(%Job{}, _viewer_id), do: "a former member"
 
   @doc "A wall-clock time: `06:12 UTC` today, the full date otherwise."
