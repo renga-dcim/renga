@@ -18,6 +18,8 @@ defmodule Renga.Transfers.ImportTest do
   alias Renga.Jobs.TargetBinding
   alias Renga.ResourceGroups
   alias Renga.SavedViews
+  alias Renga.SecuritySettings
+  alias Renga.SecuritySettings.Setting
   alias Renga.Teams
   alias Renga.Topology
   alias Renga.Transfers.Archive
@@ -276,6 +278,53 @@ defmodule Renga.Transfers.ImportTest do
                interface_a_id: a.id,
                interface_b_id: b.id
              })
+  end
+
+  test "a security setting applies only when it adds a requirement", context do
+    {:ok, true} = SecuritySettings.put(context.owner, :require_mfa, true, "policy")
+    path = export_and_remove(context)
+
+    # An owner who turned the setting off is overruled; one who left it at
+    # the default is not asked.
+    target = target()
+
+    Repo.insert!(%Setting{
+      organization_id: target.id,
+      name: "require_mfa",
+      value: %{"value" => false},
+      changed_by: "owner@example.com"
+    })
+
+    assert {:ok, imported} = import_archive(path, target)
+    assert SecuritySettings.require_mfa?(target.id)
+    refute Map.has_key?(imported.held_settings, "security")
+
+    assert [%Setting{changed_by_user_id: nil}] =
+             Repo.all(where(Setting, organization_id: ^target.id))
+  end
+
+  test "a security setting that would lift a requirement is held", context do
+    Repo.insert!(%Setting{
+      organization_id: context.source.id,
+      name: "require_mfa",
+      value: %{"value" => false},
+      changed_by: "owner@example.com"
+    })
+
+    path = export_and_remove(context)
+
+    target = target()
+
+    Repo.insert!(%Setting{
+      organization_id: target.id,
+      name: "require_mfa",
+      value: %{"value" => true},
+      changed_by: "owner@example.com"
+    })
+
+    assert {:ok, imported} = import_archive(path, target)
+    assert SecuritySettings.require_mfa?(target.id)
+    assert imported.held_settings["security"] == %{"require_mfa" => false}
   end
 
   test "an import is refused while any of its IDs exists", context do

@@ -27,7 +27,9 @@ defmodule Renga.Transfers.Import do
       people at the destination approve each again. Imported jobs are
       history (`imported_at`) and never lease, retry, or run.
     * Settings are applied only where they do not weaken the destination's;
-      the rest are held on the import for an owner to confirm.
+      the rest are held on the import for an owner to confirm. A security
+      setting (RFD 19) applies only when it adds a requirement, such as
+      requiring MFA.
 
   Callers authorize the import and record it outside the organization, as
   `Renga.Transfers.Export` leaves to its callers.
@@ -41,6 +43,7 @@ defmodule Renga.Transfers.Import do
   alias Renga.Inventory.ResourceStore
   alias Renga.Jobs
   alias Renga.Repo
+  alias Renga.SecuritySettings
   alias Renga.Transfers.Archive
   alias Renga.Transfers.OrganizationImport
   alias Renga.Transfers.RecordTypes
@@ -69,9 +72,10 @@ defmodule Renga.Transfers.Import do
     {"expected_component_exceptions", "confirmed_by_user_id"} => "confirmed_by_principal_id"
   }
 
-  # Rows an empty organization may already have: its Activity and the
-  # person importing.
-  @allowed_before ~w(change_events organization_memberships role_assignments)
+  # Rows an empty organization may already have: its Activity, the person
+  # importing, and security settings its owner already turned on.
+  @allowed_before ~w(change_events organization_memberships role_assignments
+                     organization_security_settings)
 
   @doc """
   Imports the archive at `path` into `organization`.
@@ -154,6 +158,7 @@ defmodule Renga.Transfers.Import do
     ensure_no_collisions!(state)
 
     {settings, held_settings} = settings(organization, organization_record(state))
+    held_settings = hold_security_settings(held_settings, state)
     state = %{state | import: insert_import!(state, sha256, held_settings)}
     update_organization!(organization, organization_record(state), settings)
     insert_principals!(state)
@@ -291,6 +296,44 @@ defmodule Renga.Transfers.Import do
   end
 
   defp job_settings(_organization, _source), do: {%{}, %{}}
+
+  # Security settings that would not add a requirement are held, by name,
+  # unless the destination already has the same value; so are settings this
+  # release does not know.
+  defp hold_security_settings(held, state) do
+    security =
+      if Enum.any?(state.types, &(&1.name == "organization_security_settings")) do
+        for record <- Archive.records(state.archive, "organization_security_settings"),
+            not adds_requirement?(record),
+            differs?(state.organization_id, record["name"], record["value"]["value"]),
+            into: %{},
+            do: {record["name"], record["value"]["value"]}
+      else
+        %{}
+      end
+
+    if security == %{}, do: held, else: Map.put(held, "security", security)
+  end
+
+  # A setting that is off by default adds a requirement when turned on.
+  defp adds_requirement?(%{"name" => name, "value" => %{"value" => true}}) do
+    case SecuritySettings.parse_name(name) do
+      {:ok, name} ->
+        match?(%{type: :boolean, default: false}, SecuritySettings.definitions()[name])
+
+      :error ->
+        false
+    end
+  end
+
+  defp adds_requirement?(_record), do: false
+
+  defp differs?(organization_id, name, value) do
+    case SecuritySettings.parse_name(name) do
+      {:ok, name} -> SecuritySettings.get(organization_id, name) != value
+      :error -> true
+    end
+  end
 
   defp put_jobs(organization, jobs) do
     Jobs.Settings.put(organization, %{
@@ -451,6 +494,20 @@ defmodule Renga.Transfers.Import do
 
   defp insert_type!(state, %{name: name} = type) when name in @held_types,
     do: hold_type!(state, type)
+
+  defp insert_type!(state, %{name: "organization_security_settings"} = type) do
+    applied = state.archive |> Archive.records(type.name) |> Enum.filter(&adds_requirement?/1)
+
+    # The source's value replaces the destination's row for the setting,
+    # which can only have been off or already the same.
+    Repo.query!(
+      "DELETE FROM organization_security_settings WHERE organization_id = $1 AND name = ANY($2)",
+      [Ecto.UUID.dump!(state.organization_id), Enum.map(applied, & &1["name"])]
+    )
+
+    insert_records!(applied, state, type)
+    :ok
+  end
 
   defp insert_type!(state, type) do
     case Map.fetch(state.self_references, type.name) do
