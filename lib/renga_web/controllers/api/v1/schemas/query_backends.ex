@@ -10,7 +10,8 @@ defmodule RengaWeb.Api.V1.Schemas.QueryBackends do
       title: "QueryBackends",
       description:
         "Query backends the agent can use beyond its native operational queries (RFD 12). " <>
-          "Unknown backends are ignored.",
+          "Unknown backends are ignored. The object replaces the one last reported, so " <>
+          "an empty object clears a backend's status.",
       type: :object,
       properties: %{
         osquery: %{
@@ -22,8 +23,8 @@ defmodule RengaWeb.Api.V1.Schemas.QueryBackends do
             status: %{type: :string, enum: statuses},
             version: %{
               type: [:string, :null],
-              maxLength: max_version,
-              description: "The daemon's version, when available."
+              description:
+                "The daemon's version, when available: at most #{max_version} UTF-8 bytes."
             }
           },
           required: [:status]

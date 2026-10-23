@@ -1546,7 +1546,7 @@
       },
       "QueryBackends": {
         "title": "QueryBackends",
-        "description": "Query backends the agent can use beyond its native operational queries (RFD 12). Unknown backends are ignored.",
+        "description": "Query backends the agent can use beyond its native operational queries (RFD 12). Unknown backends are ignored. The object replaces the one last reported, so an empty object clears a backend's status.",
         "properties": {
           "osquery": {
             "description": "The local osqueryd reached over its extensions socket: available, not_permitted (the socket refuses the agent's account), or not_present.",
@@ -1560,8 +1560,7 @@
                 "type": "string"
               },
               "version": {
-                "description": "The daemon's version, when available.",
-                "maxLength": 64,
+                "description": "The daemon's version, when available: at most 64 UTF-8 bytes.",
                 "type": [
                   "string",
                   "null"
