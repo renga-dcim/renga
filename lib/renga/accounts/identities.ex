@@ -30,6 +30,7 @@ defmodule Renga.Accounts.Identities do
   alias Renga.Accounts.SignInPolicy
   alias Renga.Accounts.User
   alias Renga.Accounts.UserIdentity
+  alias Renga.Accounts.UserToken
   alias Renga.Repo
   alias Renga.Scim.Linking
 
@@ -59,15 +60,22 @@ defmodule Renga.Accounts.Identities do
   `user`. The attempt is already bound to this user's session and was
   started after the account re-check. Under a share lock on the provider,
   like a sign-in, it checks the provider still uses the attempt's revision.
+  When `result` names the `:session_token_id` that started the link, the
+  identity is saved only while that session is still signed in.
   Returns `{:ok, identity}` or `{:error, reason}`, where `reason` is
   `:invalid_claims`, `:domain_not_allowed`, `:already_linked` (to this
-  account), `:linked_elsewhere` (to another), or a provider change.
+  account), `:linked_elsewhere` (to another), `:session_ended`, or a
+  provider change.
   """
-  def link(%User{} = user, %{provider: provider, revision: %Revision{} = revision, claims: claims}) do
+  def link(
+        %User{} = user,
+        %{provider: provider, revision: %Revision{} = revision, claims: claims} = result
+      ) do
     email = email(claims)
 
     Repo.transaction(fn ->
-      with :ok <- lock_current(provider, revision),
+      with :ok <- lock_session(user, result[:session_token_id]),
+           :ok <- lock_current(provider, revision),
            {:ok, subject} <- subject(claims),
            :ok <- check_domain(revision, email),
            :ok <- check_unlinked(provider, subject, user),
@@ -81,6 +89,25 @@ defmodule Renga.Accounts.Identities do
     |> tap(fn result ->
       with {:ok, _identity} <- result, do: SecurityLog.notify(user, "identity_linked")
     end)
+  end
+
+  # Signing out or changing the password while the browser was at the
+  # provider deletes the session that started the link. The share lock holds
+  # such a deletion until the link commits; one that committed first leaves
+  # nothing to lock, and the link is refused.
+  defp lock_session(_user, nil), do: :ok
+
+  defp lock_session(%User{id: user_id}, session_token_id) do
+    Repo.one(
+      from t in UserToken,
+        where: t.id == ^session_token_id and t.user_id == ^user_id and t.context == "session",
+        select: t.id,
+        lock: "FOR SHARE"
+    )
+    |> case do
+      nil -> {:error, :session_ended}
+      _id -> :ok
+    end
   end
 
   defp lock_current(provider, revision) do

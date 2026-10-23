@@ -148,7 +148,8 @@ defmodule RengaWeb.UserProviderController do
     with true <- (is_binary(session_id) and attempt["provider"] == id) || {:error, :no_attempt},
          {:ok, result} <-
            OIDC.finish(attempt, params, callback_url(id), {:link, user.id, session_id}),
-         {:ok, identity} <- Accounts.link_identity(user, result) do
+         {:ok, identity} <-
+           Accounts.link_identity(user, Map.put(result, :session_token_id, session_id)) do
       conn
       |> put_flash(:info, "#{identity.provider.display_name} is connected to your account.")
       |> redirect(to: ~p"/users/settings")

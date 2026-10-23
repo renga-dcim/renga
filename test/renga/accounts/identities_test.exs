@@ -87,6 +87,21 @@ defmodule Renga.Accounts.IdentitiesTest do
                Accounts.link_identity(user, result(provider, %{"email" => "sam@corp.example"}))
     end
 
+    test "refuses once the session that started the link has ended", %{provider: provider} do
+      user = user_fixture()
+      token = Accounts.generate_user_session_token(user)
+
+      bound =
+        Map.put(result(provider, %{}), :session_token_id, Accounts.session_token_id(user, token))
+
+      # Signed out while the browser was at the provider.
+      Accounts.delete_user_session_token(token)
+
+      assert {:error, :session_ended} = Accounts.link_identity(user, bound)
+      assert Accounts.list_user_identities(user) == []
+      assert Accounts.list_security_events(user) == []
+    end
+
     test "refuses claims without a subject", %{provider: provider} do
       assert {:error, :invalid_claims} =
                Accounts.link_identity(user_fixture(), result(provider, %{"sub" => ""}))
