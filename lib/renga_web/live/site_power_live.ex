@@ -1123,6 +1123,9 @@ defmodule RengaWeb.SitePowerLive do
   defp short_gap({:outlets_unmeasured, count}),
     do: "#{count} #{plural(count, "outlet")} unmeasured"
 
+  defp short_gap({:outlets_unmapped, count}),
+    do: "#{count} #{plural(count, "outlet")} without an inlet"
+
   defp gap_reason(:no_cable), do: "Nothing is connected to this feed."
 
   defp gap_reason(:no_readings),
@@ -1134,7 +1137,7 @@ defmodule RengaWeb.SitePowerLive do
 
   defp gap_reason(:partial_coverage),
     do:
-      "The PDU's inlet meter does not declare that it covers every outlet, so it is not used for the feed."
+      "A reading declares that it covers only part of what it measures, so it is not used as this feed's load."
 
   defp gap_reason(:unconverted),
     do:
@@ -1147,6 +1150,10 @@ defmodule RengaWeb.SitePowerLive do
   defp gap_reason({:outlets_unmeasured, count}),
     do:
       "#{count} #{plural(count, "outlet")} on the PDU #{verb(count, "has", "have")} no fresh, valid reading, so the sum of outlets is only a lower bound."
+
+  defp gap_reason({:outlets_unmapped, count}),
+    do:
+      "#{count} #{plural(count, "outlet")} on the PDU #{verb(count, "names", "name")} no inlet in the hardware type, so #{verb(count, "it", "they")} may draw from this feed and the sum of outlets is only a lower bound."
 
   defp measured_leg_class(%Measured.Leg{} = leg),
     do: if(Decimal.gt?(leg.current, leg.limit), do: "font-medium text-crit", else: "text-fg")

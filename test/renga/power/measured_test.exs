@@ -186,13 +186,14 @@ defmodule Renga.Power.MeasuredTest do
     %{scope: scope, panel: panel, stream: stream} = context
     feed = feed!(scope, panel)
     pdu!(context, feed)
-    inlet!(stream, "real_power", 900, coverage: "complete", sensor: "inlet")
+    now = Renga.Time.utc_now_ms()
+    inlet!(stream, "real_power", 900, coverage: "complete", sensor: "inlet", event_at: now)
 
     measured = measured!(scope, feed)
     assert {measured.status, measured.load} == {:unknown, nil}
     assert :unconverted in measured.gaps
 
-    inlet!(stream, "power_factor", 0.9, coverage: "complete", sensor: "inlet")
+    inlet!(stream, "power_factor", 0.9, coverage: "complete", sensor: "inlet", event_at: now)
     measured = measured!(scope, feed)
     assert measured.status == :ok
     assert Decimal.eq?(measured.load, 1000)
@@ -294,6 +295,130 @@ defmodule Renga.Power.MeasuredTest do
     measured = measured!(scope, feed)
     assert {measured.status, measured.basis} == {:ok, :supply}
     assert Decimal.eq?(measured.load, 350)
+  end
+
+  test "an overloaded leg never leaves spare capacity while coverage is incomplete", context do
+    %{scope: scope, panel: panel, stream: stream} = context
+    feed = feed!(scope, panel, %{phase: "three", voltage: "400", amperage: "32"})
+    pdu!(context, feed)
+    inlet!(stream, "apparent_power", 9000, coverage: "complete")
+
+    reading_fixture(stream,
+      target: "10.0.0.5",
+      sensor: "leg/a",
+      boundary: "leg",
+      leg: "a",
+      quantity: "current",
+      value: 27
+    )
+
+    measured = measured!(scope, feed)
+    assert measured.status == :over
+    assert :legs_unmeasured in measured.gaps
+    assert measured.headroom == nil
+  end
+
+  test "an outlet that names no inlet leaves the sum a lower bound", context do
+    %{scope: scope, panel: panel, stream: stream} = context
+    feed = feed!(scope, panel)
+
+    {pdu, _expected} =
+      assigned_server_fixture(scope, "pdu-unmapped", [
+        %{kind: "power_port", name: "Inlet"},
+        %{kind: "power_outlet", name: "1", attributes: %{"inlet" => "Inlet"}},
+        %{kind: "power_outlet", name: "2"}
+      ])
+
+    %{ports: [inlet]} = Power.list_device_endpoints(scope, pdu.id)
+    {:ok, _} = Cables.connect(scope, %{power_port_id: inlet.id, power_feed_id: feed.id})
+    target_resource_fixture(stream, "10.0.0.5", pdu)
+    outlet!(stream, "1", 500)
+
+    measured = measured!(scope, feed)
+    assert {measured.status, measured.load, measured.headroom} == {:unknown, nil, nil}
+    assert Decimal.eq?(measured.known, 500)
+    assert {:outlets_unmapped, 1} in measured.gaps
+  end
+
+  test "a retired outlet that keeps its cable still counts", context do
+    %{scope: scope, panel: panel, stream: stream} = context
+    feed = feed!(scope, panel)
+    pdu = pdu!(context, feed)
+    {server, _} = assigned_server_fixture(scope, "web-1", [%{kind: "power_port", name: "PSU1"}])
+    %{ports: [psu]} = Power.list_device_endpoints(scope, server.id)
+    %{outlets: [_one, two]} = Power.list_device_endpoints(scope, pdu.id)
+    {:ok, _} = Cables.connect(scope, %{power_port_id: psu.id, power_outlet_id: two.id})
+
+    two
+    |> Ecto.Changeset.change(retired_at: Renga.Time.utc_now_ms())
+    |> Renga.Repo.update!()
+
+    outlet!(stream, "1", 500)
+
+    measured = measured!(scope, feed)
+    assert {measured.status, measured.load, measured.headroom} == {:unknown, nil, nil}
+    assert {:outlets_unmeasured, 1} in measured.gaps
+  end
+
+  test "a power factor converts only a sample from the same sampling window", context do
+    %{scope: scope, panel: panel, stream: stream} = context
+    feed = feed!(scope, panel)
+    pdu!(context, feed)
+    now = Renga.Time.utc_now_ms()
+
+    inlet!(stream, "power_factor", 1.0,
+      coverage: "complete",
+      sensor: "inlet",
+      event_at: DateTime.add(now, -60, :second)
+    )
+
+    inlet!(stream, "real_power", 2500, coverage: "complete", sensor: "inlet", event_at: now)
+
+    measured = measured!(scope, feed)
+    assert {measured.status, measured.load, measured.headroom} == {:unknown, nil, nil}
+    assert :unconverted in measured.gaps
+  end
+
+  test "partial readings never establish complete coverage", context do
+    %{scope: scope, panel: panel, stream: stream} = context
+    feed = feed!(scope, panel)
+    pdu!(context, feed)
+    outlet!(stream, "1", 600)
+    outlet!(stream, "2", 500, coverage: "partial")
+
+    measured = measured!(scope, feed)
+    assert {measured.status, measured.load, measured.headroom} == {:unknown, nil, nil}
+    assert :partial_coverage in measured.gaps
+
+    three = feed!(scope, panel, %{phase: "three", voltage: "400", amperage: "32"})
+    {pdu, _} = assigned_server_fixture(scope, "pdu-3p", [%{kind: "power_port", name: "Inlet"}])
+    %{ports: [inlet]} = Power.list_device_endpoints(scope, pdu.id)
+    {:ok, _} = Cables.connect(scope, %{power_port_id: inlet.id, power_feed_id: three.id})
+    target_resource_fixture(stream, "10.0.0.6", pdu)
+
+    reading_fixture(stream,
+      target: "10.0.0.6",
+      sensor: "psu",
+      boundary: "supply_input",
+      quantity: "apparent_power",
+      value: 9000
+    )
+
+    for leg <- ~w(a b c) do
+      reading_fixture(stream,
+        target: "10.0.0.6",
+        sensor: "leg/#{leg}",
+        boundary: "leg",
+        leg: leg,
+        quantity: "current",
+        value: 10,
+        coverage: if(leg == "c", do: "partial")
+      )
+    end
+
+    measured = measured!(scope, three)
+    assert {measured.status, measured.headroom} == {:unknown, nil}
+    assert :legs_unmeasured in measured.gaps
   end
 
   describe "source precedence" do
