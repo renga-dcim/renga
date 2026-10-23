@@ -47,6 +47,7 @@ defmodule Renga.TriageRules do
   alias Renga.ResourceGroups.Group
   alias Renga.ResourceGroups.Member
   alias Renga.ResourceGroups.Suggestion
+  alias Renga.ResourceGroups.SuggestionDismissal
   alias Renga.Teams.Team
   alias Renga.Topology.InterfaceNeighborEvidence
   alias Renga.Topology.InterfaceNeighborMatch
@@ -146,9 +147,11 @@ defmodule Renga.TriageRules do
   """
   def update_rule(%Scope{} = scope, %Rule{} = rule, attrs) do
     managed(scope, fn ->
-      scope
-      |> lock_rule!(rule.id)
+      current = lock_rule!(scope, rule.id)
+
+      current
       |> Rule.changeset(attrs)
+      |> ensure_new_version(current)
       |> validate_references(scope)
       |> Repo.update()
       |> apply_saved(scope)
@@ -161,9 +164,11 @@ defmodule Renga.TriageRules do
   """
   def set_enabled(%Scope{} = scope, %Rule{} = rule, enabled) when is_boolean(enabled) do
     managed(scope, fn ->
-      scope
-      |> lock_rule!(rule.id)
+      current = lock_rule!(scope, rule.id)
+
+      current
       |> Rule.enabled_changeset(enabled)
+      |> ensure_new_version(current)
       |> Repo.update()
       |> apply_saved(scope)
     end)
@@ -315,12 +320,7 @@ defmodule Renga.TriageRules do
       from member in Member,
         where: member.group_id == ^group_id and member.resource_id == parent_as(:resource).id
 
-    suggested =
-      from suggestion in Suggestion,
-        where:
-          suggestion.group_id == ^group_id and
-            suggestion.resource_id == parent_as(:resource).id,
-        where: ^suggestion_blocks(rule)
+    suggested = blocking_suggestions(rule, group_id)
 
     select(query, [resource], %{
       id: resource.id,
@@ -356,14 +356,22 @@ defmodule Renga.TriageRules do
     })
   end
 
-  defp suggestion_blocks(%Rule{id: nil}), do: dynamic([suggestion], suggestion.status == "open")
+  defp blocking_suggestions(%Rule{id: nil}, group_id) do
+    from suggestion in Suggestion,
+      where: suggestion.group_id == ^group_id,
+      where: suggestion.resource_id == parent_as(:resource).id,
+      where: suggestion.status == "open"
+  end
 
-  defp suggestion_blocks(%Rule{id: id, updated_at: updated_at}) do
-    dynamic(
-      [suggestion],
-      suggestion.status == "open" or
-        (suggestion.rule_id == ^id and suggestion.rule_updated_at >= ^updated_at)
-    )
+  defp blocking_suggestions(%Rule{} = rule, group_id) do
+    from suggestion in Suggestion,
+      left_join: dismissal in SuggestionDismissal,
+      on:
+        dismissal.suggestion_id == suggestion.id and dismissal.rule_id == ^rule.id and
+          dismissal.rule_updated_at >= ^rule.updated_at,
+      where: suggestion.group_id == ^group_id,
+      where: suggestion.resource_id == parent_as(:resource).id,
+      where: suggestion.status == "open" or not is_nil(dismissal.id)
   end
 
   @doc false
@@ -626,6 +634,26 @@ defmodule Renga.TriageRules do
     |> where([rule], rule.id == ^id and rule.organization_id == ^organization_id)
     |> lock("FOR UPDATE")
     |> Repo.one() || Repo.rollback(:not_found)
+  end
+
+  # Suggestions use `updated_at` as the rule version. Persisted changes must
+  # advance it even when the wall clock repeats or moves backwards; virtual
+  # form state alone is not a new version.
+  defp ensure_new_version(changeset, rule) do
+    persisted_changes = Map.drop(changeset.changes, [:match_on, :updated_at])
+
+    if map_size(persisted_changes) == 0 do
+      changeset
+    else
+      next = DateTime.add(rule.updated_at, 1, :millisecond)
+      now = Renga.Time.utc_now_ms()
+
+      Ecto.Changeset.force_change(
+        changeset,
+        :updated_at,
+        Enum.max_by([now, next], &DateTime.to_unix(&1, :microsecond))
+      )
+    end
   end
 
   defp managed(%Scope{} = scope, mutation), do: transaction(scope, mutation)

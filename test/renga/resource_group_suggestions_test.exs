@@ -12,7 +12,9 @@ defmodule Renga.ResourceGroupSuggestionsTest do
   alias Renga.Inventory
   alias Renga.ResourceGroups
   alias Renga.ResourceGroups.Member
+  alias Renga.ResourceGroups.Suggestion
   alias Renga.TriageRules
+  alias Renga.TriageRules.Rule
 
   setup do
     organization = organization_fixture()
@@ -165,6 +167,68 @@ defmodule Renga.ResourceGroupSuggestionsTest do
              TriageRules.update_rule(context.admin, rule, %{"name" => "Staging"})
 
     assert [%{rule_name: "Staging"}] = ResourceGroups.list_suggestions(context.admin)
+  end
+
+  test "rule versions advance past equal or backwards wall-clock time", context do
+    stg = server_fixture(context.admin, "stg-01", hostname: "stg-01")
+    {:ok, %{rule: rule}} = staging_rule(context)
+    [suggestion] = ResourceGroups.list_suggestions(context.admin)
+    future = DateTime.add(rule.updated_at, 60, :second)
+
+    from(rule in Rule, where: rule.id == ^rule.id)
+    |> Repo.update_all(set: [updated_at: future])
+
+    from(suggestion in Suggestion, where: suggestion.id == ^suggestion.id)
+    |> Repo.update_all(set: [rule_updated_at: future])
+
+    assert {:ok, %{status: "dismissed"}} =
+             ResourceGroups.dismiss_suggestion(context.admin, suggestion.id)
+
+    rule = Repo.reload!(rule)
+
+    assert {:ok, %{rule: updated, applied: 1}} =
+             TriageRules.update_rule(context.admin, rule, %{"name" => "Staging"})
+
+    assert DateTime.compare(updated.updated_at, future) == :gt
+    assert [%{rule_name: "Staging"}] = ResourceGroups.list_suggestions(context.admin)
+
+    [reopened] = ResourceGroups.list_suggestions(context.admin)
+
+    assert {:ok, %{status: "dismissed"}} =
+             ResourceGroups.dismiss_suggestion(context.admin, reopened.id)
+
+    assert {:ok, %{rule: unchanged, applied: 0}} =
+             TriageRules.update_rule(context.admin, updated, %{
+               "name" => "Staging",
+               "match_on" => "hostname"
+             })
+
+    assert unchanged.updated_at == updated.updated_at
+    assert {:ok, 0} = TriageRules.apply_to_resource(context.organization.id, stg.id)
+    assert ResourceGroups.list_suggestions(context.admin) == []
+  end
+
+  test "overlapping unchanged rules remember each dismissal", context do
+    stg = server_fixture(context.admin, "stg-01", hostname: "stg-01")
+    {:ok, %{applied: 1}} = staging_rule(context)
+
+    assert {:ok, %{applied: 0}} =
+             staging_rule(context, %{"name" => "Other staging hosts"})
+
+    [suggestion] = ResourceGroups.list_suggestions(context.admin)
+
+    assert {:ok, %{status: "dismissed"}} =
+             ResourceGroups.dismiss_suggestion(context.admin, suggestion.id)
+
+    assert {:ok, 1} = TriageRules.apply_to_resource(context.organization.id, stg.id)
+    [reopened] = ResourceGroups.list_suggestions(context.admin)
+    assert reopened.rule_name == "Other staging hosts"
+
+    assert {:ok, %{status: "dismissed"}} =
+             ResourceGroups.dismiss_suggestion(context.admin, reopened.id)
+
+    assert {:ok, 0} = TriageRules.apply_to_resource(context.organization.id, stg.id)
+    assert ResourceGroups.list_suggestions(context.admin) == []
   end
 
   test "a resource already in the group is not suggested", context do

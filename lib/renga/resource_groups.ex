@@ -42,6 +42,7 @@ defmodule Renga.ResourceGroups do
   alias Renga.ResourceGroups.Member
   alias Renga.ResourceGroups.Membership
   alias Renga.ResourceGroups.Suggestion
+  alias Renga.ResourceGroups.SuggestionDismissal
 
   @doc "UI hint: `groups.manage` defines groups and group sets."
   def can_manage?(%Scope{} = scope), do: Authorization.allowed?(scope, "groups.manage")
@@ -551,6 +552,7 @@ defmodule Renga.ResourceGroups do
   def dismiss_suggestion(%Scope{} = scope, suggestion_id) do
     managed(scope, "inventory.edit", fn ->
       suggestion = lock_open_suggestion!(scope, suggestion_id)
+      remember_dismissal!(suggestion)
       {:ok, decide!(scope, suggestion, "dismissed")}
     end)
   end
@@ -580,9 +582,19 @@ defmodule Renga.ResourceGroups do
       member? -> :skipped
       is_nil(existing) -> raise_suggestion!(organization_id, rule, resource_id)
       existing.status == "open" -> :skipped
+      dismissed_on_this_version?(existing, rule) -> :skipped
       decided_on_this_version?(existing, rule) -> :skipped
       true -> reopen_suggestion!(existing, rule)
     end
+  end
+
+  defp dismissed_on_this_version?(suggestion, rule) do
+    SuggestionDismissal
+    |> where([dismissal], dismissal.organization_id == ^suggestion.organization_id)
+    |> where([dismissal], dismissal.suggestion_id == ^suggestion.id)
+    |> where([dismissal], dismissal.rule_id == ^rule.id)
+    |> where([dismissal], dismissal.rule_updated_at >= ^rule.updated_at)
+    |> Repo.exists?()
   end
 
   defp decided_on_this_version?(suggestion, rule) do
@@ -616,6 +628,23 @@ defmodule Renga.ResourceGroups do
     |> Repo.update!()
 
     :raised
+  end
+
+  defp remember_dismissal!(%Suggestion{rule_id: nil}), do: :ok
+
+  defp remember_dismissal!(suggestion) do
+    %SuggestionDismissal{
+      organization_id: suggestion.organization_id,
+      suggestion_id: suggestion.id,
+      rule_id: suggestion.rule_id,
+      rule_updated_at: suggestion.rule_updated_at
+    }
+    |> Repo.insert!(
+      on_conflict: {:replace, [:rule_updated_at, :updated_at]},
+      conflict_target: [:suggestion_id, :rule_id]
+    )
+
+    :ok
   end
 
   defp lock_open_suggestion!(%Scope{organization_id: organization_id}, id) do
