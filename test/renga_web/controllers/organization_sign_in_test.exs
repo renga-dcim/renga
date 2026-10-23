@@ -314,6 +314,7 @@ defmodule RengaWeb.OrganizationSignInTest do
     test "lets the account add a password and then sign in without its organization", %{
       conn: conn,
       organization: organization,
+      user: %{session_expires_at: deadline},
       view: view
     } do
       assert has_element?(view, "#scoped_session_notice", "set up a login email")
@@ -354,8 +355,11 @@ defmodule RengaWeb.OrganizationSignInTest do
       assert redirected_to(conn) == ~p"/users/settings"
       assert Phoenix.Flash.get(conn.assigns.flash, :info) =~ "Password updated successfully"
 
-      # This browser stays signed in through the organization's provider.
+      # This browser stays signed in through the organization's provider,
+      # until the same deadline as before.
       assert session_user(conn).session_organization_id == organization.id
+      assert %DateTime{} = deadline
+      assert session_user(conn).session_expires_at == deadline
 
       {:ok, view, _html} = live(recycle(conn), ~p"/users/settings")
 

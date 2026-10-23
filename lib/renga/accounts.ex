@@ -998,7 +998,7 @@ defmodule Renga.Accounts do
   """
   def generate_user_session_token(user, browser_session_id \\ nil, expires_at \\ nil) do
     {token, user_token} = UserToken.build_session_token(user, browser_session_id)
-    Repo.insert!(%{user_token | expires_at: expires_at})
+    Repo.insert!(%{user_token | expires_at: expires_at || user_token.expires_at})
     token
   end
 

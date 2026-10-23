@@ -28,6 +28,11 @@ defmodule Renga.Accounts.User do
     # organization's identity provider, the only organization that session
     # may open (RFD 15). See `Renga.Accounts.scope_for_user/2`.
     field :session_organization_id, :binary_id, virtual: true
+    # For a user loaded from a session, when that session ends however
+    # active it is, such as a provider's session lifetime (RFD 15). A
+    # session reissued for the same browser, as after a password change,
+    # keeps it rather than lasting the default validity.
+    field :session_expires_at, :utc_datetime_usec, virtual: true
     # For an account without a global email, the address an organization's
     # own provider asserts for it, filled in only by lookups within that
     # organization, such as its member list (RFD 15).
