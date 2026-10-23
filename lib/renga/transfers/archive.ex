@@ -306,14 +306,14 @@ defmodule Renga.Transfers.Archive do
     sum.(before) + 8 * ?\s + sum.(rest)
   end
 
-  # Octal digits ended by NUL or space; base-256 sizes are refused, as no
-  # entry within the limits needs one.
+  # Octal digits, then only NUL or space padding. :erl_tar reads the whole
+  # field, skipping any NUL or space in it, so digits after the padding
+  # would give it a different size than this scan saw. Base-256 sizes are
+  # refused too, as no entry within the limits needs one.
   defp octal(field) do
-    digits = field |> cstring() |> String.trim()
-
-    case Integer.parse(digits, 8) do
-      {value, ""} -> {:ok, value}
-      _other -> :error
+    case Regex.run(~r/\A *([0-7]+)[ \0]*\z/, field, capture: :all_but_first) do
+      [digits] -> {:ok, String.to_integer(digits, 8)}
+      nil -> :error
     end
   end
 

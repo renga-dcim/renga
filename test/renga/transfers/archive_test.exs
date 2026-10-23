@@ -185,6 +185,25 @@ defmodule Renga.Transfers.ArchiveTest do
       assert File.ls!(tmp) == ["raw.tar.zst"]
     end
 
+    test "with a size field :erl_tar would read differently", %{tmp_dir: tmp} do
+      # Read up to its NUL, a.ndjson is empty and the sparse header is
+      # b.ndjson's body; :erl_tar reads 512 bytes, so the regular b.ndjson
+      # header is a's body and it extracts the 2 MiB sparse entry.
+      sparse = :binary.copy(<<0>>, 137) <> octal(2 * 1024 * 1024, 12)
+      hidden = raw_header("b.ndjson", "S", 0, magic: "ustar  \0", extra: sparse)
+
+      path =
+        raw_tar(tmp, [
+          {"a.ndjson", "0", "", size_field: <<"0", 0, "0000001000">>},
+          {"b.ndjson", "0", hidden, []}
+        ])
+
+      assert {:error, [%{message: "the archive does not contain a valid tar file"}]} =
+               Archive.open(path, tmp_dir: tmp, max_expanded_bytes: 1_048_576)
+
+      assert File.ls!(tmp) == ["raw.tar.zst"]
+    end
+
     test "with an entry whose header checksum is wrong", %{tmp_dir: tmp} do
       path = raw_tar(tmp, [{"manifest.json", "0", manifest(%{}), checksum: 1}])
 
@@ -371,9 +390,9 @@ defmodule Renga.Transfers.ArchiveTest do
   end
 
   # A tar built header by header, for entries :erl_tar never writes:
-  # {name, typeflag, body, options}. Options set the `:mode`, the `:magic`,
-  # the header bytes after the owner fields (`:extra`), or a wrong
-  # `:checksum`.
+  # {name, typeflag, body, options}. Options set the `:mode`, the raw
+  # `:size_field`, the `:magic`, the header bytes after the owner fields
+  # (`:extra`), or a wrong `:checksum`.
   defp raw_tar(tmp, entries) do
     blocks =
       for {name, type, body, opts} <- entries do
@@ -392,7 +411,7 @@ defmodule Renga.Transfers.ArchiveTest do
         octal(Keyword.get(opts, :mode, 0o644), 8),
         octal(0, 8),
         octal(0, 8),
-        octal(size, 12),
+        Keyword.get_lazy(opts, :size_field, fn -> octal(size, 12) end),
         octal(0, 12),
         "        ",
         type,
