@@ -80,6 +80,26 @@ defmodule RengaWeb.ExportLiveTest do
     assert redirected_to(refused) == ~p"/settings/export"
   end
 
+  test "a download whose archive is deleted midway fails instead of ending short", %{
+    conn: conn
+  } do
+    {conn, organization, _user} = member_conn(conn, "owner")
+    {:ok, view, _html} = live(conn, ~p"/settings/export")
+    view |> form("#export-form") |> render_submit()
+    export = Repo.get_by!(OrganizationExport, organization_id: organization.id)
+
+    # As a revocation would, after the download was authorized.
+    Repo.query!(
+      "DELETE FROM organization_export_chunks WHERE export_id = $1 AND position = " <>
+        "(SELECT max(position) FROM organization_export_chunks WHERE export_id = $1)",
+      [Ecto.UUID.dump!(export.id)]
+    )
+
+    assert_raise RuntimeError, ~r/was removed after/, fn ->
+      get(conn, ~p"/settings/export/#{export.id}/download")
+    end
+  end
+
   test "a second export waits for the running one", %{conn: conn} do
     {conn, organization, _user} = member_conn(conn, "owner")
     Repo.insert!(%OrganizationExport{organization_id: organization.id, status: "running"})
