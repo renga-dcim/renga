@@ -34,40 +34,55 @@ defmodule RengaWeb.ResourceQueriesLive do
 
   @reload_after_ms 300
   @recent_runs 20
+  # The hosts an agent runs on; InventoryComponents shows the tab for these.
+  @query_kinds ~w(server vm)
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
     scope = socket.assigns.current_scope
     resource = Inventory.get_operational_resource!(scope, id)
-    if connected?(socket), do: Jobs.Changes.subscribe(scope)
 
-    {:ok,
-     socket
-     |> assign(
-       resource: resource,
-       page_title: "#{resource.name} queries",
-       hardware?: Catalog.hardware_assignable_resource?(resource),
-       reload_timer: nil,
-       choice: nil,
-       run_form: run_form(%{}),
-       run_error: nil,
-       run: nil
-     )
-     |> load_queries()
-     |> load_runs()}
+    if resource.kind in @query_kinds do
+      if connected?(socket), do: Jobs.Changes.subscribe(scope)
+
+      {:ok,
+       socket
+       |> assign(
+         resource: resource,
+         page_title: "#{resource.name} queries",
+         hardware?: Catalog.hardware_assignable_resource?(resource),
+         reload_timer: nil,
+         choice: nil,
+         run_form: run_form(%{}),
+         run_error: nil,
+         run: nil
+       )
+       |> load_queries()
+       |> load_runs()}
+    else
+      {:ok, push_navigate(socket, to: ~p"/inventory/#{resource}")}
+    end
   end
 
   @impl true
   def handle_params(params, _uri, socket), do: {:noreply, load_run(socket, params["run"])}
 
   @impl true
+  # Choosing and running each read the host's agents again, so a run goes to
+  # whichever offering agent was heard from most recently at that moment,
+  # and the panel names that agent, not the one current when the page loaded.
   def handle_event("choose", %{"key" => key}, socket) do
-    choice = Enum.find(socket.assigns.queries, &(&1.key == key))
-    {:noreply, assign(socket, choice: choice, run_form: run_form(%{}), run_error: nil)}
+    socket = load_queries(socket)
+
+    {:noreply,
+     assign(socket, choice: current_choice(socket, key), run_form: run_form(%{}), run_error: nil)}
   end
 
   def handle_event("run", params, socket) do
-    %{current_scope: scope, resource: resource, choice: choice} = socket.assigns
+    socket = load_queries(socket)
+    choice = socket.assigns.choice && current_choice(socket, socket.assigns.choice.key)
+    socket = assign(socket, :choice, choice)
+    %{current_scope: scope, resource: resource} = socket.assigns
     values = Map.get(params, "query", %{})
 
     case choice && choice.agent do
@@ -90,7 +105,7 @@ defmodule RengaWeb.ResourceQueriesLive do
             {:noreply, assign(socket, run_form: run_form(values, changeset.errors))}
 
           {:error, reason} ->
-            {:noreply, socket |> assign(run_error: run_error(reason)) |> load_queries()}
+            {:noreply, assign(socket, run_error: run_error(reason))}
         end
     end
   end
@@ -145,6 +160,8 @@ defmodule RengaWeb.ResourceQueriesLive do
 
     assign(socket, queries: queries, agents?: agents != [])
   end
+
+  defp current_choice(socket, key), do: Enum.find(socket.assigns.queries, &(&1.key == key))
 
   defp load_runs(socket) do
     %{current_scope: scope, resource: resource} = socket.assigns

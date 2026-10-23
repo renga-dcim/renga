@@ -78,6 +78,10 @@ defmodule RengaWeb.ResourceQueriesLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/inventory/#{switch}")
     refute has_element?(view, ~s|a[href="/inventory/#{switch.id}/queries"]|)
+
+    # The tab is hidden, and its URL refuses too.
+    assert {:error, {:live_redirect, %{to: to}}} = live(conn, ~p"/inventory/#{switch}/queries")
+    assert to == ~p"/inventory/#{switch}"
   end
 
   test "says why each query can or can't run here", context do
