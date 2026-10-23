@@ -56,6 +56,8 @@ const MAX_COLUMNS: usize = 256;
 const MAX_COLUMN_NAME: usize = 128;
 const MAX_ROWS: usize = 10_000;
 const MAX_CELL: usize = 1024;
+/// `{"columns":[],"rows":[],"truncated":false}` and change.
+const ENVELOPE_BYTES: usize = 64;
 
 pub struct Sql;
 
@@ -210,10 +212,20 @@ fn refuse_writes(program: &[osquery::Row]) -> Result<(), JobFailure> {
     Ok(())
 }
 
+/// The bytes osquery trims from each `disable_tables` entry: its Boost trim
+/// classifies single bytes in the C locale. Trimming anything more, such as
+/// a Unicode space, would accept a name osquery does not disable.
+const FLAG_SPACE: [char; 6] = [' ', '\t', '\n', '\x0b', '\x0c', '\r'];
+
 fn refuse_unless_denied_tables_disabled(options: &osquery::Row) -> Result<(), JobFailure> {
     let disabled: BTreeSet<&str> = options
         .get("disable_tables")
-        .map(|tables| tables.split(',').map(str::trim).collect())
+        .map(|tables| {
+            tables
+                .split(',')
+                .map(|table| table.trim_matches(FLAG_SPACE))
+                .collect()
+        })
         .unwrap_or_default();
     let missing: Vec<&str> = DENIED_TABLES
         .into_iter()
@@ -263,11 +275,21 @@ fn table(columns: Vec<String>, rows: Vec<osquery::Row>) -> Value {
         truncated |= value.chars().count() > max;
         clip(value, max)
     };
-    let header: Vec<String> = names
-        .iter()
-        .map(|name| clipped(name, MAX_COLUMN_NAME))
-        .collect();
-    let header_bytes = serde_json::to_vec(&header).map_or(RESULT_BUDGET_BYTES, |b| b.len());
+    // The header takes at most half the budget, column by column, so rows
+    // always have room. Columns past that are dropped from every row too.
+    let mut header: Vec<String> = Vec::new();
+    let mut header_bytes = ENVELOPE_BYTES;
+    for name in &names {
+        let name = clipped(name, MAX_COLUMN_NAME);
+        let bytes = serde_json::to_string(&name).map_or(usize::MAX, |s| s.len() + 1);
+        if header_bytes.saturating_add(bytes) > RESULT_BUDGET_BYTES / 2 {
+            break;
+        }
+        header_bytes += bytes;
+        header.push(name);
+    }
+    let dropped = header.len() < names.len();
+    let names = &names[..header.len()];
     let mut list = Bounded::with_budget(MAX_ROWS, RESULT_BUDGET_BYTES - header_bytes);
     for row in &rows {
         let values: Vec<String> = names
@@ -279,7 +301,7 @@ fn table(columns: Vec<String>, rows: Vec<osquery::Row>) -> Value {
         }
     }
     let (rows, cut) = list.into_parts();
-    serde_json::json!({ "columns": header, "rows": rows, "truncated": truncated || cut })
+    serde_json::json!({ "columns": header, "rows": rows, "truncated": truncated || cut || dropped })
 }
 
 #[cfg(test)]
@@ -315,6 +337,21 @@ mod tests {
     }
 
     #[test]
+    fn a_header_too_large_for_the_budget_drops_columns_not_the_result() {
+        // 256 names of 128 four-byte characters: far more than the budget.
+        let name: String = std::iter::repeat_n('\u{1F600}', MAX_COLUMN_NAME).collect();
+        let columns = vec![name; MAX_COLUMNS];
+        let rows = vec![row(&[])];
+        let value = table(columns, rows);
+        assert_eq!(value["truncated"], true);
+        let kept = value["columns"].as_array().unwrap().len();
+        assert!(kept > 0 && kept < MAX_COLUMNS);
+        assert_eq!(value["rows"][0].as_array().unwrap().len(), kept);
+        assert!(serde_json::to_vec(&value).unwrap().len() <= RESULT_BUDGET_BYTES);
+        super::super::contract::assert_conforms("query.sql@1", "result", &value);
+    }
+
+    #[test]
     fn bounds_columns_cells_and_rows() {
         let wide: Vec<String> = (0..MAX_COLUMNS + 1).map(|i| format!("c{i}")).collect();
         let value = table(wide, vec![]);
@@ -342,6 +379,9 @@ mod tests {
         assert!(refuse_unless_denied_tables_disabled(&row(&[("disable_tables", &all)])).is_ok());
         let spaced = format!(" {} ,hash", DENIED_TABLES.join(" , "));
         assert!(refuse_unless_denied_tables_disabled(&row(&[("disable_tables", &spaced)])).is_ok());
+        // osquery does not trim a Unicode space, so it would not disable these.
+        let nbsp = DENIED_TABLES.map(|t| format!("{t}\u{a0}")).join(",");
+        assert!(refuse_unless_denied_tables_disabled(&row(&[("disable_tables", &nbsp)])).is_err());
 
         match refuse_unless_denied_tables_disabled(&row(&[("disable_tables", "curl,file")])) {
             Err(JobFailure::Failed(reason)) => {
