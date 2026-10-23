@@ -40,6 +40,9 @@ const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const WAIT_SLICE: Duration = Duration::from_millis(250);
 /// Renga keeps sensor names of up to this many characters.
 const MAX_SENSOR_CHARS: usize = 255;
+/// Check-ins name each exporter by its URL, and Renga rejects a whole check-in whose power
+/// source name is longer than this.
+const MAX_SOURCE_CHARS: usize = 255;
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -97,6 +100,11 @@ pub fn from_raw(raw: Vec<RawExporter>) -> Result<Vec<Exporter>, String> {
         if !url.username().is_empty() || url.password().is_some() || url.query().is_some() {
             return Err(format!(
                 "{at}.url must not carry credentials or a query; use bearer_token_file"
+            ));
+        }
+        if url.as_str().chars().count() > MAX_SOURCE_CHARS {
+            return Err(format!(
+                "{at}.url must be at most {MAX_SOURCE_CHARS} characters"
             ));
         }
         let allow_remote = raw.allow_remote.unwrap_or(false);
@@ -243,7 +251,7 @@ fn scrape(
             };
             let gone: Vec<Reading> = known
                 .iter()
-                .filter(|old| !readings.iter().any(|new| new.sensor == old.sensor))
+                .filter(|old| !readings.iter().any(|new| series(new) == series(old)))
                 .map(|old| Reading {
                     measurement: old.measurement.unreadable(),
                     ..old.clone()
@@ -280,6 +288,22 @@ fn scrape(
     }
 }
 
+/// What Renga keys a current reading by: a sensor's average over one window, its average over
+/// another, and its instantaneous value are different series.
+fn series(reading: &Reading) -> (&str, &'static str, &'static str, i64) {
+    (
+        &reading.sensor,
+        reading.boundary.as_str(),
+        reading.measurement.quantity(),
+        window_ms(reading),
+    )
+}
+
+fn window_ms(reading: &Reading) -> i64 {
+    // The mapping bounds windows to a day, so this cannot overflow.
+    (reading.window_seconds * 1_000.0) as i64
+}
+
 /// The host batch for one scrape at `now`; `failed` marks every reading as a failed read.
 pub fn batch(readings: &[Reading], failed: bool, now: DateTime<Utc>) -> TelemetryBatch {
     TelemetryBatch::host(
@@ -291,11 +315,11 @@ pub fn batch(readings: &[Reading], failed: bool, now: DateTime<Utc>) -> Telemetr
 }
 
 fn to_sample(reading: &Reading, failed: bool, now: DateTime<Utc>) -> TelemetrySample {
-    // The mapping bounds windows to a day, so this cannot overflow.
-    let window = chrono::Duration::milliseconds((reading.window_seconds * 1_000.0) as i64);
-    let (quantity, unit, value, state) = match reading.measurement {
-        Measurement::Watts(watts) => ("real_power", Some("W"), watts, None),
-        Measurement::State(state) => ("state", None, None, state),
+    let window = chrono::Duration::milliseconds(window_ms(reading));
+    let quantity = reading.measurement.quantity();
+    let (unit, value, state) = match reading.measurement {
+        Measurement::Watts(watts) => (Some("W"), watts, None),
+        Measurement::State(state) => (None, None, state),
     };
     let readable = value.is_some() || state.is_some();
     let status = if failed || !readable {
@@ -377,10 +401,10 @@ mod tests {
             url: Some(url.into()),
             ..RawExporter::default()
         };
-        let exporter = exporter("http://127.0.0.1:9100/metrics");
-        assert_eq!(exporter.interval, Duration::from_secs(60));
-        assert_eq!(exporter.endpoint.timeout, Duration::from_secs(10));
-        assert!(!exporter.endpoint.allow_remote);
+        let default = exporter("http://127.0.0.1:9100/metrics");
+        assert_eq!(default.interval, Duration::from_secs(60));
+        assert_eq!(default.endpoint.timeout, Duration::from_secs(10));
+        assert!(!default.endpoint.allow_remote);
 
         for (raw, message) in [
             (raw("ftp://127.0.0.1/metrics"), "http or https"),
@@ -401,10 +425,18 @@ mod tests {
                 "timeout_seconds",
             ),
             (RawExporter::default(), "url is required"),
+            (
+                raw(&format!("http://127.0.0.1:9100/{}", "p".repeat(234))),
+                "at most 255 characters",
+            ),
         ] {
             let error = from_raw(vec![raw]).unwrap_err();
             assert!(error.contains(message), "{error}");
         }
+        // The longest URL a check-in can name is accepted.
+        let longest = format!("http://127.0.0.1:9100/{}", "p".repeat(233));
+        assert_eq!(longest.len(), 255);
+        assert_eq!(exporter(&longest).source(), longest);
         let twice = from_raw(vec![
             raw("http://127.0.0.1:9100/metrics"),
             raw("http://127.0.0.1:9100/metrics"),
@@ -592,6 +624,61 @@ mod tests {
     }
 
     #[test]
+    fn a_series_whose_window_changes_fails_its_old_window() {
+        let exporter = exporter("http://127.0.0.1:9100/metrics");
+        let (sink, batches) = capture();
+        let sources = PowerSources::default();
+        let average = |watts, window_seconds| Reading {
+            mapping: mapping::NODE_EXPORTER,
+            sensor: "node_exporter/127.0.0.1:9100/hwmon/power1".into(),
+            boundary: Boundary::SupplyInput,
+            measurement: Measurement::Watts(watts),
+            window_seconds,
+            ..dcmi(0.0)
+        };
+        let mut known = Vec::new();
+
+        scrape(
+            &exporter,
+            Ok(vec![average(Some(245.0), 1.0)]),
+            Utc::now(),
+            &mut known,
+            &sink,
+            &sources,
+        );
+        // The average's interval went missing, so the mapping fails it with no window: a new
+        // series. The 1-second series must not stay current until it expires.
+        scrape(
+            &exporter,
+            Ok(vec![average(None, 0.0)]),
+            Utc::now(),
+            &mut known,
+            &sink,
+            &sources,
+        );
+
+        let batches = batches.lock().unwrap();
+        let windows: Vec<(String, i64)> = batches[1]["samples"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|sample| {
+                let start =
+                    DateTime::parse_from_rfc3339(sample["window"]["start"].as_str().unwrap());
+                let end = DateTime::parse_from_rfc3339(sample["window"]["end"].as_str().unwrap());
+                (
+                    sample["status"].as_str().unwrap().to_owned(),
+                    (end.unwrap() - start.unwrap()).num_milliseconds(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            windows,
+            [("failed".to_owned(), 0), ("failed".to_owned(), 1_000)]
+        );
+    }
+
+    #[test]
     fn each_endpoint_reports_its_own_series() {
         let mapped = || vec![dcmi(312.0)];
         let sensors = |url: &str| -> Vec<String> {
@@ -612,7 +699,8 @@ mod tests {
             sensors("http://localhost/ipmi/metrics"),
             ["ipmi_exporter/localhost:80/ipmi/metrics/dcmi"]
         );
-        let long = format!("http://127.0.0.1:9290/{}", "p".repeat(300));
+        // The longest URL still makes a sensor name too long to report.
+        let long = format!("http://127.0.0.1:9290/{}", "p".repeat(233));
         assert!(sensors(&long).is_empty());
     }
 

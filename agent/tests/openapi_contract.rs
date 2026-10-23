@@ -350,15 +350,18 @@ fn host_power_batches_match_the_contract() {
 #[test]
 fn exporter_batches_match_the_contract() {
     let text = r#"
-node_hwmon_power_average_interval_seconds{chip="lnxsybus:00_acpi000d:00",sensor="power1"} 0.5
-node_hwmon_power_average_watt{chip="lnxsybus:00_acpi000d:00",sensor="power1"} 245.5
+node_hwmon_chip_names{chip="i2c_3_3_0069",chip_name="ibm_cffps2"} 1
+node_hwmon_sensor_label{chip="i2c_3_3_0069",label="pin",sensor="power1"} 1
+node_hwmon_sensor_label{chip="i2c_3_3_0069",label="pout1",sensor="power2"} 1
+node_hwmon_power_average_interval_seconds{chip="i2c_3_3_0069",sensor="power1"} 0.5
+node_hwmon_power_average_watt{chip="i2c_3_3_0069",sensor="power1"} 245.5
 ipmi_dcmi_power_consumption_watts NaN
 ipmi_power_watts{id="98",name="PSU1 Input"} 151
 ipmi_sensor_state{id="120",name="PS2 Status",type="Power Supply"} 1
 ipmi_sensor_state{id="121",name="PS3 Status",type="Power Supply"} NaN
 ipmi_sensor_state{id="122",name="PS4 Status",type="Power Supply"} +Inf
 ipmi_sensor_state{id="123",name="PS5 Status",type="Power Supply"} -1
-node_hwmon_power_average_watt{chip="lnxsybus:00_acpi000d:01",sensor="power1"} 100
+node_hwmon_power_average_watt{chip="i2c_3_3_0069",sensor="power2"} 100
 node_hwmon_chip_names{chip="i2c_3_3_0068",chip_name="ibm_cffps1"} 1
 node_hwmon_sensor_label{chip="i2c_3_3_0068",label="pin",sensor="power1"} 1
 node_hwmon_power_watt{chip="i2c_3_3_0068",sensor="power1"} 512

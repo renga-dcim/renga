@@ -44,6 +44,14 @@ pub enum Measurement {
 }
 
 impl Measurement {
+    /// The quantity Renga records this measurement as.
+    pub fn quantity(&self) -> &'static str {
+        match self {
+            Self::Watts(_) => "real_power",
+            Self::State(_) => "state",
+        }
+    }
+
     /// The same series with nothing readable in it, for a series that has gone missing.
     pub fn unreadable(&self) -> Self {
         match self {
@@ -123,10 +131,7 @@ fn node_exporter(samples: &[Sample]) -> Vec<Reading> {
     power
         .into_iter()
         .filter_map(|((chip, sensor), (element, sample))| {
-            let driver = drivers
-                .get(&chip)
-                .map(String::as_str)
-                .or_else(|| power_meter_chip(&chip).then_some(hwmon::POWER_METER))?;
+            let driver = drivers.get(&chip).map(String::as_str)?;
             let sensor_label = labels
                 .get(&(chip.clone(), sensor.clone()))
                 .and_then(|label| label.labels.get("label").cloned());
@@ -155,15 +160,6 @@ fn node_exporter(samples: &[Sample]) -> Vec<Reading> {
             })
         })
         .collect()
-}
-
-/// Whether node_exporter's `chip` names an ACPI power meter. Its hwmon device has no `name`,
-/// so node_exporter reports no `chip_name` for it; the chip is named for its device path's last
-/// two components, lowercased, such as `lnxsybus:00_acpi000d:00`.
-fn power_meter_chip(chip: &str) -> bool {
-    chip.rsplit('_')
-        .next()
-        .is_some_and(|device| device.starts_with("acpi000d:"))
 }
 
 fn ipmi_exporter(samples: &[Sample]) -> Vec<Reading> {
@@ -273,11 +269,17 @@ mod tests {
 
     #[test]
     fn maps_node_exporter_hwmon_power_by_driver() {
+        // A GPU, a chip with no name, and an ACPI power meter (which node_exporter names only
+        // by its device path, and whose direction Linux does not expose) stay unmapped.
         let text = r#"
 node_hwmon_chip_names{chip="pci0000:00_0000:03:00_0",chip_name="amdgpu"} 1
+node_hwmon_chip_names{chip="i2c_3_3_0068",chip_name="ibm_cffps1"} 1
+node_hwmon_sensor_label{chip="i2c_3_3_0068",label="pin",sensor="power1"} 1
+node_hwmon_power_average_interval_seconds{chip="i2c_3_3_0068",sensor="power1"} 1
+node_hwmon_power_average_watt{chip="i2c_3_3_0068",sensor="power1"} 245.5
+node_hwmon_power_input_watt{chip="i2c_3_3_0068",sensor="power1"} 250
 node_hwmon_power_average_interval_seconds{chip="lnxsybus:00_acpi000d:00",sensor="power1"} 1
 node_hwmon_power_average_watt{chip="lnxsybus:00_acpi000d:00",sensor="power1"} 245.5
-node_hwmon_power_input_watt{chip="lnxsybus:00_acpi000d:00",sensor="power1"} 250
 node_hwmon_power_average_watt{chip="pci0000:00_0000:03:00_0",sensor="power1"} 90
 node_hwmon_power_input_watt{chip="unknown_chip",sensor="power1"} 10
 "#;
@@ -285,8 +287,8 @@ node_hwmon_power_input_watt{chip="unknown_chip",sensor="power1"} 10
             readings(text),
             [Reading {
                 mapping: NODE_EXPORTER,
-                sensor: "node_exporter/lnxsybus:00_acpi000d:00/power1".into(),
-                boundary: Boundary::HostInput,
+                sensor: "node_exporter/i2c_3_3_0068/power1".into(),
+                boundary: Boundary::SupplyInput,
                 supply: None,
                 measurement: Measurement::Watts(Some(245.5)),
                 window_seconds: 1.0,
@@ -320,10 +322,12 @@ node_hwmon_power_input_watts{chip="i2c_3_3_0068",sensor="power2"} 480
     fn an_average_with_an_unusable_interval_is_a_failure_not_instantaneous() {
         let meter = |interval: Option<&str>| {
             let interval = interval.map_or(String::new(), |seconds| {
-                format!("node_hwmon_power_average_interval_seconds{{chip=\"lnxsybus:00_acpi000d:00\",sensor=\"power1\"}} {seconds}\n")
+                format!("node_hwmon_power_average_interval_seconds{{chip=\"i2c_3_3_0068\",sensor=\"power1\"}} {seconds}\n")
             });
             let text = format!(
-                "{interval}node_hwmon_power_average_watt{{chip=\"lnxsybus:00_acpi000d:00\",sensor=\"power1\"}} 245\n"
+                "node_hwmon_chip_names{{chip=\"i2c_3_3_0068\",chip_name=\"ibm_cffps1\"}} 1\n\
+                 node_hwmon_sensor_label{{chip=\"i2c_3_3_0068\",label=\"pin\",sensor=\"power1\"}} 1\n\
+                 {interval}node_hwmon_power_average_watt{{chip=\"i2c_3_3_0068\",sensor=\"power1\"}} 245\n"
             );
             let [reading] = readings(&text).try_into().unwrap();
             (reading.measurement, reading.window_seconds)
