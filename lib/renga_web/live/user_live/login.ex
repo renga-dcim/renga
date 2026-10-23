@@ -47,6 +47,32 @@ defmodule RengaWeb.UserLive.Login do
           label="or another way"
         />
 
+        <.form
+          :let={f}
+          :if={@organization == nil and @domain_routing}
+          for={@organization_form}
+          id="organization_email_form"
+          phx-submit="find_organization"
+          class="space-y-2"
+        >
+          <.input
+            field={f[:email]}
+            type="email"
+            label="Work email for your organization's sign-in"
+            autocomplete="email"
+            spellcheck="false"
+            required
+          />
+          <.button class="w-full">
+            Continue with your organization <span aria-hidden="true">→</span>
+          </.button>
+        </.form>
+
+        <.divider
+          :if={@organization == nil and @domain_routing and (@providers != [] or @local_sign_in)}
+          label="or"
+        />
+
         <div :if={@providers != []} id="provider_options" class="space-y-2">
           <.button
             :for={provider <- @providers}
@@ -184,6 +210,8 @@ defmodule RengaWeb.UserLive.Login do
        passkey_options: passkey_options,
        organization: organization,
        organization_providers: organization_providers,
+       organization_form: to_form(%{}, as: "organization"),
+       domain_routing: Accounts.OrganizationDomains.any_verified?(),
        providers: Accounts.IdentityProviders.sign_in_options(params["provider"]),
        local_sign_in: SignInPolicy.local_sign_in?(),
        registration_open: SignInPolicy.registration_open?()
@@ -193,6 +221,24 @@ defmodule RengaWeb.UserLive.Login do
   @impl true
   def handle_event("submit_password", _params, socket) do
     {:noreply, assign(socket, :trigger_submit, true)}
+  end
+
+  # An address at an organization's verified domain goes to its sign-in
+  # link; anything else stays here.
+  def handle_event("find_organization", %{"organization" => %{"email" => email}}, socket) do
+    case Accounts.OrganizationDomains.organization_slug_for_email(email) do
+      nil ->
+        {:noreply,
+         socket
+         |> assign(:organization_form, to_form(%{"email" => email}, as: "organization"))
+         |> put_flash(
+           :error,
+           "No organization signs in with that address. Log in another way below."
+         )}
+
+      slug ->
+        {:noreply, push_navigate(socket, to: ~p"/users/log-in?#{[organization: slug]}")}
+    end
   end
 
   def handle_event("submit_magic", %{"user" => %{"email" => email}}, socket) do

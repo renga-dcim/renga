@@ -8,9 +8,11 @@ defmodule RengaWeb.OrganizationProviderLiveTest do
 
   alias Renga.Accounts.IdentityProvider
   alias Renga.Accounts.IdentityProviders
+  alias Renga.Accounts.OrganizationDomains
   alias Renga.Accounts.OrganizationProviders
   alias Renga.Accounts.Scope
   alias Renga.FakeOIDCProvider
+  alias Renga.FakeTxtResolver
 
   defp member_conn(conn, role) do
     user = user_fixture()
@@ -267,5 +269,78 @@ defmodule RengaWeb.OrganizationProviderLiveTest do
     assert redirected_to(conn) == ~p"/settings/identity-providers"
     assert Phoenix.Flash.get(conn.assigns.flash, :error) =~ "test sign-in didn't work"
     refute IdentityProviders.usable?(OrganizationProviders.get(scope, provider.id))
+  end
+
+  # Each module verifies its own domains: async tests verifying the same one
+  # would wait on each other's uncommitted rows.
+  describe "email domains" do
+    test "an owner claims a domain, publishes its record, and verifies it", %{conn: conn} do
+      {conn, scope} = member_conn(conn, "owner")
+      {:ok, view, _html} = live(conn, ~p"/settings/identity-providers")
+
+      assert has_element?(view, "#domain-list", "No email domains yet.")
+
+      html =
+        view
+        |> form("#domain-form", domain: %{domain: "Settings.Acme.Example"})
+        |> render_submit()
+
+      assert html =~ "Publish the TXT record for settings.acme.example"
+
+      [claim] = OrganizationDomains.list(scope)
+      assert has_element?(view, "#domain-#{claim.id}-status", "Waiting for its DNS record")
+
+      assert has_element?(
+               view,
+               "#domain-#{claim.id}-record",
+               "_renga-verification.settings.acme.example"
+             )
+
+      assert has_element?(
+               view,
+               "#domain-#{claim.id}-record",
+               OrganizationDomains.record_value(claim)
+             )
+
+      html = view |> element("#domain-#{claim.id}-verify") |> render_click()
+      assert html =~ "couldn&#39;t find"
+
+      FakeTxtResolver.put(OrganizationDomains.record_name(claim), [
+        OrganizationDomains.record_value(claim)
+      ])
+
+      html = view |> element("#domain-#{claim.id}-verify") |> render_click()
+      assert html =~ "settings.acme.example is verified"
+      assert has_element?(view, "#domain-#{claim.id}-status", "Verified")
+      refute has_element?(view, "#domain-#{claim.id}-record")
+
+      view |> element("#domain-#{claim.id}-remove") |> render_click()
+      assert OrganizationDomains.list(scope) == []
+      assert has_element?(view, "#domain-list", "No email domains yet.")
+    end
+
+    test "a bad or repeated domain is refused in the form", %{conn: conn} do
+      {conn, scope} = member_conn(conn, "owner")
+      {:ok, _claim} = OrganizationDomains.add(scope, "settings.acme.example")
+      {:ok, view, _html} = live(conn, ~p"/settings/identity-providers")
+
+      html = view |> form("#domain-form", domain: %{domain: "not a domain"}) |> render_submit()
+      assert html =~ "must be a domain such as example.com"
+
+      html =
+        view
+        |> form("#domain-form", domain: %{domain: "settings.acme.example"})
+        |> render_submit()
+
+      assert html =~ "is already listed"
+      assert length(OrganizationDomains.list(scope)) == 1
+    end
+
+    test "only owners see the domains", %{conn: conn} do
+      {conn, _scope} = member_conn(conn, "admin")
+      {:ok, view, _html} = live(conn, ~p"/settings/identity-providers")
+
+      refute has_element?(view, "#organization-domains")
+    end
   end
 end

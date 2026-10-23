@@ -169,6 +169,12 @@ defmodule RengaWeb.ChangeDescription do
 
   def describe(%{kind: "organization_created"}), do: "Created this organization"
 
+  def describe(%{
+        kind: "organization_domain_changed",
+        metadata: %{"change" => change} = metadata
+      }),
+      do: organization_domain_change(change, metadata["domain"])
+
   def describe(%{kind: "identity_provider_changed", metadata: %{"change" => change} = metadata}),
     do: identity_provider_change(change, metadata["name"] || metadata["provider"], metadata)
 
@@ -314,6 +320,18 @@ defmodule RengaWeb.ChangeDescription do
 
   defp reason(%{"reason" => reason}) when is_binary(reason), do: " · #{reason}"
   defp reason(_metadata), do: ""
+
+  defp organization_domain_change("added", domain),
+    do: "Claimed the email domain #{domain}, waiting for its DNS record"
+
+  defp organization_domain_change("verified", domain),
+    do: "Verified the email domain #{domain} for sign-in"
+
+  defp organization_domain_change("unverified", domain),
+    do: "The email domain #{domain} stopped routing sign-in: its DNS record is gone"
+
+  defp organization_domain_change("removed", domain), do: "Removed the email domain #{domain}"
+  defp organization_domain_change(_change, domain), do: "Changed the email domain #{domain}"
 
   defp identity_provider_change("created", name, _metadata),
     do: "Added the identity provider #{name}, waiting for a test sign-in"

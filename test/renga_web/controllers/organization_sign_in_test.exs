@@ -6,10 +6,12 @@ defmodule RengaWeb.OrganizationSignInTest do
   import Renga.InventoryFixtures
 
   alias Renga.Accounts
+  alias Renga.Accounts.OrganizationDomains
   alias Renga.Accounts.OrganizationProviders
   alias Renga.Accounts.Scope
   alias Renga.Accounts.UserIdentity
   alias Renga.FakeOIDCProvider
+  alias Renga.FakeTxtResolver
   alias Renga.Members
   alias Renga.Repo
 
@@ -101,6 +103,66 @@ defmodule RengaWeb.OrganizationSignInTest do
       provider |> Ecto.Changeset.change(enabled: false) |> Repo.update!()
       {:ok, view, _html} = live(conn, ~p"/users/log-in?organization=#{organization.slug}")
       refute has_element?(view, "#organization_provider_options")
+    end
+  end
+
+  describe "an email at a verified domain" do
+    # Each module verifies its own domains: async tests verifying the same
+    # one would wait on each other's uncommitted rows.
+    setup %{owner: owner} do
+      {:ok, claim} = OrganizationDomains.add(owner, "sso.acme.example")
+      %{claim: claim}
+    end
+
+    defp verify(owner, claim) do
+      FakeTxtResolver.put(OrganizationDomains.record_name(claim), [
+        OrganizationDomains.record_value(claim)
+      ])
+
+      {:ok, claim} = OrganizationDomains.verify(owner, claim)
+      claim
+    end
+
+    test "leads from the usual page to the organization's sign-in", %{
+      conn: conn,
+      organization: organization,
+      owner: owner,
+      claim: claim,
+      provider: provider
+    } do
+      verify(owner, claim)
+      {:ok, view, _html} = live(conn, ~p"/users/log-in")
+
+      assert {:error, {:live_redirect, %{to: to}}} =
+               view
+               |> form("#organization_email_form", organization: %{email: "Sam@SSO.Acme.Example"})
+               |> render_submit()
+
+      assert to == ~p"/users/log-in?#{[organization: organization.slug]}"
+
+      {:ok, view, _html} = live(conn, to)
+      assert has_element?(view, "#provider-#{provider.id}", "Log in with Acme SSO")
+      refute has_element?(view, "#organization_email_form")
+    end
+
+    test "stays on the page for any other address", %{conn: conn, owner: owner, claim: claim} do
+      verify(owner, claim)
+      {:ok, view, _html} = live(conn, ~p"/users/log-in")
+
+      html =
+        view
+        |> form("#organization_email_form", organization: %{email: "sam@eu.sso.acme.example"})
+        |> render_submit()
+
+      assert html =~ "No organization signs in with that address."
+      assert has_element?(view, "#login_form_magic")
+    end
+
+    test "an unverified domain routes nobody, and the page doesn't ask", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/users/log-in")
+
+      refute has_element?(view, "#organization_email_form")
+      refute OrganizationDomains.organization_slug_for_email("sam@sso.acme.example")
     end
   end
 

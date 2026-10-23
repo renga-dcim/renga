@@ -14,6 +14,7 @@ defmodule RengaWeb.OrganizationProviderLive do
   alias Renga.Accounts.IdentityProvider
   alias Renga.Accounts.IdentityProviderRevision, as: Revision
   alias Renga.Accounts.IdentityProviders
+  alias Renga.Accounts.OrganizationDomains
   alias Renga.Accounts.OrganizationProviders
 
   @impl true
@@ -24,10 +25,39 @@ defmodule RengaWeb.OrganizationProviderLive do
      socket
      |> assign(page_title: "Identity providers", manage?: OrganizationProviders.manage?(scope))
      |> assign(editing: nil, new_id: nil, form: to_form(%{}, as: "provider"))
+     |> assign(:domain_form, to_form(%{}, as: "domain"))
      |> load()}
   end
 
   @impl true
+  def handle_event("add_domain", %{"domain" => %{"domain" => domain}}, socket) do
+    case OrganizationDomains.add(socket.assigns.current_scope, domain) do
+      {:ok, claim} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Publish the TXT record for #{claim.domain}, then check it.")
+         |> assign(:domain_form, to_form(%{}, as: "domain"))
+         |> load()}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:noreply,
+         assign(socket, :domain_form, to_form(changeset, as: "domain", action: :insert))}
+
+      error ->
+        {:noreply, refused(socket, error)}
+    end
+  end
+
+  def handle_event(action, %{"id" => id}, socket)
+      when action in ~w(verify_domain remove_domain) do
+    with %{} = claim <- Enum.find(socket.assigns.domains, &(&1.id == id)),
+         {:ok, claim} <- domain_action(action, socket.assigns.current_scope, claim) do
+      {:noreply, socket |> put_flash(:info, domain_done(action, claim)) |> load()}
+    else
+      error -> {:noreply, socket |> put_flash(:error, domain_refusal(error)) |> load()}
+    end
+  end
+
   def handle_event("new", _params, socket) do
     {:noreply,
      socket
@@ -162,6 +192,28 @@ defmodule RengaWeb.OrganizationProviderLive do
   defp refused(socket, _error),
     do: socket |> put_flash(:error, "That provider changed. Try again.") |> load()
 
+  defp domain_action("verify_domain", scope, claim), do: OrganizationDomains.verify(scope, claim)
+  defp domain_action("remove_domain", scope, claim), do: OrganizationDomains.remove(scope, claim)
+
+  defp domain_done("verify_domain", claim),
+    do: "#{claim.domain} is verified. People with that email domain can now find your sign-in."
+
+  defp domain_done("remove_domain", claim), do: "#{claim.domain} removed."
+
+  defp domain_refusal({:error, :record_not_found}),
+    do: "Renga couldn't find the TXT record yet. DNS changes can take a while to appear."
+
+  defp domain_refusal({:error, :dns_unavailable}),
+    do: "DNS didn't answer. Try checking again in a minute."
+
+  defp domain_refusal({:error, :verified_elsewhere}),
+    do: "Another organization has verified that domain and still has its record."
+
+  defp domain_refusal({:error, :forbidden}),
+    do: "Only organization owners can change email domains."
+
+  defp domain_refusal(_error), do: "That domain changed. Try again."
+
   defp done("discard", provider), do: "Discarded the new settings for #{provider.display_name}."
   defp done("enable", provider), do: "Sign-in with #{provider.display_name} is on."
   defp done("disable", provider), do: "Sign-in with #{provider.display_name} is off."
@@ -205,7 +257,12 @@ defmodule RengaWeb.OrganizationProviderLive do
         []
       end
 
-    assign(socket, :providers, providers)
+    domains =
+      if socket.assigns.manage?,
+        do: OrganizationDomains.list(socket.assigns.current_scope),
+        else: []
+
+    assign(socket, providers: providers, domains: domains)
   end
 
   defp callback_url(id), do: url(~p"/users/auth/#{id}/callback")
@@ -325,6 +382,76 @@ defmodule RengaWeb.OrganizationProviderLive do
             members sign in with it.
           </:empty>
         </.table>
+
+        <.settings_section
+          :if={@manage?}
+          id="organization-domains"
+          title="Email domains"
+          description="Prove you own your email domain with a DNS TXT record, and people who enter an address at that domain on the sign-in page are sent to your identity provider. Only one organization can verify a domain."
+        >
+          <ul id="domain-list" class="divide-y divide-line rounded-lg border border-edge bg-surface">
+            <li :if={@domains == []} class="px-4 py-6 text-center text-sm text-fg-muted">
+              No email domains yet.
+            </li>
+            <li :for={claim <- @domains} id={"domain-#{claim.id}"} class="space-y-2 px-3 py-2.5">
+              <div class="flex flex-wrap items-center gap-3">
+                <span class="min-w-0 flex-1 truncate font-mono text-sm text-fg">{claim.domain}</span>
+                <span id={"domain-#{claim.id}-status"} class="text-sm text-fg-muted">
+                  {if claim.verified_at, do: "Verified", else: "Waiting for its DNS record"}
+                </span>
+                <button
+                  :if={!claim.verified_at}
+                  id={"domain-#{claim.id}-verify"}
+                  type="button"
+                  phx-click="verify_domain"
+                  phx-value-id={claim.id}
+                  class="min-h-tap cursor-pointer text-sm text-link hover:underline"
+                >
+                  Check now
+                </button>
+                <button
+                  id={"domain-#{claim.id}-remove"}
+                  type="button"
+                  phx-click="remove_domain"
+                  phx-value-id={claim.id}
+                  data-confirm={"Remove #{claim.domain}?"}
+                  class="min-h-tap cursor-pointer text-sm text-crit hover:underline"
+                >
+                  Remove
+                </button>
+              </div>
+              <dl
+                :if={!claim.verified_at}
+                id={"domain-#{claim.id}-record"}
+                class="grid gap-1 rounded-md bg-sunken p-3 text-xs sm:grid-cols-[auto_1fr] sm:gap-x-3"
+              >
+                <dt class="text-fg-muted">TXT name</dt>
+                <dd class="break-all font-mono text-fg">{OrganizationDomains.record_name(claim)}</dd>
+                <dt class="text-fg-muted">Value</dt>
+                <dd class="break-all font-mono text-fg">{OrganizationDomains.record_value(claim)}</dd>
+              </dl>
+            </li>
+          </ul>
+          <.form
+            for={@domain_form}
+            id="domain-form"
+            phx-submit="add_domain"
+            class="mt-3 flex flex-wrap items-end gap-2"
+          >
+            <div class="min-w-0 flex-1">
+              <.input
+                field={@domain_form[:domain]}
+                type="text"
+                label="Domain"
+                placeholder="example.com"
+                autocomplete="off"
+                spellcheck="false"
+                required
+              />
+            </div>
+            <.button id="add-domain" phx-disable-with="Adding…">Add domain</.button>
+          </.form>
+        </.settings_section>
       </.settings_page>
 
       <.confirm_dialog
