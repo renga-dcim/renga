@@ -258,6 +258,7 @@ defmodule Renga.Release.CLITest do
       assert stdout =~ "Exported #{organization.slug}"
       assert File.stat!(output).access == :read_write
       assert Bitwise.band(File.stat!(output).mode, 0o077) == 0
+      assert File.stat!(output).links == 1
       assert File.ls!(tmp) == ["acme.tar.zst"]
 
       {:ok, archive} = Archive.open(output, tmp_dir: tmp)
