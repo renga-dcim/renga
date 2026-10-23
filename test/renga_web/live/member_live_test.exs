@@ -384,6 +384,30 @@ defmodule RengaWeb.MemberLiveTest do
       assert has_element?(view, "#directory-#{unlinked.id}-status", "Inactive")
     end
 
+    test "an entry linked to an account without a global email still names it", context do
+      {:ok, entry} =
+        Users.create(context.client, %{
+          "userName" => "nomail@example.com",
+          "externalId" => "sub-n"
+        })
+
+      # An organization provider's sign-up leaves the global email unset (RFD 15).
+      user = Repo.insert!(%Renga.Accounts.User{})
+
+      identity =
+        Repo.insert!(%UserIdentity{
+          user_id: user.id,
+          provider_id: context.connection.provider_id,
+          subject: "sub-n"
+        })
+
+      Linking.link_identity(identity, %{"sub" => "sub-n"})
+
+      {:ok, view, _html} = live(context.admin_conn, ~p"/settings/members")
+
+      assert has_element?(view, "#directory-#{entry.id}-account", "Account without an email")
+    end
+
     test "members without members.manage do not see the directory", context do
       {:ok, _entry} = Users.create(context.client, %{"userName" => "x", "externalId" => "x"})
 

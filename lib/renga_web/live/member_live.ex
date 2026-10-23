@@ -485,7 +485,7 @@ defmodule RengaWeb.MemberLive do
                 id={"directory-#{entry.id}-account"}
                 class="block truncate text-fg"
               >
-                {user.email}
+                {User.label(user)}
               </span>
               <span
                 :if={!user}
