@@ -77,7 +77,9 @@ defmodule Renga.Accounts.SecurityLog do
         # elsewhere may have outdated.
         email = Repo.one(from u in User, where: u.id == ^user_id, select: u.email) || user.email
 
+        # An account an organization's provider created may have no email.
         [email | List.wrap(opts[:previous_email])]
+        |> Enum.reject(&is_nil/1)
         |> Enum.map(&deliver(&1, kind, text))
         |> Enum.find(:ok, &(&1 != :ok))
 

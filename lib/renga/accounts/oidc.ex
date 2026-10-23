@@ -243,9 +243,10 @@ defmodule Renga.Accounts.OIDC do
 
   # The attempt completes only against the configuration it started with: a
   # provider disabled, removed, or given a new active revision in between
-  # makes the callback fail rather than run under different settings.
+  # makes the callback fail rather than run under different settings. The
+  # attempt names the provider it started with, of either scope.
   defp current(%{"provider" => id, "revision" => number}) do
-    with %IdentityProvider{} = provider <- IdentityProviders.get(id) || {:error, :inactive},
+    with %IdentityProvider{} = provider <- IdentityProviders.get_any(id) || {:error, :inactive},
          true <- IdentityProviders.usable?(provider) || {:error, :inactive},
          true <- provider.active_revision == number || {:error, :provider_changed} do
       {:ok, provider, IdentityProviders.active_revision(provider)}

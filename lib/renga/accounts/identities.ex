@@ -266,11 +266,7 @@ defmodule Renga.Accounts.Identities do
 
   defp sign_up(provider, subject, address, claims) do
     Repo.transact(fn ->
-      with {:ok, user} <-
-             %User{}
-             |> User.email_changeset(%{email: address})
-             |> Ecto.Changeset.put_change(:confirmed_at, Renga.Time.utc_now_ms())
-             |> Repo.insert() do
+      with {:ok, user} <- provider |> new_user(address) |> Repo.insert() do
         link_new_user(user, provider, subject, address, claims)
       end
     end)
@@ -280,6 +276,18 @@ defmodule Renga.Accounts.Identities do
       {:error, %Ecto.Changeset{} = changeset} -> sign_up_error(changeset)
     end
   end
+
+  # A deployment provider's verified address becomes the account's confirmed
+  # global email. An organization provider's stays on the identity, scoped
+  # to that organization: it neither sets nor confirms a global email, nor
+  # reserves the address against another account (RFD 15).
+  defp new_user(%IdentityProvider{organization_id: nil}, address) do
+    %User{}
+    |> User.email_changeset(%{email: address})
+    |> Ecto.Changeset.put_change(:confirmed_at, Renga.Time.utc_now_ms())
+  end
+
+  defp new_user(%IdentityProvider{}, _address), do: Ecto.Changeset.change(%User{})
 
   defp link_new_user(user, provider, subject, address, claims) do
     %UserIdentity{
