@@ -18,7 +18,9 @@ defmodule Renga.Transfers.ImportTest do
   alias Renga.Jobs.TargetBinding
   alias Renga.SavedViews
   alias Renga.Teams
+  alias Renga.Topology
   alias Renga.Transfers.Archive
+  alias Renga.Transfers.Archive.Writer
   alias Renga.Transfers.Export
   alias Renga.Transfers.Import
   alias Renga.Transfers.OrganizationImport
@@ -203,6 +205,37 @@ defmodule Renga.Transfers.ImportTest do
     Archive.close(archive)
   end
 
+  test "records that name a principal land beside records that do not", context do
+    {:ok, source} = Inventory.create_source(context.owner, %{kind: "manual", name: "cabling"})
+    {:ok, _contract} = Topology.grant_cable_import_contract(context.owner, source.id)
+    {_switch, %{"eth1" => a}} = device_fixture(context.owner, "switch", "sw-02", ["eth1"])
+    {_host, %{"eth1" => b}} = device_fixture(context.owner, "server", "host-02", ["eth1"])
+
+    {:ok, _claim} =
+      Topology.import_cable_assertion(context.owner, source.id, %{
+        interface_a_id: a.id,
+        interface_b_id: b.id
+      })
+
+    # The source's claim, which names no person, leads the batch.
+    path =
+      context
+      |> export_and_remove()
+      |> reorder(context, "cable_assertions", &(&1["kind"] == "operator"))
+
+    target = target()
+    assert {:ok, _imported} = import_archive(path, target)
+
+    assert [["import", nil, nil], ["operator", nil, principal_id]] =
+             Repo.query!(
+               "SELECT kind, actor_user_id, actor_principal_id FROM cable_assertions " <>
+                 "WHERE organization_id = $1 ORDER BY kind",
+               [Ecto.UUID.dump!(target.id)]
+             ).rows
+
+    assert is_binary(principal_id)
+  end
+
   test "an import is refused while any of its IDs exists", context do
     path = export(context)
     target = target()
@@ -281,6 +314,47 @@ defmodule Renga.Transfers.ImportTest do
     target = Repo.get!(Organization, target.id)
     assert Jobs.Settings.allowed_capabilities(target) == [@collect]
     assert Jobs.Settings.retention_days(target) == 30
+  end
+
+  # Rewrites the archive at `path` with `type`'s records sorted by `key`.
+  defp reorder(path, context, type, key) do
+    {:ok, archive} = Archive.open(path, tmp_dir: context.tmp_dir)
+
+    try do
+      writer =
+        archive
+        |> Archive.record_types()
+        |> Enum.reduce(Writer.new(tmp_dir: context.tmp_dir), fn name, writer ->
+          records = Enum.to_list(Archive.records(archive, name))
+          records = if name == type, do: Enum.sort_by(records, key), else: records
+          Writer.add_records(writer, name, records)
+        end)
+
+      %{"organization" => organization, "snapshot_at" => at, "parts" => parts} =
+        archive.manifest
+
+      {:ok, snapshot_at, 0} = DateTime.from_iso8601(at)
+      reordered = Path.join(context.tmp_dir, "reordered.tar.zst")
+
+      :ok =
+        Writer.finish(
+          writer,
+          %{
+            organization: %{
+              id: organization["id"],
+              slug: organization["slug"],
+              name: organization["name"]
+            },
+            snapshot_at: snapshot_at,
+            parts: parts
+          },
+          reordered
+        )
+
+      reordered
+    after
+      Archive.close(archive)
+    end
   end
 
   defp job_organization_for(organization),

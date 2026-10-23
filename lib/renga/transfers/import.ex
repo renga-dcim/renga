@@ -637,8 +637,15 @@ defmodule Renga.Transfers.Import do
 
   defp mark_imported(row, _type, _state), do: row
 
-  # Fields that name a person are emptied and the principal recorded.
+  # Fields that name a person are emptied and the principal recorded. A
+  # batch takes its columns from its first row, so every row of a type
+  # carries its principal columns, even one that names no one.
   defp attribute(record, type, state) do
+    record =
+      for {{name, _field}, column} <- @principal_columns, name == type.name, reduce: record do
+        record -> Map.put_new(record, column, nil)
+      end
+
     Enum.reduce(type.principal_fields, {record, []}, fn {field, condition}, {row, named} ->
       source_id = row[field]
 
