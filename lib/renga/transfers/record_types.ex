@@ -61,8 +61,6 @@ defmodule Renga.Transfers.RecordTypes do
      ~w(id owner_resource_id kind status name model slot path serial_number part_number attributes metadata first_observed_at last_observed_at inserted_at updated_at)},
     {"change_requests", :current,
      ~w(id resource_id kind field before_value after_value reason status requested_by_user_id decided_by_user_id decided_at decision_note inserted_at updated_at)},
-    {"collector_findings", :current,
-     ~w(id resource_id agent_id kind status message details last_observed_at resolved_at inserted_at updated_at)},
     {"component_findings", :current,
      ~w(id resource_id kind resolution_key status message details resolved_at last_observed_at inserted_at updated_at)},
     {"finding_workflows", :current,
@@ -111,6 +109,8 @@ defmodule Renga.Transfers.RecordTypes do
      ~w(id resource_id source_id sync_run_id observation_id kind field old_value new_value metadata occurred_at inserted_at updated_at actor_user_id finding_workflow_id)},
     {"collector_targets", :current,
      ~w(id source_id key status error last_reported_at last_reachable_at last_complete_at last_observation_id inserted_at updated_at)},
+    {"collector_findings", :current,
+     ~w(id resource_id agent_id kind status message details last_observed_at resolved_at inserted_at updated_at target_id)},
     {"component_evidence", :current,
      ~w(id resource_id source_id observation_id kind source_local_id name model slot path serial_number part_number attributes raw_metadata observed_at inserted_at updated_at)},
     {"desired_interface_vlan_modes", :current,
@@ -324,8 +324,8 @@ defmodule Renga.Transfers.RecordTypes do
     "organization_limits" => "operator policy of the source deployment"
   }
 
-  @organization_fields ~w(name slug settings default_accent default_power_factor inserted_at
-                          updated_at)
+  @organization_fields ~w(name slug settings default_accent default_power_factor
+                          guest_without_vm_findings inserted_at updated_at)
   @principal_record_fields ~w(id email)
 
   @doc """
