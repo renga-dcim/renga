@@ -138,14 +138,14 @@
       },
       "OrganizationCreate": {
         "title": "OrganizationCreate",
-        "additionalProperties": false,
         "description": "A new organization, which starts with no members.",
         "properties": {
           "name": {
+            "description": "The display name, at most 255 characters.",
             "type": "string"
           },
           "slug": {
-            "description": "Lowercase letters, numbers, and dashes, starting with a letter or number; unique in the deployment.",
+            "description": "Lowercase letters, numbers, and dashes, starting with a letter or number; unique in the deployment and at most 255 characters.",
             "type": "string"
           }
         },
@@ -193,10 +193,10 @@
       },
       "OwnerInvitationCreate": {
         "title": "OwnerInvitationCreate",
-        "additionalProperties": false,
         "description": "Who to invite as an owner.",
         "properties": {
           "email": {
+            "description": "An email address of at most 160 characters.",
             "type": "string"
           }
         },
@@ -312,7 +312,17 @@
                 }
               }
             },
-            "description": "The new organization."
+            "description": "The new organization.",
+            "headers": {
+              "idempotency-key-expires-at": {
+                "description": "The time through which this response can be replayed.",
+                "required": true,
+                "schema": {
+                  "format": "date-time",
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -470,7 +480,17 @@
                 }
               }
             },
-            "description": "The invitation, already emailed."
+            "description": "The invitation, already emailed.",
+            "headers": {
+              "idempotency-key-expires-at": {
+                "description": "The time through which this response can be replayed.",
+                "required": true,
+                "schema": {
+                  "format": "date-time",
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -540,7 +560,7 @@
                 }
               }
             },
-            "description": "The invitation was made but its email could not be sent. Retry with the same key to replace it and send again."
+            "description": "The email could not be sent, so the invitation was not made. Retry with the same key."
           }
         },
         "description": "Emails `email` an invitation to own the organization, replacing any open invitation for the address. Accepting it requires signing in or registering with that confirmed address under the deployment's sign-in rules. The response never carries the invitation's link, and the invitation stops working if this token is revoked. Needs `organizations:write`.",

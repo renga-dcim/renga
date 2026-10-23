@@ -49,7 +49,7 @@ defmodule Renga.Operators.Idempotency do
     end
   end
 
-  @enforce_keys [:token_id, :method, :route, :key, :digest, :status, :render]
+  @enforce_keys [:token_id, :method, :route, :key, :digest, :status, :render, :expires_at]
   defstruct @enforce_keys
 
   @typedoc """
@@ -63,11 +63,15 @@ defmodule Renga.Operators.Idempotency do
           key: String.t(),
           digest: binary(),
           status: pos_integer(),
-          render: (term() -> map())
+          render: (term() -> map()),
+          expires_at: DateTime.t()
         }
 
   @doc "How long a completed response is kept for retries."
   def retention_hours, do: @retention_hours
+
+  @doc "The retention deadline for an operation beginning now."
+  def expiration, do: DateTime.add(Renga.Time.utc_now_ms(), @retention_hours, :hour)
 
   @doc """
   Whether `key` can be an `Idempotency-Key`: 1 to 255 visible ASCII
@@ -136,7 +140,6 @@ defmodule Renga.Operators.Idempotency do
 
   def finish!(%__MODULE__{} = idempotency, result) do
     body = idempotency.render.(result)
-    expires_at = DateTime.add(Renga.Time.utc_now_ms(), @retention_hours, :hour)
 
     Repo.insert!(%Key{
       operator_token_id: idempotency.token_id,
@@ -146,18 +149,9 @@ defmodule Renga.Operators.Idempotency do
       request_digest: idempotency.digest,
       response_status: idempotency.status,
       response_body: body,
-      expires_at: expires_at
+      expires_at: idempotency.expires_at
     })
 
-    :ok
-  end
-
-  @doc """
-  Forgets a stored response, so a retry runs the operation again. Used when
-  something after the commit, such as sending an email, failed.
-  """
-  def forget!(%__MODULE__{} = idempotency) do
-    Repo.delete_all(scope_query(idempotency))
     :ok
   end
 

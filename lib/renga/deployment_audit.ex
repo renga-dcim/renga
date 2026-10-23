@@ -42,7 +42,9 @@ defmodule Renga.DeploymentAudit do
   details}` to roll back, where `details` may hold `:target_id`,
   `:organization`, and `:changed`, the names of the fields it changed.
   `reason` is recorded as an allowlisted code: an atom's name, or `invalid`
-  for a changeset. Returns `{:ok, value}` or `{:error, reason}`.
+  for a changeset. An idempotent `:replayed` result records nothing because
+  the original attempt already recorded the one mutation. Returns `{:ok,
+  value}` or `{:error, reason}`.
   """
   def mutate(context, operation, fun) do
     result =
@@ -66,6 +68,9 @@ defmodule Renga.DeploymentAudit do
     case result do
       {:ok, value} ->
         {:ok, value}
+
+      {:error, {:replayed, _details}} ->
+        {:error, :replayed}
 
       {:error, {reason, details}} ->
         record!(context, operation, "rejected", Map.put(details, :reason, reason_code(reason)))

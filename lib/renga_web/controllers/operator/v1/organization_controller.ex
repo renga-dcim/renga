@@ -24,7 +24,8 @@ defmodule RengaWeb.Operator.V1.OrganizationController do
     request_body: Schemas.OrganizationCreate,
     responses:
       [
-        created: {Schemas.Organization, description: "The new organization."},
+        created:
+          Schemas.idempotent_response(Schemas.Organization, "The new organization."),
         unprocessable_entity:
           {Schemas.ValidationError, description: "The name or slug is invalid or taken."}
       ] ++ Schemas.write_responses()
@@ -81,7 +82,11 @@ defmodule RengaWeb.Operator.V1.OrganizationController do
     request_body: Schemas.OwnerInvitationCreate,
     responses:
       [
-        created: {Schemas.OwnerInvitation, description: "The invitation, already emailed."},
+        created:
+          Schemas.idempotent_response(
+            Schemas.OwnerInvitation,
+            "The invitation, already emailed."
+          ),
         not_found: {Schemas.Error, description: "No active organization has this ID."},
         unprocessable_entity:
           {Schemas.ValidationError,
@@ -89,8 +94,8 @@ defmodule RengaWeb.Operator.V1.OrganizationController do
         bad_gateway:
           {Schemas.Error,
            description:
-             "The invitation was made but its email could not be sent. Retry with the " <>
-               "same key to replace it and send again."}
+             "The email could not be sent, so the invitation was not made. Retry with " <>
+               "the same key."}
       ] ++ Schemas.write_responses()
 
   def invite_owner(conn, %{"id" => id}) do
@@ -99,14 +104,7 @@ defmodule RengaWeb.Operator.V1.OrganizationController do
     write(conn, "organization.invite_owner", 201, &render_invitation/1, fn params,
                                                                            context,
                                                                            idempotency ->
-      case Organizations.invite_owner(id, params["email"], context, url_fun, idempotency) do
-        {:error, {:delivery_failed, _invitation}} ->
-          :ok = Idempotency.forget!(idempotency)
-          {:error, :delivery_failed}
-
-        result ->
-          result
-      end
+      Organizations.invite_owner(id, params["email"], context, url_fun, idempotency)
     end)
   end
 
@@ -127,7 +125,8 @@ defmodule RengaWeb.Operator.V1.OrganizationController do
         key: key,
         digest: Idempotency.digest(Map.put(params, "_path", conn.path_params)),
         status: status,
-        render: render
+        render: render,
+        expires_at: Idempotency.expiration()
       }
 
       case Idempotency.fetch(idempotency) do
@@ -141,8 +140,12 @@ defmodule RengaWeb.Operator.V1.OrganizationController do
     end
   end
 
-  defp respond(conn, idempotency, {:ok, result}),
-    do: conn |> put_status(idempotency.status) |> json(idempotency.render.(result))
+  defp respond(conn, idempotency, {:ok, result}) do
+    conn
+    |> put_idempotency_expiry(idempotency.expires_at)
+    |> put_status(idempotency.status)
+    |> json(idempotency.render.(result))
+  end
 
   # A concurrent request with the same key finished first.
   defp respond(conn, idempotency, {:error, :replayed}) do
@@ -193,11 +196,16 @@ defmodule RengaWeb.Operator.V1.OrganizationController do
     error(conn, status, Atom.to_string(reason))
   end
 
-  defp replay(conn, {status, body, _expires_at}) do
+  defp replay(conn, {status, body, expires_at}) do
     conn
     |> put_resp_header("idempotent-replayed", "true")
+    |> put_idempotency_expiry(expires_at)
     |> put_status(status)
     |> json(body)
+  end
+
+  defp put_idempotency_expiry(conn, expires_at) do
+    put_resp_header(conn, "idempotency-key-expires-at", DateTime.to_iso8601(expires_at))
   end
 
   defp route(conn) do

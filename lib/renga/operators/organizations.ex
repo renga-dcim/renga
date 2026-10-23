@@ -83,8 +83,8 @@ defmodule Renga.Operators.Organizations do
 
   Returns `{:ok, invitation}`, `{:error, :not_found}` for an unknown or
   disabled organization, `{:error, changeset}` for an invalid address or
-  one that already belongs to a member, `{:error, {:delivery_failed,
-  invitation}}` when the email could not be sent, or `{:error, :replayed}`.
+  one that already belongs to a member, `{:error, :delivery_failed}` when the
+  email could not be sent, or `{:error, :replayed}`.
   """
   def invite_owner(organization_id, email, context, url_fun, idempotency \\ nil)
       when is_function(url_fun, 1) do
@@ -95,10 +95,23 @@ defmodule Renga.Operators.Organizations do
         with :ok <- Idempotency.begin(idempotency),
              {:ok, organization} <- lock_active(organization_id),
              {:ok, invitation} <- insert_invitation(organization, email, token_hash, context) do
-          :ok = Idempotency.finish!(idempotency, invitation)
+          invitation = %{invitation | organization: organization}
 
-          {:ok, %{invitation | organization: organization},
-           %{organization: organization, target_id: invitation.id, changed: [:invitation]}}
+          case deliver_invitation(invitation, token, url_fun) do
+            :ok ->
+              :ok = Idempotency.finish!(idempotency, invitation)
+
+              {:ok, invitation,
+               %{
+                 organization: organization,
+                 target_id: invitation.id,
+                 changed: [:invitation]
+               }}
+
+            {:error, :delivery_failed} ->
+              {:error, :delivery_failed,
+               %{organization: organization, target_id: invitation.id}}
+          end
         else
           {:error, :not_found} ->
             {:error, :not_found, %{target_id: organization_id}}
@@ -111,16 +124,18 @@ defmodule Renga.Operators.Organizations do
         end
       end)
 
-    with {:ok, invitation} <- result do
-      case UserNotifier.deliver_organization_invitation(
-             invitation.email,
-             invitation.organization.name,
-             invitation.role,
-             url_fun.(token)
-           ) do
-        {:ok, _email} -> {:ok, invitation}
-        {:error, _reason} -> {:error, {:delivery_failed, invitation}}
-      end
+    result
+  end
+
+  defp deliver_invitation(invitation, token, url_fun) do
+    case UserNotifier.deliver_organization_invitation(
+           invitation.email,
+           invitation.organization.name,
+           invitation.role,
+           url_fun.(token)
+         ) do
+      {:ok, _email} -> :ok
+      {:error, _reason} -> {:error, :delivery_failed}
     end
   end
 
@@ -210,6 +225,7 @@ defmodule Renga.Operators.Organizations do
       attrs
       |> Map.get(:metadata, %{})
       |> Map.put("operator", DeploymentAudit.actor_label(context))
+      |> put_operator_token_id(context.actor)
 
     %ChangeEvent{organization_id: organization.id}
     |> ChangeEvent.changeset(
@@ -220,4 +236,9 @@ defmodule Renga.Operators.Organizations do
     )
     |> Repo.insert!()
   end
+
+  defp put_operator_token_id(metadata, {:token, %OperatorToken{id: id}}),
+    do: Map.put(metadata, "operator_token_id", id)
+
+  defp put_operator_token_id(metadata, {:operator, _name}), do: metadata
 end

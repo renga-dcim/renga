@@ -25,7 +25,8 @@ defmodule Renga.Operators.IdempotencyTest do
       key: key,
       digest: Idempotency.digest(params),
       status: 201,
-      render: &%{"value" => &1}
+      render: &%{"value" => &1},
+      expires_at: Idempotency.expiration()
     }
   end
 
@@ -88,14 +89,6 @@ defmodule Renga.Operators.IdempotencyTest do
 
     {:ok, :ok} = complete(idempotency, "second")
     assert {:ok, {201, %{"value" => "second"}, _}} = Idempotency.fetch(idempotency)
-  end
-
-  test "forget! lets the operation run again", %{token: token} do
-    idempotency = idempotency(token, %{"slug" => "acme"})
-    {:ok, :ok} = complete(idempotency, "done")
-
-    :ok = Idempotency.forget!(idempotency)
-    assert Idempotency.fetch(idempotency) == :none
   end
 
   test "release commands pass no idempotency" do

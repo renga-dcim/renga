@@ -1,5 +1,6 @@
 defmodule RengaWeb.Operator.OrganizationControllerTest do
-  use RengaWeb.OperatorCase, async: true
+  # One delivery test swaps the application mailer, so this module runs alone.
+  use RengaWeb.OperatorCase, async: false
 
   import Ecto.Query
   import Renga.AccountsFixtures
@@ -57,17 +58,30 @@ defmodule RengaWeb.Operator.OrganizationControllerTest do
 
       scope = Renga.Accounts.scope_for(Repo.get!(Organization, id))
 
-      assert [%{kind: "organization_created", metadata: %{"operator" => "token: cloud"}}] =
+      assert [
+               %{
+                 kind: "organization_created",
+                 metadata: %{
+                   "operator" => "token: cloud",
+                   "operator_token_id" => operator_token_id
+                 }
+               }
+             ] =
                Inventory.list_activity(scope)
+
+      assert operator_token_id == token.id
     end
 
     test "returns the same organization for a retry with the same key", %{conn: conn} do
       first = write(conn, "/operator/v1/organizations", %{name: "Acme", slug: "acme"}, "k1")
       body = valid_operator_response(first, 201)
+      assert [expires_at] = get_resp_header(first, "idempotency-key-expires-at")
+      assert {:ok, _deadline, 0} = DateTime.from_iso8601(expires_at)
 
       retry = write(conn, "/operator/v1/organizations", %{slug: "acme", name: "Acme"}, "k1")
       assert valid_operator_response(retry, 201) == body
       assert get_resp_header(retry, "idempotent-replayed") == ["true"]
+      assert get_resp_header(retry, "idempotency-key-expires-at") == [expires_at]
 
       assert Repo.aggregate(where(Organization, slug: "acme"), :count) == 1
       assert events("organization.create") == [{"succeeded", nil}]
@@ -133,6 +147,18 @@ defmodule RengaWeb.Operator.OrganizationControllerTest do
 
       assert events("organization.create") ==
                [{"rejected", "invalid"}, {"rejected", "invalid"}, {"succeeded", nil}]
+    end
+
+    test "returns validation errors for values too long for storage", %{conn: conn} do
+      for {body, field, key} <- [
+            {%{name: String.duplicate("n", 256), slug: "acme"}, "name", "k1"},
+            {%{name: "Acme", slug: String.duplicate("s", 256)}, "slug", "k2"}
+          ] do
+        conn = write(conn, "/operator/v1/organizations", body, key)
+
+        assert %{"error" => "invalid", "errors" => %{^field => [_]}} =
+                 valid_operator_response(conn, 422)
+      end
     end
 
     test "needs organizations:write", %{conn: conn} do
@@ -249,6 +275,13 @@ defmodule RengaWeb.Operator.OrganizationControllerTest do
       assert invitation.invited_by_operator == "token: cloud"
       assert invitation.invited_by_operator_token_id == token.id
       assert invitation.invited_by_user_id == nil
+
+      scope = Renga.Accounts.scope_for(organization)
+
+      assert [%{metadata: %{"operator_token_id" => operator_token_id}}] =
+               Inventory.list_activity(scope)
+
+      assert operator_token_id == token.id
     end
 
     test "stops working when the token that made it is revoked",
@@ -270,6 +303,27 @@ defmodule RengaWeb.Operator.OrganizationControllerTest do
       retry = invite(conn, organization, "owner@acme.test")
       assert valid_operator_response(retry, 201) == body
       refute_received {:email, _}
+    end
+
+    test "a failed delivery rolls back and the same key can be retried",
+         %{conn: conn, organization: organization} do
+      mailer_config = Application.fetch_env!(:renga, Renga.Mailer)
+      on_exit(fn -> Application.put_env(:renga, Renga.Mailer, mailer_config) end)
+      Application.put_env(:renga, Renga.Mailer, adapter: Renga.FailingMailerAdapter)
+
+      failed = invite(conn, organization, "owner@acme.test")
+      assert valid_operator_response(failed, 502) == %{"error" => "delivery_failed"}
+      refute Repo.get_by(OrganizationInvitation, email: "owner@acme.test")
+      assert events("organization.invite_owner") == [{"rejected", "delivery_failed"}]
+
+      Application.put_env(:renga, Renga.Mailer, mailer_config)
+
+      retried = invite(conn, organization, "owner@acme.test")
+      assert valid_operator_response(retried, 201)["email"] == "owner@acme.test"
+      assert_received {:email, %{to: [{_, "owner@acme.test"}]}}
+
+      assert events("organization.invite_owner") ==
+               [{"rejected", "delivery_failed"}, {"succeeded", nil}]
     end
 
     test "a new key replaces the open invitation for the address",

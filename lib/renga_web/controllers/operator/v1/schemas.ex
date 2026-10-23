@@ -33,6 +33,21 @@ defmodule RengaWeb.Operator.V1.Schemas do
     ]
   end
 
+  @doc "A successful non-idempotent response and its retention deadline."
+  def idempotent_response(schema, description) do
+    [
+      description: description,
+      headers: %{
+        "idempotency-key-expires-at" => %{
+          required: true,
+          schema: %{type: :string, format: :"date-time"},
+          description: "The time through which this response can be replayed."
+        }
+      },
+      content: %{"application/json" => %{schema: schema}}
+    ]
+  end
+
   @doc "The responses every non-idempotent write can give besides its own."
   def write_responses do
     [
