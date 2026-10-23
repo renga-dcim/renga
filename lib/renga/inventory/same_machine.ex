@@ -304,7 +304,8 @@ defmodule Renga.Inventory.SameMachine do
     Repo.insert_all(CollectorFinding, entries,
       on_conflict: {:replace, [:message, :details, :last_observed_at, :updated_at]},
       conflict_target:
-        {:unsafe_fragment, "(organization_id, resource_id, agent_id, kind) WHERE status = 'open'"}
+        {:unsafe_fragment,
+         "(organization_id, resource_id, agent_id, kind, target_id) WHERE status = 'open'"}
     )
 
     agent_ids = Enum.map(agents, & &1.id)

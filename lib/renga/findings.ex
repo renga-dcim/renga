@@ -650,12 +650,20 @@ defmodule Renga.Findings do
           # One resource can be reported by several installations, so a
           # finding about an installation is kept apart per installation. A
           # possible same machine is about one pairing instead: dismissing it
-          # covers that VM, from any installation, and no other.
+          # covers that VM, from any installation, and no other. An
+          # unreachable target is about that one target.
           resolution_key:
             fragment(
-              "CASE WHEN ? = 'possible_same_machine' THEN ?->>'vm_resource_id' ELSE ?::text END",
+              """
+              CASE ?
+                WHEN 'possible_same_machine' THEN ?->>'vm_resource_id'
+                WHEN 'target_unreachable' THEN ?::text
+                ELSE ?::text
+              END
+              """,
               finding.kind,
               finding.details,
+              finding.target_id,
               finding.agent_id
             ),
           status: finding.status,

@@ -8,6 +8,10 @@ defmodule Renga.Inventory.CollectorFinding do
     * `possible_same_machine` (RFD 11): the host the installation reports has
       no usable SMBIOS UUID, and its MAC addresses cover exactly one fresh
       libvirt domain. MACs alone never merge machines, so a person decides.
+    * `target_unreachable` (RFD 11): a switch or hypervisor a collector
+      stream polls has not answered for longer than its freshness window.
+      Kept apart per `target`, since one stream can reach a switch through
+      several addresses.
   """
 
   use Ecto.Schema
@@ -15,7 +19,7 @@ defmodule Renga.Inventory.CollectorFinding do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
   @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
-  @kinds ~w(installation_key_changed possible_same_machine)
+  @kinds ~w(installation_key_changed possible_same_machine target_unreachable)
 
   schema "collector_findings" do
     field :kind, :string
@@ -28,6 +32,7 @@ defmodule Renga.Inventory.CollectorFinding do
     belongs_to :organization, Renga.Accounts.Organization
     belongs_to :resource, Renga.Inventory.Resource
     belongs_to :agent, Renga.Inventory.Agent
+    belongs_to :target, Renga.Inventory.CollectorTarget
 
     timestamps()
   end

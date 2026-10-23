@@ -2206,6 +2206,7 @@ defmodule Renga.Inventory do
     |> apply_triage_rules(scope)
     |> reconcile_address_findings(scope)
     |> reconcile_same_machine(scope, observation)
+    |> reconcile_collector_findings(scope, observation)
     |> Changes.broadcast(scope.organization_id)
   end
 
@@ -2216,6 +2217,8 @@ defmodule Renga.Inventory do
       |> apply_triage_rules(scope)
       |> reconcile_address_findings(scope)
       |> reconcile_same_machine(scope, observation)
+      |> reconcile_collector_findings(scope, observation)
+      |> reconcile_collector_findings(scope, observation)
       |> Changes.broadcast(scope.organization_id)
     end
   end
@@ -2232,6 +2235,7 @@ defmodule Renga.Inventory do
     |> apply_triage_rules(scope)
     |> reconcile_address_findings(scope)
     |> reconcile_same_machine(scope, observation)
+    |> reconcile_collector_findings(scope, observation)
     |> Changes.broadcast(scope.organization_id)
   end
 
@@ -2244,6 +2248,8 @@ defmodule Renga.Inventory do
       |> apply_triage_rules(scope)
       |> reconcile_address_findings(scope)
       |> reconcile_same_machine(scope, observation)
+      |> reconcile_collector_findings(scope, observation)
+      |> reconcile_collector_findings(scope, observation)
       |> Changes.broadcast(scope.organization_id)
     end
   end
@@ -2320,6 +2326,30 @@ defmodule Renga.Inventory do
   end
 
   defp reconcile_same_machine(result, _scope, _observation), do: result
+
+  # RFD 11: a collector report can open or resolve the collector findings
+  # that time also changes, so they are refreshed as it commits rather than
+  # only at the next sweep. A failure is logged, never fatal.
+  defp reconcile_collector_findings(
+         {:ok, _resource_or_resources, _discovered?} = result,
+         scope,
+         %Observation{payload: payload}
+       ) do
+    if AgentPayload.scoped_report?(payload),
+      do: {:ok, _} = Renga.Inventory.CollectorFindings.refresh!(scope)
+
+    result
+  rescue
+    exception ->
+      Logger.error(
+        "collector findings failed for #{scope.organization_id}: " <>
+          Exception.format(:error, exception, __STACKTRACE__)
+      )
+
+      result
+  end
+
+  defp reconcile_collector_findings(result, _scope, _observation), do: result
 
   @doc """
   Records a scoped reconciliation attempt without mutating raw evidence.
