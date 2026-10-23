@@ -277,12 +277,15 @@ defmodule Renga.ResourceGroups do
 
   @doc """
   Deletes a group. Each of its direct members leaves it, recorded on the
-  resource. Needs `groups.manage`.
+  resource. Needs `groups.manage`, and also `inventory.edit` when the group
+  has members because deletion changes their membership.
   """
   def delete_group(%Scope{} = scope, %Group{} = group) do
     managed(scope, "groups.manage", fn ->
       group = lock_group!(scope, group.id)
       members = members_of_group(scope, group.id)
+
+      if members != [], do: Authorization.authorize!(scope, "inventory.edit")
 
       Enum.each(members, fn resource_id ->
         record!(scope, "group_member_removed", %{

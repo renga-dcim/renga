@@ -5,11 +5,15 @@ defmodule Renga.ResourceGroupsTest do
   import Renga.JobsFixtures, only: [member_scope: 2]
 
   alias Renga.Accounts.Scope
+  alias Renga.Assignments
   alias Renga.Inventory
+  alias Renga.Inventory.ChangeEvent
   alias Renga.Repo
   alias Renga.ResourceGroups
+  alias Renga.ResourceGroups.Group
   alias Renga.ResourceGroups.Member
   alias Renga.ResourceGroups.Membership
+  alias Renga.Roles
 
   setup do
     organization = organization_fixture()
@@ -104,6 +108,35 @@ defmodule Renga.ResourceGroupsTest do
       assert Enum.take(kinds, 3) == ~w(group_deleted group_set_updated group_updated)
       assert "group_set_created" in kinds
       assert Enum.count(kinds, &(&1 == "group_created")) == 2
+    end
+
+    test "deleting a populated group also needs inventory.edit", context do
+      {:ok, group_manager} =
+        Roles.create_role(context.admin, %{
+          "name" => "Group manager",
+          "permissions" => ["groups.manage"]
+        })
+
+      {:ok, _assignment} =
+        Assignments.assign(context.admin, context.viewer.membership_id, %{
+          "role" => group_manager.id
+        })
+
+      {:ok, 1} =
+        ResourceGroups.add_members(context.admin, context.staging, [context.web.id])
+
+      event_count = Repo.aggregate(ChangeEvent, :count)
+
+      assert {:error, :forbidden} =
+               ResourceGroups.delete_group(context.viewer, context.staging)
+
+      assert Repo.get!(Group, context.staging.id)
+      assert Repo.aggregate(Member, :count) == 1
+      assert length(effective(context.web)) == 2
+      assert Repo.aggregate(ChangeEvent, :count) == event_count
+
+      {:ok, empty} = ResourceGroups.create_group(context.admin, %{"name" => "Empty"})
+      assert {:ok, _deleted} = ResourceGroups.delete_group(context.viewer, empty)
     end
   end
 
