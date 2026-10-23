@@ -39,8 +39,8 @@ defmodule RengaWeb.Api.V1.Schemas.Observation do
           enum: contract.observation_scopes ++ [nil],
           description:
             "What the report is authoritative for. `host` (or omitted) for the host " <>
-              "itself; `targets` from a `switch_poller` or `power_poller` collector; " <>
-              "`hypervisor` from a `vm_provider` collector."
+              "itself; `targets` from a `switch_poller`, `power_poller`, or `bmc_power` " <>
+              "collector; `hypervisor` from a `vm_provider` collector."
         },
         collector: %{
           type: [:object, :null],

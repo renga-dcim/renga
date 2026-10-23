@@ -9,13 +9,10 @@ use crate::{
         Collector, CollectorKind, CollectorResource, Reachability, ReportScope, ScopedReport,
         SectionCompleteness, TargetStatus, MAX_OBSERVATION_BYTES,
     },
-    snmp::config::Target,
+    snmp::{self, config::Target},
 };
 use std::{
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc, Mutex, PoisonError,
-    },
+    sync::Arc,
     thread,
     time::{Duration, Instant},
 };
@@ -69,39 +66,14 @@ pub fn poll_each<F>(
 where
     F: Fn(&Target) -> Result<(CollectorResource, Sections), String> + Sync,
 {
-    let next = AtomicUsize::new(0);
-    let outcomes = Mutex::new(Vec::with_capacity(targets.len()));
-    let workers = max_concurrent.min(targets.len());
-    thread::scope(|scope| {
-        for _ in 0..workers {
-            scope.spawn(|| loop {
-                let index = next.fetch_add(1, Ordering::Relaxed);
-                let Some(target) = targets.get(index) else {
-                    break;
-                };
-                let result = if stopped.cancelled() {
-                    Err("polling was cancelled".into())
-                } else {
-                    poll_target(target)
-                };
-                outcomes
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .push((
-                        index,
-                        TargetOutcome {
-                            address: target.address.clone(),
-                            result,
-                        },
-                    ));
-            });
-        }
-    });
-    let mut outcomes = outcomes
-        .into_inner()
-        .unwrap_or_else(PoisonError::into_inner);
-    outcomes.sort_by_key(|(index, _)| *index);
-    outcomes.into_iter().map(|(_, outcome)| outcome).collect()
+    snmp::each(targets, max_concurrent, |target| TargetOutcome {
+        address: target.address.clone(),
+        result: if stopped.cancelled() {
+            Err("polling was cancelled".into())
+        } else {
+            poll_target(target)
+        },
+    })
 }
 
 /// Runs one module until `stop`: polls immediately, then every `interval`, sending each poll's

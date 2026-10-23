@@ -20,13 +20,11 @@ use renga_agent::{
         TaggingMode, TargetStatus, VlanMembership, VmDomain,
     },
     power::{
-        self, hwmon,
-        pdu::{
-            self,
-            mibs::{Measurement, Pdu, Reading},
-        },
+        self, bmc,
+        collector::{self, Measurement, Outcome, Reading, TargetError},
+        hwmon,
+        pdu::{self, mibs::Pdu},
     },
-    snmp::config::Target,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
@@ -446,26 +444,76 @@ fn pdu_poller_reports_and_batches_match_the_contract() {
         ],
     };
     let outcomes = vec![
-        pdu::Outcome {
-            target: Target::parse("10.0.0.5").unwrap(),
+        Outcome {
+            address: "10.0.0.5".into(),
             read_at: chrono::Utc::now(),
-            result: Ok(pdu),
+            result: Ok(pdu::device(pdu)),
         },
-        pdu::Outcome {
-            target: Target::parse("10.0.0.6").unwrap(),
+        Outcome {
+            address: "10.0.0.6".into(),
             read_at: chrono::Utc::now(),
-            result: Err(pdu::TargetError::Unreachable("no answer".into())),
+            result: Err(TargetError::Unreachable("no answer".into())),
         },
     ];
+    let module = Collector {
+        id: "rack-pdus".into(),
+        kind: CollectorKind::PowerPoller,
+    };
 
-    for (_, body) in pdu::reports("rack-pdus", &outcomes) {
+    for (_, body) in collector::reports(&module, &outcomes) {
         assert_conforms(
             "Observation",
             &serde_json::from_slice::<Value>(&body).unwrap(),
         );
     }
-    let mut known = pdu::Known::new();
-    for batch in pdu::batches("rack-pdus", &outcomes, &mut known, 180) {
+    let mut known = collector::Known::new();
+    for batch in collector::batches(&module, &outcomes, &mut known, 180) {
+        assert_conforms("TelemetryBatch", &batch);
+    }
+}
+
+#[test]
+fn bmc_power_reports_and_batches_match_the_contract() {
+    let system = json!({
+        "UUID": "4C4C4544-0042-3510-8052-B4C04F4C4D32",
+        "HostName": "r1-07",
+        "Manufacturer": "Dell Inc.",
+        "Model": "PowerEdge R650"
+    });
+    let power = json!({
+        "PowerControl": [{"PowerConsumedWatts": 312}],
+        "PowerSupplies": [
+            {"Name": "PS1 Status", "PowerInputWatts": 172, "PowerOutputWatts": 156,
+             "Status": {"State": "Enabled", "Health": "OK"}},
+            {"Name": "PS2 Status", "PowerInputWatts": null, "LineInputVoltage": 0,
+             "Status": {"State": "Enabled", "Health": "Critical"}}
+        ]
+    });
+    let outcomes = vec![
+        Outcome {
+            address: "10.0.1.5".into(),
+            read_at: chrono::Utc::now(),
+            result: Ok(bmc::redfish::device(&system, &power).unwrap()),
+        },
+        Outcome {
+            address: "10.0.1.6".into(),
+            read_at: chrono::Utc::now(),
+            result: Err(TargetError::NotPermitted("401 Unauthorized".into())),
+        },
+    ];
+    let module = Collector {
+        id: "rack-bmcs".into(),
+        kind: CollectorKind::BmcPower,
+    };
+
+    for (_, body) in collector::reports(&module, &outcomes) {
+        assert_conforms(
+            "Observation",
+            &serde_json::from_slice::<Value>(&body).unwrap(),
+        );
+    }
+    let mut known = collector::Known::new();
+    for batch in collector::batches(&module, &outcomes, &mut known, 180) {
         assert_conforms("TelemetryBatch", &batch);
     }
 }

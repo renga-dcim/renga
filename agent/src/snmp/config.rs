@@ -20,16 +20,16 @@ pub(crate) const SWITCH_INTERVALS: Intervals = Intervals {
     default: 900,
     min: 60,
 };
+const SNMP_PORT: u16 = 161;
 const TIMEOUT_DEFAULT: u64 = 5;
 const TIMEOUT_MAX: u64 = 60;
 const CONCURRENCY_DEFAULT: usize = 4;
 const CONCURRENCY_MAX: usize = 32;
 // Must match `Renga.Inventory.AgentPayload`.
 pub(crate) const COLLECTOR_ID_MAX: usize = 64;
-const TARGETS_MAX: usize = 1_000;
+pub(crate) const TARGETS_MAX: usize = 1_000;
 // Renga's string limit; a report naming a longer target would be rejected whole.
 const TARGET_ADDRESS_MAX: usize = 255;
-const SNMP_PORT: u16 = 161;
 
 /// One SNMP poller module instance. Its `id` is the collector stream identity Renga keeps for
 /// it, so changing the targets or credentials keeps the same stream.

@@ -564,6 +564,9 @@
                 "const": "pdu"
               },
               {
+                "const": "server"
+              },
+              {
                 "const": "switch"
               },
               {
@@ -1176,6 +1179,7 @@
               },
               "kind": {
                 "enum": [
+                  "bmc_power",
                   "power_poller",
                   "switch_poller",
                   "vm_provider"
@@ -1250,7 +1254,7 @@
             "type": "array"
           },
           "scope": {
-            "description": "What the report is authoritative for. `host` (or omitted) for the host itself; `targets` from a `switch_poller` or `power_poller` collector; `hypervisor` from a `vm_provider` collector.",
+            "description": "What the report is authoritative for. `host` (or omitted) for the host itself; `targets` from a `switch_poller`, `power_poller`, or `bmc_power` collector; `hypervisor` from a `vm_provider` collector.",
             "enum": [
               "host",
               "targets",
@@ -1584,6 +1588,7 @@
           "kind": {
             "description": "`host_agent` for a host report, or the collector's kind for a scoped report.",
             "enum": [
+              "bmc_power",
               "host_agent",
               "power_poller",
               "switch_poller",

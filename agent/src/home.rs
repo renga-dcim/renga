@@ -239,6 +239,7 @@ mod tests {
             gnmi: Vec::new(),
             libvirt: None,
             power: Vec::new(),
+            bmc: Vec::new(),
             exporters: Vec::new(),
         }
     }

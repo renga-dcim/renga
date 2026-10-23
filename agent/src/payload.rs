@@ -288,6 +288,7 @@ pub struct Collector {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CollectorKind {
+    BmcPower,
     PowerPoller,
     SwitchPoller,
     VmProvider,
@@ -296,6 +297,7 @@ pub enum CollectorKind {
 impl CollectorKind {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::BmcPower => "bmc_power",
             Self::PowerPoller => "power_poller",
             Self::SwitchPoller => "switch_poller",
             Self::VmProvider => "vm_provider",
@@ -303,8 +305,8 @@ impl CollectorKind {
     }
 }
 
-/// A switch, PDU, or VM a collector reports. The server matches it only by `serial_number`,
-/// `dmi_uuid`, or `machine_id`, so one of them is required.
+/// A switch, PDU, server, or VM a collector reports. The server matches it only by
+/// `serial_number`, `dmi_uuid`, or `machine_id`, so one of them is required.
 #[derive(Debug, Clone, Serialize)]
 pub struct CollectorResource {
     pub kind: CollectorResourceKind,
@@ -392,6 +394,7 @@ pub enum DomainInterfaceType {
 #[serde(rename_all = "snake_case")]
 pub enum CollectorResourceKind {
     Pdu,
+    Server,
     Switch,
     Vm,
 }

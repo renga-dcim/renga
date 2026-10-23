@@ -293,6 +293,35 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
       assert %{"reconciliation" => %{"resources" => [%{"resource_id" => ^guest_id}]}} =
                valid_api_response(report, 202)
     end
+
+    test "a server its BMC reports reconciles to the host agent's server", %{
+      scope: scope,
+      token: token
+    } do
+      # The fixture's system UUID, as SMBIOS reports it to the host agent.
+      host =
+        post_observation(token, host_report(dmi_uuid: "4c4c4544-0042-3510-8052-b4c04f4c4d32"))
+
+      assert %{"reconciliation" => %{"matched_resource_id" => server_id}} =
+               valid_api_response(host, 202)
+
+      resource = "test/fixtures/collectors/recorded_bmc.json" |> File.read!() |> Jason.decode!()
+
+      report =
+        post_observation(
+          token,
+          switch_report([resource],
+            collector_id: "rack-bmcs",
+            kind: "bmc_power",
+            complete: true
+          )
+        )
+
+      assert %{"reconciliation" => %{"resources" => [%{"resource_id" => ^server_id}]}} =
+               valid_api_response(report, 202)
+
+      assert Enum.any?(Collectors.list_streams(scope), &(&1.kind == "bmc_power"))
+    end
   end
 
   describe "targets and retirement" do
