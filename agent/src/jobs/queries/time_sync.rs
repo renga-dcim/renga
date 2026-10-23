@@ -5,6 +5,12 @@
 //! The kernel's view comes from `adjtimex(2)`, which every Linux host has.
 //! The source comes from chrony (`chronyc -c tracking`) or, failing that,
 //! systemd-timesyncd over D-Bus, both with fixed arguments.
+//!
+//! The shipped unit sets `ProtectClock=true`, whose seccomp filter refuses
+//! `adjtimex` even when it only reads. Without the kernel's view, whether the
+//! clock is synchronized comes from the daemon (chrony's leap status, or
+//! timedated's `NTPSynchronized`) and the error estimates are null. With no
+//! answer from either, the query fails rather than guess.
 
 use super::{clip, failed, parameters, Query, Sensitivity};
 use crate::{cancellation::Cancellation, command, jobs::JobFailure};
@@ -13,6 +19,15 @@ use serde_json::Value;
 use std::{process::Command, time::Duration};
 
 const PROGRAM_TIMEOUT: Duration = Duration::from_secs(5);
+const NTP_SYNCHRONIZED: &[&str] = &[
+    "--system",
+    "--json=short",
+    "get-property",
+    "org.freedesktop.timedate1",
+    "/org/freedesktop/timedate1",
+    "org.freedesktop.timedate1",
+    "NTPSynchronized",
+];
 const TIMESYNCD_SERVER: &[&str] = &[
     "--system",
     "--json=short",
@@ -46,6 +61,8 @@ pub struct Daemon {
     pub stratum: Option<u8>,
     /// chrony's own offset estimate, which is finer than the kernel's.
     pub offset_us: Option<i64>,
+    /// Whether the daemon considers the clock synchronized.
+    pub synchronized: Option<bool>,
 }
 
 impl Query for TimeSync {
@@ -59,36 +76,46 @@ impl Query for TimeSync {
 
     fn answer(&self, raw: &Value, cancellation: &Cancellation) -> Result<Value, JobFailure> {
         let Parameters {} = parameters(raw)?;
-        let kernel = read_kernel()?;
+        let kernel = read_kernel();
         let daemon = chrony(cancellation)
             .or_else(|| timesyncd(cancellation))
             .unwrap_or_default();
         if cancellation.cancelled() {
             return Err(JobFailure::Cancelled);
         }
-        Ok(answer(kernel, daemon))
+        answer(kernel, daemon)
     }
 }
 
-fn answer(kernel: Kernel, daemon: Daemon) -> Value {
-    serde_json::json!({
-        "synchronized": kernel.synchronized,
+fn answer(kernel: Option<Kernel>, daemon: Daemon) -> Result<Value, JobFailure> {
+    let synchronized = kernel
+        .map(|kernel| kernel.synchronized)
+        .or(daemon.synchronized)
+        .ok_or_else(|| {
+            failed(
+                "could not read the clock state: adjtimex was refused and no time daemon answered",
+            )
+        })?;
+    Ok(serde_json::json!({
+        "synchronized": synchronized,
         "daemon": daemon.name,
         "source": daemon.source.map(|s| clip(&s, 256)),
         "stratum": daemon.stratum.filter(|s| *s <= 16),
-        "offset_us": daemon.offset_us.unwrap_or(kernel.offset_us),
-        "max_error_us": kernel.max_error_us.max(0),
-        "estimated_error_us": kernel.estimated_error_us.max(0),
-    })
+        "offset_us": daemon.offset_us.or(kernel.map(|kernel| kernel.offset_us)),
+        "max_error_us": kernel.map(|kernel| kernel.max_error_us.max(0)),
+        "estimated_error_us": kernel.map(|kernel| kernel.estimated_error_us.max(0)),
+    }))
 }
 
+/// The kernel's clock state, or `None` when `adjtimex` is refused, as
+/// `ProtectClock=true` does.
 #[cfg(target_os = "linux")]
-fn read_kernel() -> Result<Kernel, JobFailure> {
+fn read_kernel() -> Option<Kernel> {
     // SAFETY: modes = 0 only reads the clock state into `timex`.
     let mut timex: libc::timex = unsafe { std::mem::zeroed() };
     let state = unsafe { libc::adjtimex(&mut timex) };
     if state == -1 {
-        return Err(failed("could not read the kernel clock state"));
+        return None;
     }
     // STA_NANO means `offset` is in nanoseconds rather than microseconds.
     let offset_us = if timex.status & libc::STA_NANO != 0 {
@@ -96,7 +123,7 @@ fn read_kernel() -> Result<Kernel, JobFailure> {
     } else {
         timex.offset as i64
     };
-    Ok(Kernel {
+    Some(Kernel {
         synchronized: state != libc::TIME_ERROR && timex.status & libc::STA_UNSYNC == 0,
         offset_us,
         max_error_us: timex.maxerror as i64,
@@ -105,8 +132,8 @@ fn read_kernel() -> Result<Kernel, JobFailure> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn read_kernel() -> Result<Kernel, JobFailure> {
-    Err(failed("time sync is only read on Linux"))
+fn read_kernel() -> Option<Kernel> {
+    None
 }
 
 fn chrony(cancellation: &Cancellation) -> Option<Daemon> {
@@ -122,12 +149,16 @@ fn chrony(cancellation: &Cancellation) -> Option<Daemon> {
 
 /// Parses `chronyc -c tracking`: reference ID, reference name or address,
 /// stratum, reference time, system time offset (seconds; positive means
-/// the clock is slow), and more fields this query does not use.
+/// the clock is slow), eight more figures, and the leap status, which is
+/// `Not synchronised` until chrony has a source.
 pub fn parse_chrony_tracking(output: &str) -> Option<Daemon> {
     let fields: Vec<&str> = output.trim().split(',').collect();
     if fields.len() < 5 {
         return None;
     }
+    let synchronized = fields
+        .get(13)
+        .map(|leap| !leap.eq_ignore_ascii_case("not synchronised"));
     let seconds: f64 = fields[4].parse().ok()?;
     let source = Some(fields[1]).filter(|s| !s.is_empty()).map(str::to_owned);
     Some(Daemon {
@@ -137,6 +168,7 @@ pub fn parse_chrony_tracking(output: &str) -> Option<Daemon> {
         // chrony reports how far the clock is behind; offset is the clock's
         // own error, so the sign flips.
         offset_us: Some((-seconds * 1_000_000.0).round() as i64),
+        synchronized,
     })
 }
 
@@ -149,12 +181,23 @@ fn timesyncd(cancellation: &Cancellation) -> Option<Daemon> {
     .ok()
     .filter(|output| output.status.success())?;
     let value: Value = serde_json::from_slice(&output.stdout).ok()?;
+    // timedated reads the kernel's state itself, outside this sandbox.
+    let synchronized = command::run_with_timeout(
+        Command::new("busctl").args(NTP_SYNCHRONIZED),
+        cancellation,
+        PROGRAM_TIMEOUT,
+    )
+    .ok()
+    .filter(|output| output.status.success())
+    .and_then(|output| serde_json::from_slice::<Value>(&output.stdout).ok())
+    .and_then(|value| value["data"].as_bool());
     Some(Daemon {
         name: Some("systemd-timesyncd"),
         source: value["data"]
             .as_str()
             .filter(|s| !s.is_empty())
             .map(str::to_owned),
+        synchronized,
         ..Daemon::default()
     })
 }
@@ -174,7 +217,14 @@ mod tests {
                 source: Some("169.254.169.123".into()),
                 stratum: Some(4),
                 offset_us: Some(12),
+                synchronized: Some(true),
             })
+        );
+        let unsynchronized =
+            "7F7F0101,,10,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,Not synchronised\n";
+        assert_eq!(
+            parse_chrony_tracking(unsynchronized).unwrap().synchronized,
+            Some(false)
         );
         assert_eq!(parse_chrony_tracking("506 Cannot talk to daemon"), None);
     }
@@ -188,14 +238,41 @@ mod tests {
             estimated_error_us: 300,
         };
         assert_eq!(
-            answer(kernel, Daemon::default()),
+            answer(Some(kernel), Daemon::default()).unwrap(),
             json!({"synchronized": true, "daemon": null, "source": null, "stratum": null,
                    "offset_us": 5, "max_error_us": 1200, "estimated_error_us": 300})
         );
         let chrony = parse_chrony_tracking("0,time.example.net,2,0,0.000042,0").unwrap();
-        let value = answer(kernel, chrony);
+        let value = answer(Some(kernel), chrony).unwrap();
         assert_eq!(value["offset_us"], json!(-42));
         super::super::contract::assert_conforms("query.time_sync@1", "result", &value);
+    }
+
+    #[test]
+    fn answers_from_the_daemon_when_adjtimex_is_refused() {
+        // ProtectClock=true refuses adjtimex; the kernel's view is then absent.
+        let line = "0,time.example.net,2,0,0.000042,0,0,0,0,0,0,0,0,Not synchronised";
+        let value = answer(None, parse_chrony_tracking(line).unwrap()).unwrap();
+        assert_eq!(
+            value,
+            json!({"synchronized": false, "daemon": "chronyd", "source": "time.example.net",
+                   "stratum": 2, "offset_us": -42, "max_error_us": null,
+                   "estimated_error_us": null})
+        );
+        super::super::contract::assert_conforms("query.time_sync@1", "result", &value);
+
+        let timesyncd = Daemon {
+            name: Some("systemd-timesyncd"),
+            synchronized: Some(true),
+            ..Daemon::default()
+        };
+        assert_eq!(
+            answer(None, timesyncd).unwrap()["synchronized"],
+            json!(true)
+        );
+
+        // Unknown is not "not synchronized".
+        assert!(answer(None, Daemon::default()).is_err());
     }
 
     #[cfg(target_os = "linux")]
