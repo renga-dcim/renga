@@ -13,6 +13,7 @@ defmodule Renga.Scim.Groups do
 
   alias Renga.Authorization
   alias Renga.Inventory.ChangeEvent
+  alias Renga.Inventory.Changes
   alias Renga.Repo
   alias Renga.Scim.Client
   alias Renga.Scim.Connection
@@ -146,8 +147,10 @@ defmodule Renga.Scim.Groups do
     Grants.reconcile!(connection.organization_id, users, Client.cause(client))
   end
 
+  # Settings pages, the member list, and Activity follow these writes.
   defp write(%Client{connection: connection}, mutation) do
     Grants.announcing(fn -> transact(connection, mutation) end)
+    |> Changes.broadcast(connection.organization_id)
   end
 
   defp transact(connection, mutation) do
