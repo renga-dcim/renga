@@ -163,11 +163,13 @@ defmodule Renga.Power.Readings do
   eligible ones: a native reading wins over an exporter's, then the latest.
   When none is eligible the latest is kept, so its staleness or failure can
   be shown, and it never counts.
+
+  `:all` takes every resource that some reading is about.
   """
   def for_resources(%Scope{}, [], %DateTime{}), do: %{}
 
   def for_resources(%Scope{organization_id: organization_id}, resource_ids, %DateTime{} = now) do
-    resource_ids = Enum.uniq(resource_ids)
+    resource_ids = if resource_ids == :all, do: :all, else: Enum.uniq(resource_ids)
 
     subjects =
       Map.merge(
@@ -233,7 +235,8 @@ defmodule Renga.Power.Readings do
         }
       )
 
-    from(match in subquery(latest), where: match.resource_id in ^resource_ids)
+    from(match in subquery(latest))
+    |> among(resource_ids)
     |> Repo.all()
     |> Map.new(&{{&1.source_id, nil}, &1.resource_id})
   end
@@ -259,12 +262,15 @@ defmodule Renga.Power.Readings do
       on: only.target_id == member.target_id,
       join: target in CollectorTarget,
       on: target.id == member.target_id,
-      where: member.resource_id in ^resource_ids,
       select: {target.source_id, target.key, member.resource_id}
     )
+    |> among(resource_ids)
     |> Repo.all()
     |> Map.new(fn {source_id, key, resource_id} -> {{source_id, key}, resource_id} end)
   end
+
+  defp among(query, :all), do: query
+  defp among(query, resource_ids), do: where(query, [row], row.resource_id in ^resource_ids)
 
   defp subject_readings(_organization_id, []), do: []
 

@@ -4,7 +4,7 @@ defmodule Renga.Findings do
   to them (RFD 8, "Inbox").
 
   Reconciliation opens and closes findings in each domain's own table; this
-  context never does. It reads the six finding tables through one query and
+  context never does. It reads the seven finding tables through one query and
   lets people record judgment on top: an assignee, a snooze until a time, or
   an exception accepted with a reason and optional expiry. Snoozes and
   exceptions only move a finding out of the open queue while they last, so
@@ -34,6 +34,7 @@ defmodule Renga.Findings do
   alias Renga.Inventory.Interface
   alias Renga.Inventory.Resource
   alias Renga.IPAM.AddressFinding
+  alias Renga.Power.Finding, as: PowerFinding
   alias Renga.Repo
   alias Renga.Topology.TopologyFinding
 
@@ -53,7 +54,10 @@ defmodule Renga.Findings do
       ~w(missing_vlan unexpected_vlan cable_plan_drift cable_plan_conflict cable_neighbor_mismatch),
     # Every address finding is observed state disagreeing with the address
     # plan: strictness, prefixes, assignments, or uniqueness.
-    "address" => AddressFinding.kinds()
+    "address" => AddressFinding.kinds(),
+    # Draw with no recorded connection is evidence disagreeing with the
+    # plan; the other power findings are about capacity and health.
+    "power" => ~w(unexpected_draw)
   }
   @drift_pairs for {domain, kinds} <- @drift_kinds, kind <- kinds, do: "#{domain}:#{kind}"
 
@@ -533,7 +537,7 @@ defmodule Renga.Findings do
           workflow.resolution_key == finding.resolution_key
   end
 
-  # The six finding tables in one shape. Topology and address findings
+  # The seven finding tables in one shape. Topology and address findings
   # belong to an interface; their resource is the interface's resource.
   defp findings_union(organization_id) do
     component =
@@ -676,12 +680,32 @@ defmodule Renga.Findings do
           resolved_at: finding.resolved_at
         }
 
+    power =
+      from finding in PowerFinding,
+        where: finding.organization_id == ^organization_id,
+        select: %{
+          domain: type(^"power", :string),
+          id: finding.id,
+          resource_id: finding.resource_id,
+          subject_id: finding.resource_id,
+          interface_id: type(^nil, :binary_id),
+          kind: finding.kind,
+          resolution_key: finding.resolution_key,
+          status: finding.status,
+          message: finding.message,
+          details: finding.details,
+          opened_at: finding.inserted_at,
+          last_observed_at: finding.last_observed_at,
+          resolved_at: finding.resolved_at
+        }
+
     component
     |> union_all(^hardware_match)
     |> union_all(^placement)
     |> union_all(^topology)
     |> union_all(^address)
     |> union_all(^collector)
+    |> union_all(^power)
   end
 
   defp state_filter("snoozed", now) do

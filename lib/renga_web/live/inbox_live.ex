@@ -1540,6 +1540,7 @@ defmodule RengaWeb.InboxLive do
   defp domain_label("topology"), do: "Network"
   defp domain_label("address"), do: "IP addresses"
   defp domain_label("collector"), do: "Collectors"
+  defp domain_label("power"), do: "Power"
 
   defp state_label(%{state: :open}), do: "Open"
   defp state_label(%{state: :snoozed}), do: "Snoozed"

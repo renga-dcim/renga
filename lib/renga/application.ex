@@ -27,6 +27,7 @@ defmodule Renga.Application do
         job_sweeper(),
         job_history_purger(),
         invitation_delivery_worker(),
+        power_finding_sweeper(),
         RengaWeb.Scim.RateLimit.Table,
         # Keep the endpoints last so infrastructure dependencies are ready first.
         RengaWeb.Endpoint,
@@ -68,6 +69,11 @@ defmodule Renga.Application do
 
   defp job_history_purger do
     if Application.get_env(:renga, :job_sweeper_enabled, true), do: Renga.Jobs.HistoryPurger
+  end
+
+  defp power_finding_sweeper do
+    if Application.get_env(:renga, :power_finding_sweeper_enabled, true),
+      do: Renga.Power.FindingSweeper
   end
 
   defp assignment_expiry_worker do
