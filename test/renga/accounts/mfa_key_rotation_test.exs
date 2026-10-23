@@ -13,8 +13,7 @@ defmodule Renga.Accounts.MFAKeyRotationTest do
     %{old_spec: previous[:keys]}
   end
 
-  defp code(secret, steps \\ 0),
-    do: NimbleTOTP.verification_code(secret, time: System.os_time(:second) + steps * 30)
+  defp code(secret), do: NimbleTOTP.verification_code(secret)
 
   defp key_id(user), do: Repo.one!(where(UserTOTP, user_id: ^user.id)).secret_key_id
 
@@ -23,8 +22,9 @@ defmodule Renga.Accounts.MFAKeyRotationTest do
     idle = user_fixture()
     used_secret = MFA.new_totp_secret()
     idle_secret = MFA.new_totp_secret()
-    {:ok, _} = MFA.enable_totp(used, used_secret, code(used_secret, -1))
-    {:ok, _} = MFA.enable_totp(idle, idle_secret, code(idle_secret, -1))
+    # Leaves the current step unspent.
+    totp_fixture(used, secret: used_secret)
+    totp_fixture(idle, secret: idle_secret)
 
     new_spec = "next:" <> Base.encode64(:crypto.strong_rand_bytes(32))
     Application.put_env(:renga, Renga.Vault, keys: new_spec <> "," <> old_spec)
