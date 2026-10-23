@@ -525,16 +525,23 @@ and it answers only when all of these hold:
   `curl_certificate`, `file`, and `yara`, which read files, reach the network,
   or copy files off the host. The agent reads the daemon's flags before every
   run and refuses otherwise. It does not look for table names in the SQL.
+* The daemon runs with `--carver_disable_function` (osquery's default), since
+  `carve()` copies files off the host even with the `carves` table disabled.
 * The text is one statement. osquery runs every statement it is given, so the
   agent splits the text at semicolons outside quotes and comments and refuses
-  a second statement before osquery sees any of it.
+  a second statement before osquery sees any of it. It also refuses SQLite
+  parameters (`?`, `:a`, `@a`, `$a`, `#a`) outside quotes: nothing binds them,
+  and `$a(...)` can hold a quote that would otherwise hide a second statement.
+* The statement is a `SELECT`, or a `WITH` that reads. Anything else, such as a
+  `PRAGMA`, is refused before osquery sees it.
 * The statement only reads. osquery's own SQLite database accepts `CREATE`,
   `INSERT`, and `DROP`, so the agent has SQLite `EXPLAIN` the statement first
   and refuses a program that opens a write transaction or writes a virtual
   table.
 
 ```sh
-osqueryd --disable_tables=augeas,carves,curl,curl_certificate,file,yara ...
+osqueryd --disable_tables=augeas,carves,curl,curl_certificate,file,yara \
+  --carver_disable_function=true ...
 ```
 
 The answer lists column names in osquery's order and each row's values as
@@ -542,6 +549,8 @@ strings, with osquery's NULL as an empty string. It stops at 256 columns,
 10,000 rows, or about 48 KiB, clips names to 128 and values to 1,024
 characters, and says `truncated` when it cut anything. osquery's own error,
 such as a syntax error or an unknown table, is shown in Renga as the reason.
+osquery returns all of a statement's rows in one reply; the agent reads at
+most 16 MiB of it and fails a larger one, so narrow such a query with `LIMIT`.
 
 ## Debian/Ubuntu package and smoke test
 

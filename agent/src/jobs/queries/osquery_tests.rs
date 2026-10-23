@@ -467,7 +467,10 @@ fn sql_daemon(disabled: &'static str) -> (QueryCapability, std::thread::JoinHand
     let (socket, server) = fake::serve(move |method, args| {
         let sql = args.field(1).and_then(Thrift::as_str).unwrap_or_default();
         match (method, sql.as_str()) {
-            ("options", _) => fake::options(&[("disable_tables", disabled)]),
+            ("options", _) => fake::options(&[
+                ("disable_tables", disabled),
+                ("carver_disable_function", "true"),
+            ]),
             ("getQueryColumns", "SELECT pid, name FROM processes") => {
                 fake::response(0, "OK", &[&[("pid", "BIGINT")], &[("name", "TEXT")]])
             }
@@ -479,14 +482,16 @@ fn sql_daemon(disabled: &'static str) -> (QueryCapability, std::thread::JoinHand
                     &[("opcode", "Transaction"), ("p2", "0")],
                 ],
             ),
-            ("query", "EXPLAIN CREATE TABLE t (a)") => fake::response(
-                0,
-                "OK",
-                &[
-                    &[("opcode", "CreateBtree"), ("p2", "2")],
-                    &[("opcode", "Transaction"), ("p2", "1")],
-                ],
-            ),
+            ("query", "EXPLAIN WITH x AS (SELECT 1) INSERT INTO t SELECT * FROM x") => {
+                fake::response(
+                    0,
+                    "OK",
+                    &[
+                        &[("opcode", "CreateBtree"), ("p2", "2")],
+                        &[("opcode", "Transaction"), ("p2", "1")],
+                    ],
+                )
+            }
             ("query", "SELECT pid, name FROM processes") => fake::response(
                 0,
                 "OK",
@@ -604,9 +609,67 @@ fn ad_hoc_sql_must_be_one_statement() {
 #[test]
 fn ad_hoc_sql_must_only_read() {
     let (capability, server) = sql_daemon(ALL_DENIED);
-    let reason = refusal(&capability, "CREATE TABLE t (a)");
+    let reason = refusal(
+        &capability,
+        "WITH x AS (SELECT 1) INSERT INTO t SELECT * FROM x",
+    );
     assert!(reason.contains("must only read"), "{reason}");
     drop(capability);
     // The write was explained, never run.
     assert_eq!(server.join().unwrap(), ["options", "query"]);
+}
+
+#[test]
+fn ad_hoc_sql_must_be_a_select_before_osquery_sees_it() {
+    for sql in [
+        "CREATE TABLE t (a)",
+        "PRAGMA case_sensitive_like = ON",
+        "/* hi */ pragma case_sensitive_like = ON",
+        "ATTACH 'x' AS y",
+        "VALUES (1)",
+    ] {
+        let (capability, server) = sql_daemon(ALL_DENIED);
+        let reason = refusal(&capability, sql);
+        assert!(reason.contains("must be a SELECT"), "{sql}: {reason}");
+        drop(capability);
+        assert!(server.join().unwrap().is_empty(), "{sql}");
+    }
+}
+
+#[test]
+fn ad_hoc_sql_refuses_parameters_that_would_hide_a_statement() {
+    // SQLite reads `$x(')` as one parameter, so the quote never opens a
+    // string and the CREATE runs as a second statement.
+    for sql in [
+        "SELECT $x('); CREATE TABLE renga_probe(a); --'",
+        "SELECT :a",
+        "SELECT @a",
+        "SELECT ?",
+        "SELECT #a",
+    ] {
+        let (capability, server) = sql_daemon(ALL_DENIED);
+        let reason = refusal(&capability, sql);
+        assert!(reason.contains("parameters"), "{sql}: {reason}");
+        drop(capability);
+        assert!(server.join().unwrap().is_empty(), "{sql}");
+    }
+}
+
+#[test]
+fn ad_hoc_sql_needs_carving_disabled() {
+    let (socket, server) = fake::serve(|method, _args| match method {
+        "options" => fake::options(&[("disable_tables", ALL_DENIED)]),
+        _ => fake::response(1, "unexpected", &[]),
+    });
+    let capability = QueryCapability::new(
+        sql::Sql,
+        OsqueryConfig {
+            enabled: true,
+            socket,
+        },
+    );
+    let reason = refusal(&capability, "SELECT carve('/etc/passwd')");
+    assert!(reason.contains("carver_disable_function"), "{reason}");
+    drop(capability);
+    assert_eq!(server.join().unwrap(), ["options"]);
 }

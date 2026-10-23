@@ -15,8 +15,22 @@
 //!
 //! * it splits the text at semicolons outside quotes and comments, and
 //!   refuses more than one statement before osquery sees any of it;
+//! * it refuses SQLite's parameter syntax (`?`, `:a`, `@a`, `$a`, `#a`)
+//!   outside quotes and comments. Nothing binds parameters here, and
+//!   SQLite's `$a(...)` form may hold a quote the splitter would otherwise
+//!   take as opening a string, hiding a second statement inside it;
+//! * it accepts only a `SELECT`, or a `WITH` that reads, refusing anything
+//!   else, such as a `PRAGMA` (which can change the connection while it is
+//!   merely prepared), before osquery sees it;
 //! * it asks SQLite to `EXPLAIN` that statement and refuses a program that
-//!   opens a write transaction or writes a virtual table.
+//!   opens a write transaction or writes a virtual table;
+//! * it requires `carver_disable_function`, since osquery's `carve()` copies
+//!   files off the host even with the `carves` table disabled.
+//!
+//! osquery returns a statement's rows as one reply. The agent reads at most
+//! 16 MiB of it and fails beyond that; what it reports is cut to Renga's
+//! bounds and says so with `truncated`. Bounding the daemon's own memory is
+//! osquery's watchdog's job, not something its extensions API offers.
 //!
 //! Without osquery there is nothing to answer with, so the query fails.
 
@@ -80,6 +94,7 @@ impl Query for Sql {
             return Ok(None);
         };
         refuse_unless_denied_tables_disabled(&options)?;
+        refuse_unless_carving_disabled(&options)?;
         let program = osquery
             .query(&format!("EXPLAIN {sql}"))
             .map_err(osquery_failure)?;
@@ -102,7 +117,34 @@ fn sql(raw: &Value) -> Result<String, JobFailure> {
     if statement.is_empty() {
         return Err(super::failed("invalid parameters: sql must not be blank"));
     }
+    if !matches!(
+        first_keyword(statement).to_ascii_uppercase().as_str(),
+        "SELECT" | "WITH"
+    ) {
+        return Err(super::failed(
+            "refused by the agent's policy: sql must be a SELECT",
+        ));
+    }
     Ok(statement.to_owned())
+}
+
+/// The statement's first word, after any leading comments.
+fn first_keyword(statement: &str) -> &str {
+    let bytes = statement.as_bytes();
+    let mut i = 0;
+    loop {
+        match bytes.get(i..i + 2) {
+            Some(b"--") => i = closing(bytes, i + 2, b"\n"),
+            Some(b"/*") => i = closing(bytes, i + 2, b"*/"),
+            _ if bytes.get(i).is_some_and(u8::is_ascii_whitespace) => i += 1,
+            _ => break,
+        }
+    }
+    let rest = &statement[i..];
+    let end = rest
+        .find(|c: char| !c.is_ascii_alphabetic())
+        .unwrap_or(rest.len());
+    &rest[..end]
 }
 
 /// The text before the first semicolon that is outside a string, quoted
@@ -122,6 +164,12 @@ fn single_statement(sql: &str) -> Result<&str, JobFailure> {
             b';' => {
                 end.get_or_insert(i);
                 (i + 1, true)
+            }
+            b'?' | b':' | b'@' | b'$' | b'#' => {
+                return Err(super::failed(
+                    "invalid parameters: sql must not use parameters ($, :, @, #, or ?) \
+                     outside quotes",
+                ))
             }
             byte => (i + 1, byte.is_ascii_whitespace()),
         };
@@ -180,6 +228,18 @@ fn refuse_unless_denied_tables_disabled(options: &osquery::Row) -> Result<(), Jo
     )))
 }
 
+/// `carve()` asks the daemon to copy files off the host whatever
+/// `disable_tables` says; only this flag turns it off. A daemon that does
+/// not report the flag is refused.
+fn refuse_unless_carving_disabled(options: &osquery::Row) -> Result<(), JobFailure> {
+    match options.get("carver_disable_function").map(String::as_str) {
+        Some("true") => Ok(()),
+        _ => Err(super::failed(
+            "refused by the agent's policy: osquery must run with --carver_disable_function",
+        )),
+    }
+}
+
 /// osquery's own message, such as a syntax error or an unknown table, is
 /// about the operator's SQL and safe to show them.
 fn osquery_failure(error: osquery::Error) -> JobFailure {
@@ -187,7 +247,10 @@ fn osquery_failure(error: osquery::Error) -> JobFailure {
         osquery::Error::Status { message, .. } => {
             super::failed(&format!("osquery: {}", clip(&message, 256)))
         }
-        _other => super::failed("osquery did not answer"),
+        _other => super::failed(
+            "osquery did not answer, or its answer was larger than the agent reads (16 MiB); \
+             narrow the query, for example with LIMIT",
+        ),
     }
 }
 
