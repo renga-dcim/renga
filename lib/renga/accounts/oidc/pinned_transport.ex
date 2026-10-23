@@ -65,10 +65,12 @@ defmodule Renga.Accounts.OIDC.PinnedTransport do
 
   # A receive with no time left would only poll, and a provider that keeps
   # data buffered, such as endless informational responses, could hold the
-  # request past its deadline; it ends there instead.
+  # request past its deadline; it ends there instead, with the same error a
+  # read that runs out of time gets, so the deadline fails one way wherever
+  # it falls.
   defp receive_response(conn, ref, response, deadline) do
     case remaining(deadline) do
-      0 -> {:error, conn, :timeout}
+      0 -> {:error, conn, %Mint.TransportError{reason: :timeout}}
       timeout -> receive_parts(conn, ref, response, deadline, timeout)
     end
   end
