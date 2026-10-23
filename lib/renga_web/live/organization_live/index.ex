@@ -41,6 +41,9 @@ defmodule RengaWeb.OrganizationLive.Index do
          |> stream_insert(:memberships, membership)
          |> put_flash(:info, "Organization created. Select it to open inventory.")}
 
+      {:error, :scoped_session} ->
+        {:noreply, put_flash(socket, :error, "Sign in another way to create an organization.")}
+
       {:error, changeset} ->
         {:noreply, assign(socket, :organization_form, to_form(changeset, action: :insert))}
     end
@@ -76,7 +79,9 @@ defmodule RengaWeb.OrganizationLive.Index do
               id="organizations-empty"
               class="px-4 py-8 text-center text-sm text-fg-muted"
             >
-              No organizations yet. Create the first one below.
+              No organizations yet.<span :if={!@current_scope.user.session_organization_id}>
+                Create the first one below.
+              </span>
             </li>
             <li
               :for={{id, membership} <- @streams.memberships}
@@ -116,7 +121,17 @@ defmodule RengaWeb.OrganizationLive.Index do
           </ul>
         </.settings_section>
 
+        <p
+          :if={@current_scope.user.session_organization_id}
+          id="scoped-session-organizations"
+          class="text-sm text-fg-muted"
+        >
+          You signed in with your organization's identity provider, so this session opens only
+          that organization. Sign in another way to open or create others.
+        </p>
+
         <.settings_section
+          :if={!@current_scope.user.session_organization_id}
           id="new-organization"
           title="New organization"
           description="You become its owner and can invite others."

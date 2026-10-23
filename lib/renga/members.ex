@@ -286,7 +286,8 @@ defmodule Renga.Members do
   invited them must still hold `members.manage` with a ceiling covering the
   role, so revoking an admin also stops what they invited. Returns
   `{:error, reason}` with `:invalid` (unknown, used, revoked, or expired),
-  `:wrong_email`, `:already_member`, or `:forbidden`.
+  `:wrong_email`, `:already_member`, `:forbidden`, or `:scoped_session` when
+  the user's session is scoped to another organization (RFD 15).
   """
   def accept_invitation(%User{} = user, token) when is_binary(token) do
     token_hash = OrganizationInvitation.hash_token(token)
@@ -299,6 +300,7 @@ defmodule Renga.Members do
         |> Repo.one()
 
       with organization_id when is_binary(organization_id) <- organization_id,
+           :ok <- session_may_join(user, organization_id),
            :ok <- Authorization.lock_active_organization!(organization_id),
            %OrganizationInvitation{} = invitation <- lock_invitation(organization_id, token_hash),
            %User{} = recipient <- lock_recipient(user.id),
@@ -335,6 +337,12 @@ defmodule Renga.Members do
       error -> error
     end)
   end
+
+  # A session from an organization provider's sign-in can join only that
+  # organization (RFD 15).
+  defp session_may_join(%User{session_organization_id: nil}, _organization_id), do: :ok
+  defp session_may_join(%User{session_organization_id: id}, id), do: :ok
+  defp session_may_join(%User{}, _organization_id), do: {:error, :scoped_session}
 
   defp lock_invitation(organization_id, token_hash) do
     OrganizationInvitation

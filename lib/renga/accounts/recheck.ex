@@ -380,12 +380,15 @@ defmodule Renga.Accounts.Recheck do
   end
 
   # The session must still be a valid session of this user; a token that was
-  # expired or belongs to someone else authorizes nothing.
+  # expired or belongs to someone else authorizes nothing. Nor does a session
+  # from an organization provider's sign-in: that organization's owners
+  # control the identity it proved, so it never reaches an account-wide
+  # credential (RFD 15).
   defp fetch_session(%User{id: user_id}, session_token) when is_binary(session_token) do
     {:ok, query} = UserToken.verify_session_token_query(session_token)
 
     case query |> exclude(:select) |> select([token], token) |> Repo.one() do
-      %UserToken{user_id: ^user_id} = token -> {:ok, token}
+      %UserToken{user_id: ^user_id, scoped_organization_id: nil} = token -> {:ok, token}
       _ -> :error
     end
   end

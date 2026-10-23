@@ -26,6 +26,17 @@ defmodule RengaWeb.UserLive.Settings do
         class="max-w-3xl"
       >
         <div
+          :if={@current_scope.user.session_organization_id}
+          id="scoped_session_notice"
+          class="flex gap-2.5 rounded-md bg-info-fill px-3 py-2 text-sm text-fg"
+        >
+          <.icon name="hero-information-circle" class="mt-0.5 size-4 shrink-0 text-info" />
+          <p>
+            You signed in with your organization's identity provider, so this session can't
+            change how you sign in. Sign in another way to change these settings.
+          </p>
+        </div>
+        <div
           :if={@recovering}
           id="recovery_notice"
           class="flex gap-2.5 rounded-md bg-info-fill px-3 py-2 text-sm text-fg"
@@ -567,6 +578,13 @@ defmodule RengaWeb.UserLive.Settings do
         {:ok, _user} ->
           put_flash(socket, :info, "Email changed successfully.")
 
+        {:error, :scoped_session} ->
+          put_flash(
+            socket,
+            :error,
+            "This session signed in with your organization's identity provider. Sign in another way, then open the link again."
+          )
+
         {:error, _} ->
           put_flash(socket, :error, "Email change link is invalid or it has expired.")
       end
@@ -857,18 +875,24 @@ defmodule RengaWeb.UserLive.Settings do
     %{current_scope: %{user: user}, session_token: session_token} = socket.assigns
     change = guarded_change(action)
 
-    if Accounts.authorized_account_change?(user, session_token, change) do
-      apply_change(socket, action, params)
-    else
-      assign(socket, :recheck, %{
-        action: action,
-        change: change,
-        params: params,
-        methods: Accounts.recheck_methods(user),
-        identities: Accounts.recheck_identities(user),
-        code_sent: false,
-        form: recheck_form()
-      })
+    cond do
+      # No re-check can authorize it (RFD 15), so none is offered.
+      user.session_organization_id ->
+        put_flash(socket, :error, "Sign in another way to change how you sign in.")
+
+      Accounts.authorized_account_change?(user, session_token, change) ->
+        apply_change(socket, action, params)
+
+      true ->
+        assign(socket, :recheck, %{
+          action: action,
+          change: change,
+          params: params,
+          methods: Accounts.recheck_methods(user),
+          identities: Accounts.recheck_identities(user),
+          code_sent: false,
+          form: recheck_form()
+        })
     end
   end
 
