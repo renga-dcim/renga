@@ -14,6 +14,8 @@ defmodule Renga.Release.Providers do
       bin/providers test ID --actor NAME
       bin/providers enable ID --actor NAME
       bin/providers disable ID --actor NAME
+      bin/providers mark-mfa ID --actor NAME [--amr-combinations otp+pwd,hwk+pin]
+      bin/providers unmark-mfa ID --actor NAME
       bin/providers recover-local --actor NAME --minutes N [--disable ID]
       bin/providers recover-local --actor NAME --revoke
 
@@ -25,6 +27,13 @@ defmodule Renga.Release.Providers do
 
   A `github` provider has no issuer and never creates accounts: people
   link it to an account they already have, then sign in with it.
+
+  `mark-mfa` says the provider asks everyone who signs in through it for a
+  second factor, so its sign-ins meet an organization's MFA requirement
+  (RFD 19). When its ID tokens carry `amr`, they must then contain `mfa` or
+  every method of one `--amr-combinations` entry, each spanning two
+  independent factors. Without the option, `mark-mfa` keeps the provider's
+  combinations; `--amr-combinations ""` clears them.
   """
 
   alias Renga.Accounts.IdentityProviders
@@ -43,7 +52,8 @@ defmodule Renga.Release.Providers do
     hidden: :boolean,
     minutes: :integer,
     disable: :string,
-    revoke: :boolean
+    revoke: :boolean,
+    amr_combinations: :string
   ]
 
   @doc "Runs a command. Returns `{:ok, output}` or `{:error, message}`."
@@ -70,7 +80,8 @@ defmodule Renga.Release.Providers do
           if(provider.enabled, do: "enabled", else: "disabled"),
           "active #{provider.active_revision || "-"}",
           "pending #{provider.pending_revision || "-"}",
-          if(provider.hidden, do: "hidden", else: "")
+          if(provider.hidden, do: "hidden", else: ""),
+          if(provider.enforces_mfa, do: "enforces MFA", else: "")
         ]
         |> Enum.join("\t")
       end
@@ -136,6 +147,9 @@ defmodule Renga.Release.Providers do
     end
   end
 
+  defp command("mark-mfa", [id], opts), do: set_mfa_mark(id, true, opts)
+  defp command("unmark-mfa", [id], opts), do: set_mfa_mark(id, false, opts)
+
   defp command("recover-local", [], opts) do
     with {:ok, {:operator, actor}} <- actor(opts) do
       recover_local(opts, actor)
@@ -166,6 +180,26 @@ defmodule Renga.Release.Providers do
         {:error, "recover-local needs --minutes between 1 and 1440, or --revoke"}
     end
   end
+
+  defp set_mfa_mark(id, marked, opts) do
+    attrs =
+      %{"enforces_mfa" => marked, "mfa_amr_combinations" => split(opts[:amr_combinations])}
+      |> Map.reject(fn {_key, value} -> is_nil(value) end)
+
+    with {:ok, actor} <- actor(opts),
+         {:ok, provider} <- fetch(id),
+         {:ok, provider} <- IdentityProviders.set_mfa_mark(provider, attrs, actor) do
+      {:ok, "#{provider.id} #{mfa_status(provider)}."}
+    else
+      error -> failure(error)
+    end
+  end
+
+  defp mfa_status(%{enforces_mfa: false}), do: "does not count as MFA"
+  defp mfa_status(%{enforces_mfa: true, mfa_amr_combinations: []}), do: "enforces MFA"
+
+  defp mfa_status(%{enforces_mfa: true, mfa_amr_combinations: combinations}),
+    do: "enforces MFA, approving amr #{Enum.join(combinations, ", ")}"
 
   defp update_display(provider, opts, actor) do
     attrs =

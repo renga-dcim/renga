@@ -1,6 +1,7 @@
 #!/bin/sh
 # Manages deployment identity providers (RFD 15). Run without arguments for
-# usage. Arguments travel one per line, so none may contain a newline.
+# usage. Arguments travel one per line with a nonempty prefix, so command
+# substitution preserves a final empty argument. None may contain a newline.
 set -eu
 
 for argument in "$@"; do
@@ -11,4 +12,4 @@ for argument in "$@"; do
 done
 
 cd -P -- "$(dirname -- "$0")"
-RENGA_ARGV="$(printf '%s\n' "$@")" exec ./renga eval 'Renga.Release.providers()'
+RENGA_ARGV="$(printf 'x%s\n' "$@")" exec ./renga eval 'Renga.Release.providers()'

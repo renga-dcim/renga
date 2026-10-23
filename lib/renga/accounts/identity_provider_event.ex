@@ -8,7 +8,7 @@ defmodule Renga.Accounts.IdentityProviderEvent do
 
   use Ecto.Schema
 
-  @kinds ~w(created updated revision_pending revision_discarded activated enabled disabled removed secret_reencrypted)
+  @kinds ~w(created updated revision_pending revision_discarded activated enabled disabled removed secret_reencrypted mfa_marked mfa_unmarked)
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id

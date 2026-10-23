@@ -100,7 +100,12 @@ defmodule Renga.Release do
   """
   def providers do
     load_app()
-    argv = "RENGA_ARGV" |> System.get_env("") |> String.split("\n", trim: true)
+
+    argv =
+      "RENGA_ARGV"
+      |> System.get_env("")
+      |> String.split("\n", trim: true)
+      |> Enum.map(fn "x" <> argument -> argument end)
 
     [repo | _] = repos()
 
