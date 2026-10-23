@@ -41,16 +41,26 @@ defmodule Renga.Scim.Linking do
   sign-in's transaction. Returns the entries that were newly linked.
   """
   def link_identity(%UserIdentity{} = identity, claims) do
-    identity.provider_id
-    |> candidates(claims)
-    |> select([user, connection], {user.id, connection.organization_id})
+    candidates = candidates(identity.provider_id, claims)
+
+    candidates
+    |> select([user, connection], {connection.organization_id, user.id})
     |> Repo.all()
-    |> Enum.flat_map(fn {entry_id, organization_id} ->
+    # Organizations are locked in one order, so two sign-ins that reach the
+    # same organizations cannot deadlock.
+    |> Enum.sort()
+    |> Enum.flat_map(fn {organization_id, entry_id} ->
       # The organization lock first, as every grant-changing write takes it.
       # An organization that stopped being active links nothing, and the
-      # sign-in goes on.
+      # sign-in goes on. Once it is held, the entry is read again under the
+      # candidate rules: a SCIM write or connection change that committed
+      # meanwhile may have taken the correlation away.
       with :ok <- lock_organization(organization_id) do
-        DirectoryUser |> where(id: ^entry_id) |> lock("FOR UPDATE") |> Repo.one()
+        DirectoryUser
+        |> where(id: ^entry_id)
+        |> where([user], user.id in subquery(select(candidates, [user], user.id)))
+        |> lock("FOR UPDATE")
+        |> Repo.one()
       end
       |> case do
         %DirectoryUser{user_identity_id: nil} = entry ->
