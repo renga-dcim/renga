@@ -275,6 +275,7 @@ defmodule Renga.Accounts do
     case membership do
       %OrganizationMembership{organization: %Organization{} = organization} ->
         assigned = Authorization.assigned_access(membership.id)
+        user = put_organization_email(user, organization.id)
         Scope.for_membership(user, organization, membership, assigned)
 
       _ ->
@@ -283,6 +284,25 @@ defmodule Renga.Accounts do
   end
 
   def scope_for_user(nil, _organization_id), do: Scope.for_user(nil)
+
+  # Within an organization, an account without a global email is named by
+  # the address the organization's own provider asserts for it (RFD 15).
+  defp put_organization_email(%User{email: nil} = user, organization_id) do
+    email =
+      Repo.one(
+        from i in Renga.Accounts.UserIdentity,
+          join: p in assoc(i, :provider),
+          where: i.user_id == ^user.id and p.organization_id == ^organization_id,
+          where: not is_nil(i.email),
+          order_by: [desc: i.last_signed_in_at],
+          limit: 1,
+          select: i.email
+      )
+
+    %{user | organization_email: email}
+  end
+
+  defp put_organization_email(user, _organization_id), do: user
 
   ## Database getters
 

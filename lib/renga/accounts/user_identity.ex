@@ -12,6 +12,8 @@ defmodule Renga.Accounts.UserIdentity do
   schema "user_identities" do
     field :subject, :string
     field :email, :string
+    # Whether the provider verified `email` when it last asserted it.
+    field :email_verified, :boolean, default: false
     field :last_signed_in_at, :utc_datetime_usec
 
     belongs_to :user, Renga.Accounts.User

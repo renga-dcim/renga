@@ -28,6 +28,10 @@ defmodule Renga.Accounts.User do
     # organization's identity provider, the only organization that session
     # may open (RFD 15). See `Renga.Accounts.scope_for_user/2`.
     field :session_organization_id, :binary_id, virtual: true
+    # For an account without a global email, the address an organization's
+    # own provider asserts for it, filled in only by lookups within that
+    # organization, such as its member list (RFD 15).
+    field :organization_email, :string, virtual: true
 
     has_many :organization_memberships, OrganizationMembership
     has_many :created_resource_overrides, ResourceOverride, foreign_key: :created_by_user_id
@@ -39,10 +43,13 @@ defmodule Renga.Accounts.User do
   end
 
   @doc """
-  How to name the account to its owner: its global email, or a placeholder
-  for an account an organization's provider created without one (RFD 15).
+  How to name the account: its global email or, for an account an
+  organization's provider created without one (RFD 15), the address that
+  organization's provider asserts where a lookup filled it in, else a
+  placeholder.
   """
   def label(%__MODULE__{email: email}) when is_binary(email), do: email
+  def label(%__MODULE__{organization_email: email}) when is_binary(email), do: email
   def label(%__MODULE__{}), do: "Account without an email"
 
   @doc """

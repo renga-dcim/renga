@@ -18,6 +18,7 @@ defmodule RengaWeb.MemberLive do
 
   alias Renga.Accounts
   alias Renga.Accounts.OrganizationMembership
+  alias Renga.Accounts.User
   alias Renga.Assignments
   alias Renga.Inventory.Changes
   alias Renga.Members
@@ -75,17 +76,17 @@ defmodule RengaWeb.MemberLive do
       "disable" ->
         scope
         |> Members.disable_member(member.id, opts)
-        |> respond(socket, "#{member.user.email} disabled")
+        |> respond(socket, "#{User.label(member.user)} disabled")
 
       "enable" ->
         scope
         |> Members.enable_member(member.id, opts)
-        |> respond(socket, "#{member.user.email} re-enabled")
+        |> respond(socket, "#{User.label(member.user)} re-enabled")
 
       _role ->
         scope
         |> Members.change_role(member.id, params["role"], opts)
-        |> respond(socket, "#{member.user.email} is now #{params["role"]}")
+        |> respond(socket, "#{User.label(member.user)} is now #{params["role"]}")
     end
   end
 
@@ -103,7 +104,10 @@ defmodule RengaWeb.MemberLive do
       {:ok, assignment} ->
         {:noreply,
          socket
-         |> put_flash(:info, "#{member.user.email} now holds #{Assignment.role_name(assignment)}")
+         |> put_flash(
+           :info,
+           "#{User.label(member.user)} now holds #{Assignment.role_name(assignment)}"
+         )
          |> assign(:assign_form, assign_form())
          |> load_members()}
 
@@ -340,7 +344,7 @@ defmodule RengaWeb.MemberLive do
           class="rounded-lg border border-edge bg-surface"
         >
           <:col :let={member} label="Member" class="py-2">
-            <span class="block truncate font-medium text-fg">{member.user.email}</span>
+            <span class="block truncate font-medium text-fg">{User.label(member.user)}</span>
             <span
               :if={member.id == @current_scope.membership_id}
               class="block text-xs text-fg-muted"
@@ -481,7 +485,7 @@ defmodule RengaWeb.MemberLive do
                 id={"directory-#{entry.id}-account"}
                 class="block truncate text-fg"
               >
-                {user.email}
+                {User.label(user)}
               </span>
               <span
                 :if={!user}
@@ -540,7 +544,7 @@ defmodule RengaWeb.MemberLive do
       <.side_panel
         :if={@can_manage?}
         id="assign-panel"
-        title={if @assigning, do: "Roles for #{@assigning.user.email}", else: "Roles"}
+        title={if @assigning, do: "Roles for #{User.label(@assigning.user)}", else: "Roles"}
         description="Further roles add to the base role. Access changes at once and is recorded in Activity."
       >
         <div :if={@assigning} id="assign-current" class="mb-4 space-y-1">
@@ -618,7 +622,7 @@ defmodule RengaWeb.MemberLive do
       <.side_panel
         :if={@can_manage?}
         id="member-panel"
-        title={if @editing, do: @editing.user.email, else: "Member"}
+        title={if @editing, do: User.label(@editing.user), else: "Member"}
         description="Changes take effect at once and are recorded in Activity."
       >
         <.form :if={@form} for={@form} id="member-form" phx-submit="save">

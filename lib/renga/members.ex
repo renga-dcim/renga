@@ -25,6 +25,7 @@ defmodule Renga.Members do
   alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.Scope
   alias Renga.Accounts.User
+  alias Renga.Accounts.UserIdentity
   alias Renga.Accounts.UserNotifier
   alias Renga.Authorization
   alias Renga.Inventory.ChangeEvent
@@ -43,7 +44,11 @@ defmodule Renga.Members do
     if can_manage?(scope), do: Authorization.grantable_roles(scope.roles), else: []
   end
 
-  @doc "Every member of the organization, active and disabled, by email."
+  @doc """
+  Every member of the organization, active and disabled, by email. A member
+  without a global email carries the address the organization's own
+  provider asserts for them as `user.organization_email` (RFD 15).
+  """
   def list_members(%Scope{organization_id: organization_id}) do
     OrganizationMembership
     |> join(:inner, [membership], user in assoc(membership, :user))
@@ -51,6 +56,30 @@ defmodule Renga.Members do
     |> order_by([membership, user], asc: membership.status, asc: user.email)
     |> preload([_membership, user], user: user)
     |> Repo.all()
+    |> put_organization_emails(organization_id)
+  end
+
+  defp put_organization_emails(members, organization_id) do
+    user_ids = for %{user: %User{email: nil, id: id}} <- members, do: id
+    emails = organization_emails(organization_id, user_ids)
+
+    Enum.map(members, fn member ->
+      %{member | user: %{member.user | organization_email: emails[member.user_id]}}
+    end)
+  end
+
+  defp organization_emails(_organization_id, []), do: %{}
+
+  defp organization_emails(organization_id, user_ids) do
+    UserIdentity
+    |> join(:inner, [identity], provider in assoc(identity, :provider))
+    |> where([identity], identity.user_id in ^user_ids and not is_nil(identity.email))
+    |> where([_identity, provider], provider.organization_id == ^organization_id)
+    |> order_by([identity], asc: identity.last_signed_in_at)
+    |> select([identity], {identity.user_id, identity.email})
+    |> Repo.all()
+    # The most recent sign-in's address wins.
+    |> Map.new()
   end
 
   @doc """
@@ -321,7 +350,7 @@ defmodule Renga.Members do
         scope = %Scope{user: recipient, organization_id: invitation.organization_id}
 
         record!(scope, "member_joined", nil, invitation.role, %{
-          "member" => recipient.email,
+          "member" => recipient.email || invitation.email,
           "membership_id" => membership.id,
           "invitation_id" => invitation.id
         })
@@ -359,10 +388,34 @@ defmodule Renga.Members do
     |> Repo.one()
   end
 
-  defp confirmed_recipient(%User{confirmed_at: nil}, _invitation), do: {:error, :wrong_email}
+  # The invited address must be the account's confirmed global email, or
+  # one that the inviting organization's own identity provider verified for
+  # the account (RFD 15): that provider is trusted for its own organization,
+  # so an account it created without a global email can join it.
+  defp confirmed_recipient(%User{} = user, %OrganizationInvitation{} = invitation) do
+    if confirmed_email?(user, invitation.email) or
+         organization_verified_email?(user, invitation),
+       do: :ok,
+       else: {:error, :wrong_email}
+  end
 
-  defp confirmed_recipient(%User{email: email}, %OrganizationInvitation{email: invited}) do
-    if String.downcase(email) == String.downcase(invited), do: :ok, else: {:error, :wrong_email}
+  defp confirmed_email?(%User{confirmed_at: nil}, _invited), do: false
+  defp confirmed_email?(%User{email: nil}, _invited), do: false
+
+  defp confirmed_email?(%User{email: email}, invited),
+    do: String.downcase(email) == String.downcase(invited)
+
+  defp organization_verified_email?(%User{id: user_id}, %OrganizationInvitation{} = invitation) do
+    UserIdentity
+    |> join(:inner, [identity], provider in assoc(identity, :provider))
+    |> where([identity], identity.user_id == ^user_id and identity.email_verified)
+    |> where(
+      [identity],
+      fragment("lower(?)", identity.email) == ^String.downcase(invitation.email)
+    )
+    |> where([_identity, provider], provider.organization_id == ^invitation.organization_id)
+    |> where([_identity, provider], is_nil(provider.removed_at))
+    |> Repo.exists?()
   end
 
   # An operator's owner invitation (RFD 22) stays valid while the token that

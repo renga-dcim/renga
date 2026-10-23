@@ -134,7 +134,7 @@ defmodule Renga.Accounts.Identities do
 
   defp insert_link(user, provider, subject, email) do
     %UserIdentity{user_id: user.id, provider_id: provider.id, subject: subject}
-    |> Ecto.Changeset.change(email: email && email.address)
+    |> Ecto.Changeset.change(email_fields(email))
     |> Ecto.Changeset.unique_constraint([:provider_id, :subject])
     |> Repo.insert()
     |> case do
@@ -233,12 +233,16 @@ defmodule Renga.Accounts.Identities do
   end
 
   defp returning(identity, email, claims) do
+    # Both email fields are always written, even when one equals what was
+    # read: two sign-ins racing on this row must not leave one's address
+    # with the other's verification.
     identity =
-      identity
-      |> Ecto.Changeset.change(
-        email: email && email.address,
-        last_signed_in_at: Renga.Time.utc_now_ms()
-      )
+      email
+      |> email_fields()
+      |> Enum.reduce(Ecto.Changeset.change(identity), fn {field, value}, changeset ->
+        Ecto.Changeset.force_change(changeset, field, value)
+      end)
+      |> Ecto.Changeset.change(last_signed_in_at: Renga.Time.utc_now_ms())
       |> Repo.update!()
 
     Linking.link_identity(identity, claims)
@@ -260,14 +264,14 @@ defmodule Renga.Accounts.Identities do
         {:error, :unverified_email}
 
       true ->
-        sign_up(provider, subject, email.address, claims)
+        sign_up(provider, subject, email, claims)
     end
   end
 
-  defp sign_up(provider, subject, address, claims) do
+  defp sign_up(provider, subject, email, claims) do
     Repo.transact(fn ->
-      with {:ok, user} <- provider |> new_user(address) |> Repo.insert() do
-        link_new_user(user, provider, subject, address, claims)
+      with {:ok, user} <- provider |> new_user(email.address) |> Repo.insert() do
+        link_new_user(user, provider, subject, email, claims)
       end
     end)
     |> case do
@@ -289,15 +293,14 @@ defmodule Renga.Accounts.Identities do
 
   defp new_user(%IdentityProvider{}, _address), do: Ecto.Changeset.change(%User{})
 
-  defp link_new_user(user, provider, subject, address, claims) do
+  defp link_new_user(user, provider, subject, email, claims) do
     %UserIdentity{
       user_id: user.id,
       provider_id: provider.id,
       subject: subject,
-      email: address,
       last_signed_in_at: Renga.Time.utc_now_ms()
     }
-    |> Ecto.Changeset.change()
+    |> Ecto.Changeset.change(email_fields(email))
     |> Ecto.Changeset.unique_constraint([:provider_id, :subject])
     |> Repo.insert()
     |> case do
@@ -342,7 +345,14 @@ defmodule Renga.Accounts.Identities do
 
     case String.split(address, "@") do
       [local, domain] when local != "" and domain != "" ->
-        %{address: address, domain: domain, verified: claims["email_verified"] in [true, "true"]}
+        %{
+          address: address,
+          domain: domain,
+          verified: claims["email_verified"] in [true, "true"],
+          # What the identity records for joining an organization: only the
+          # boolean the OpenID Connect spec defines, not a string.
+          verified_claim: claims["email_verified"] === true
+        }
 
       _other ->
         nil
@@ -350,4 +360,7 @@ defmodule Renga.Accounts.Identities do
   end
 
   defp email(_claims), do: nil
+
+  defp email_fields(nil), do: [email: nil, email_verified: false]
+  defp email_fields(email), do: [email: email.address, email_verified: email.verified_claim]
 end
