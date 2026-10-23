@@ -20,7 +20,7 @@ defmodule Renga.Scim.GroupResource do
   alias Renga.Scim.Path
 
   @core "urn:ietf:params:scim:schemas:core:2.0:Group"
-  @value_filter ~r/^\s*value\s+eq\s+"((?:[^"\\]|\\.)*)"\s*$/i
+  @value_filter ~r/^\s*value\s+eq\s+("(?:[^"\\]|\\.)*")\s*$/i
 
   @doc "Attributes and members for a new group from a POST body."
   def create(resource) when is_map(resource), do: whole(resource)
@@ -137,9 +137,13 @@ defmodule Renga.Scim.GroupResource do
          members
        )
        when is_binary(filter) do
-    case Regex.run(@value_filter, filter) do
-      [_match, id] -> {:ok, attrs, MapSet.delete(members, unescape(id))}
-      nil -> {:error, {:invalid_filter, ~s(Members can only be filtered by value eq "id")}}
+    # The value is a JSON string literal (RFC 7644, section 3.4.2.2).
+    with [_match, literal] <- Regex.run(@value_filter, filter),
+         {:ok, id} when is_binary(id) <- Jason.decode(literal) do
+      {:ok, attrs, MapSet.delete(members, canonical(id))}
+    else
+      _unreadable ->
+        {:error, {:invalid_filter, ~s(Members can only be filtered by value eq "id")}}
     end
   end
 
@@ -178,7 +182,7 @@ defmodule Renga.Scim.GroupResource do
     Enum.reduce_while(members, {:ok, []}, fn
       %{} = member, {:ok, ids} ->
         case Attributes.get(member, "value") do
-          id when is_binary(id) and id != "" -> {:cont, {:ok, [id | ids]}}
+          id when is_binary(id) and id != "" -> {:cont, {:ok, [canonical(id) | ids]}}
           _other -> {:halt, {:error, {:invalid_value, "Each member needs a value"}}}
         end
 
@@ -193,7 +197,15 @@ defmodule Renga.Scim.GroupResource do
 
   defp member_ids(_members), do: {:error, {:invalid_value, "members must be a list"}}
 
-  defp unescape(value), do: Regex.replace(~r/\\(.)/, value, "\\1")
+  # Member ids are UUIDs, which providers may send in upper case; set
+  # operations compare the stored lower-case form. Anything else is left for
+  # the caller to refuse as not a member of the connection.
+  defp canonical(id) do
+    case Ecto.UUID.cast(id) do
+      {:ok, uuid} -> uuid
+      :error -> id
+    end
+  end
 
   defp invalid_syntax, do: {:error, {:invalid_syntax, "The request body must be a JSON object"}}
 end

@@ -130,6 +130,27 @@ defmodule RengaWeb.Scim.GroupControllerTest do
     assert cleared["members"] == []
   end
 
+  test "member ids match without case", %{conn: conn} do
+    [sam, kim] = Enum.map(~w(sam kim), &user!(conn, &1))
+    group = group!(conn, %{"members" => [%{"value" => String.upcase(sam["id"])}]})
+    assert member_ids(group) == [sam["id"]]
+
+    patched =
+      conn
+      |> patch_ops(group["id"], [
+        %{
+          "op" => "add",
+          "path" => "members",
+          "value" => [%{"value" => String.upcase(kim["id"])}]
+        },
+        %{"op" => "remove", "path" => "members", "value" => [%{"value" => kim["id"]}]},
+        %{"op" => "remove", "path" => ~s(members[value eq "#{String.upcase(sam["id"])}"])}
+      ])
+      |> body(200)
+
+    assert patched["members"] == []
+  end
+
   test "members must be users of the same connection", %{conn: conn} = context do
     other_owner = member_scope(organization_fixture(), "owner")
     {_token, other} = scim_token_fixture(other_owner, scim_connection_fixture(other_owner))
