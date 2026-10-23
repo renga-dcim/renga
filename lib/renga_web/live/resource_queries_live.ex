@@ -67,10 +67,10 @@ defmodule RengaWeb.ResourceQueriesLive do
   @impl true
   def handle_params(params, _uri, socket), do: {:noreply, load_run(socket, params["run"])}
 
-  @impl true
   # Choosing and running each read the host's agents again, so a run goes to
   # whichever offering agent was heard from most recently at that moment,
   # and the panel names that agent, not the one current when the page loaded.
+  @impl true
   def handle_event("choose", %{"key" => key}, socket) do
     socket = load_queries(socket)
 

@@ -55,6 +55,33 @@ defmodule RengaWeb.ResourceQueriesLiveTest do
     |> put_session(:current_organization_id, organization.id)
   end
 
+  defp contacted(agent, at) do
+    {:ok, _agent} =
+      Renga.Inventory.Agent
+      |> Renga.Repo.get!(agent.id)
+      |> Ecto.Changeset.change(last_contacted_at: at)
+      |> Renga.Repo.update()
+  end
+
+  defp claim_resource(context, agent) do
+    scope = Accounts.scope_for(context.organization)
+
+    {:ok, observation} =
+      Renga.Inventory.create_observation(scope, agent.source_id, %{
+        observation_id: "report-#{System.unique_integer([:positive])}",
+        observed_at: Renga.Time.utc_now_ms(),
+        payload: %{"hostname" => context.resource.name}
+      })
+
+    {:ok, _claim} =
+      Renga.Inventory.create_resource_identifier_claim(scope, agent.source_id, observation.id, %{
+        resource_id: context.resource.id,
+        kind: "hostname",
+        value: context.resource.name,
+        confidence: 100
+      })
+  end
+
   defp succeed(context, job, result) do
     {:ok, [{_job, token}]} =
       Jobs.lease_jobs(context.system, context.agent, [Renga.Jobs.Job.capability_key(job)], 1)
@@ -82,6 +109,26 @@ defmodule RengaWeb.ResourceQueriesLiveTest do
     # The tab is hidden, and its URL refuses too.
     assert {:error, {:live_redirect, %{to: to}}} = live(conn, ~p"/inventory/#{switch}/queries")
     assert to == ~p"/inventory/#{switch}"
+  end
+
+  test "a run goes to the agent heard from most recently when it is sent", context do
+    newer = agent_fixture(context.organization, ["host.inventory", @disk])
+    claim_resource(context, newer)
+    contacted(context.agent, ~U[2026-01-01 00:00:02.000000Z])
+    contacted(newer, ~U[2026-01-01 00:00:01.000000Z])
+    conn = conn_for(context.conn, context.runner, context.organization)
+
+    {:ok, view, _html} = live(conn, ~p"/inventory/#{context.resource}/queries")
+    view |> element("#query-disk_usage-run") |> render_click()
+
+    # The other agent checks in after the panel opened.
+    contacted(newer, ~U[2026-01-01 00:00:03.000000Z])
+    view |> form("#query-form") |> render_submit()
+
+    assert [%{agent_id: agent_id}] =
+             Jobs.list_jobs(context.runner, resource_id: context.resource.id)
+
+    assert agent_id == newer.id
   end
 
   test "says why each query can or can't run here", context do
