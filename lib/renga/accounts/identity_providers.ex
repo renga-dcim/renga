@@ -252,6 +252,7 @@ defmodule Renga.Accounts.IdentityProviders do
         provider
         |> Ecto.Changeset.change(enabled: enabled)
         |> save(if(enabled, do: "enabled", else: "disabled"), actor)
+        |> scim_changed()
     end)
   end
 
@@ -273,6 +274,7 @@ defmodule Renga.Accounts.IdentityProviders do
         removed_at: Renga.Time.utc_now_ms()
       )
       |> save("removed", actor)
+      |> scim_changed()
     end)
   end
 
@@ -381,6 +383,15 @@ defmodule Renga.Accounts.IdentityProviders do
       end
     end)
   end
+
+  # SCIM grants through the provider are valid only while it is enabled and
+  # not removed (RFD 16), so they change in the same transaction.
+  defp scim_changed({:ok, provider}) do
+    Renga.Scim.provider_changed!(provider)
+    {:ok, provider}
+  end
+
+  defp scim_changed(error), do: error
 
   # Runs `fun` on the locked, current copy of the provider.
   defp change_provider(id, fun) do

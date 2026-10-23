@@ -434,6 +434,7 @@ defmodule Renga.Members do
       }
 
       with {:ok, member} <- lock_member(scope, membership_id),
+           :ok <- not_scim_managed(member),
            :ok <- member_within_ceiling(member, ceiling),
            {:ok, member} <- change.(ceiling, member) do
         Repo.preload(member, :user)
@@ -442,6 +443,12 @@ defmodule Renga.Members do
       end
     end)
     |> Changes.broadcast(scope.organization_id)
+  end
+
+  # The organization's identity provider decides a SCIM grant (RFD 16);
+  # assignments still add to it.
+  defp not_scim_managed(member) do
+    if OrganizationMembership.scim_managed?(member), do: {:error, :scim_managed}, else: :ok
   end
 
   defp member_within_ceiling(member, ceiling) do
@@ -479,12 +486,14 @@ defmodule Renga.Members do
   end
 
   # The organization lock taken by authorize!/3 serializes every membership
-  # change, so counting the other active owners here cannot race.
+  # change, so counting the other active owners here cannot race. Only an
+  # owner granted by hand counts: SCIM may remove its owners at any time.
   defp last_active_owner?(%OrganizationMembership{role: "owner", status: "active"} = member) do
     not (OrganizationMembership
          |> where([membership], membership.organization_id == ^member.organization_id)
          |> where([membership], membership.id != ^member.id)
          |> where([membership], membership.role == "owner" and membership.status == "active")
+         |> where([membership], is_nil(membership.scim_connection_id))
          |> Repo.exists?())
   end
 

@@ -30,6 +30,8 @@ defmodule Renga.Scim do
   alias Renga.Inventory.Changes
   alias Renga.Repo
   alias Renga.Scim.Connection
+  alias Renga.Scim.DirectoryGroup
+  alias Renga.Scim.Grants
   alias Renga.Scim.Token
 
   @token_prefix "renga_scim_"
@@ -114,7 +116,9 @@ defmodule Renga.Scim do
   enabled connection.
   """
   def create_connection(%Scope{} = scope, attrs) do
-    managed(scope, fn ->
+    provider_id = attrs["provider_id"] || attrs[:provider_id]
+
+    managed(scope, provider_id, fn ->
       changeset =
         %Connection{organization_id: scope.organization_id, created_by_user_id: scope.user.id}
         |> Connection.create_changeset(attrs)
@@ -144,6 +148,7 @@ defmodule Renga.Scim do
              |> Connection.default_role_changeset(%{default_role: role})
              |> Repo.update() do
         record_default_role!(scope, connection, updated)
+        reconcile_connection!(scope, updated)
         {:ok, updated}
       end
     end)
@@ -174,6 +179,7 @@ defmodule Renga.Scim do
           |> Repo.update!()
 
         record!(scope, "scim_connection_disabled", disabled)
+        reconcile_connection!(scope, disabled)
         {:ok, disabled}
       else
         {:ok, connection}
@@ -186,7 +192,9 @@ defmodule Renga.Scim do
   another one since or its provider is no longer eligible.
   """
   def enable_connection(%Scope{} = scope, connection_id) do
-    with_connection(scope, connection_id, fn connection ->
+    provider_id = connection_provider_id(scope, connection_id)
+
+    with_connection(scope, provider_id, connection_id, fn connection ->
       cond do
         Connection.enabled?(connection) ->
           {:ok, connection}
@@ -204,10 +212,110 @@ defmodule Renga.Scim do
             |> Repo.update!()
 
           record!(scope, "scim_connection_enabled", enabled)
+          reconcile_connection!(scope, enabled)
           {:ok, enabled}
       end
     end)
   end
+
+  @doc """
+  Maps a directory group to a built-in role, or unmaps it with `nil` or
+  `""`. The mapping names the group's Renga-assigned id, so renaming the
+  group keeps it and a recreated group starts unmapped. Members' grants
+  change before this returns.
+  """
+  def map_group(%Scope{} = scope, group_id, role) do
+    role = if role == "", do: nil, else: role
+
+    managed(scope, fn ->
+      with :ok <- check_role(role),
+           {:ok, group} <- lock_group(scope, group_id),
+           do: remap!(scope, group, role)
+    end)
+  end
+
+  defp remap!(_scope, %DirectoryGroup{role: role} = group, role), do: {:ok, group}
+
+  defp remap!(scope, group, role) do
+    mapped = group |> Ecto.Changeset.change(role: role) |> Repo.update!()
+    connection = Repo.get!(Connection, group.connection_id)
+
+    record!(
+      scope,
+      "scim_group_mapped",
+      connection,
+      group.role && %{"value" => group.role},
+      role && %{"value" => role},
+      %{"scim_group_id" => group.id, "group" => group.display_name}
+    )
+
+    Grants.reconcile!(
+      scope.organization_id,
+      Grants.users_of_group(group.id),
+      cause(scope, connection)
+    )
+
+    {:ok, mapped}
+  end
+
+  defp check_role(nil), do: :ok
+
+  defp check_role(role),
+    do: if(role in Authorization.built_in_roles(), do: :ok, else: {:error, :invalid_role})
+
+  defp lock_group(%Scope{organization_id: organization_id}, group_id) do
+    with {:ok, id} <- Ecto.UUID.cast(group_id || ""),
+         %DirectoryGroup{} = group <-
+           DirectoryGroup
+           |> where([group], group.organization_id == ^organization_id and group.id == ^id)
+           |> lock("FOR UPDATE")
+           |> Repo.one() do
+      {:ok, group}
+    else
+      _missing -> {:error, :not_found}
+    end
+  end
+
+  @doc """
+  Brings the connections to a provider in line after the provider is
+  enabled, disabled, or removed (RFD 16, "Memberships"). Removal disables
+  them and clears their entries' bindings. Runs inside the provider
+  change's transaction, which holds the provider lock; each organization
+  is locked after it, as a sign-in does.
+  """
+  def provider_changed!(%IdentityProvider{id: provider_id} = provider) do
+    Connection
+    |> where([connection], connection.provider_id == ^provider_id)
+    |> where([connection], is_nil(connection.disabled_at))
+    |> Repo.all()
+    |> Enum.each(&provider_changed!(provider, &1))
+  end
+
+  # An inactive organization's grants authorize nothing, so it is left for
+  # whenever it is reactivated; removal still retires its connection.
+  defp provider_changed!(provider, connection) do
+    active? = Grants.lock_organization(connection.organization_id) == :ok
+    users = if active?, do: Grants.users_of_connection(connection), else: []
+    if provider.removed_at, do: retire!(connection)
+    Grants.reconcile!(connection.organization_id, users, %{"connection_id" => connection.id})
+  end
+
+  defp retire!(connection) do
+    Repo.update_all(where(Connection, id: ^connection.id),
+      set: [disabled_at: Renga.Time.utc_now_ms()]
+    )
+
+    Repo.update_all(where(Renga.Scim.DirectoryUser, connection_id: ^connection.id),
+      set: [user_identity_id: nil]
+    )
+  end
+
+  defp reconcile_connection!(scope, connection) do
+    users = Grants.users_of_connection(connection)
+    Grants.reconcile!(scope.organization_id, users, cause(scope, connection))
+  end
+
+  defp cause(scope, connection), do: %{:actor => scope.user.id, "connection_id" => connection.id}
 
   @doc """
   Issues a token for a connection. Returns `{:ok, {token, value}}`; `value`
@@ -310,8 +418,13 @@ defmodule Renga.Scim do
 
   # Connection administration locks the organization, like every other
   # authorization-changing write, and then the connection.
-  defp managed(%Scope{} = scope, mutation) do
+  #
+  # Creating or re-enabling a connection first holds its provider, as a
+  # sign-in does, so a provider being disabled or removed meanwhile either
+  # waits and then reconciles the connection, or is seen as ineligible.
+  defp managed(%Scope{} = scope, provider_id \\ nil, mutation) do
     Repo.transaction(fn ->
+      if is_binary(provider_id), do: lock_provider(provider_id)
       Authorization.authorize!(scope, "scim.manage")
 
       case mutation.() do
@@ -322,10 +435,32 @@ defmodule Renga.Scim do
     |> Changes.broadcast(scope.organization_id)
   end
 
-  defp with_connection(scope, connection_id, mutation) do
-    managed(scope, fn ->
+  defp with_connection(scope, provider_id \\ nil, connection_id, mutation) do
+    managed(scope, provider_id, fn ->
       with {:ok, connection} <- lock_connection(scope, connection_id), do: mutation.(connection)
     end)
+  end
+
+  defp lock_provider(provider_id) do
+    IdentityProvider
+    |> where([provider], provider.id == ^provider_id)
+    |> lock("FOR SHARE")
+    |> Repo.one()
+  end
+
+  # Read before any lock; a connection's provider never changes.
+  defp connection_provider_id(%Scope{organization_id: organization_id}, connection_id) do
+    case Ecto.UUID.cast(connection_id || "") do
+      {:ok, id} ->
+        Connection
+        |> where([connection], connection.organization_id == ^organization_id)
+        |> where([connection], connection.id == ^id)
+        |> select([connection], connection.provider_id)
+        |> Repo.one()
+
+      :error ->
+        nil
+    end
   end
 
   defp lock_connection(%Scope{organization_id: organization_id}, connection_id) do
