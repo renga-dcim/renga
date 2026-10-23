@@ -279,8 +279,13 @@ defmodule Renga.ResourceGroupsTest do
                {"trusted", context.staging.id, context.environment.id}
              ]
 
-      assert [%{kind: "group_member_added"}, %{kind: "group_member_removed"} | _] =
-               Inventory.list_change_events(context.admin, context.web.id)
+      move_events =
+        context.admin
+        |> Inventory.list_change_events(context.web.id)
+        |> Enum.take(2)
+        |> Enum.map(& &1.kind)
+
+      assert Enum.sort(move_events) == ~w(group_member_added group_member_removed)
     end
 
     test "moving needs a group in a set", context do
