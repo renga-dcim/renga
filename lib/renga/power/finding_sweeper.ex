@@ -41,14 +41,16 @@ defmodule Renga.Power.FindingSweeper do
       )
 
     sweep = Keyword.get(options, :sweep, &sweep/0)
-    schedule(interval)
-    {:ok, %{interval: interval, sweep: sweep}}
+    clock = Keyword.get(options, :clock, fn -> System.os_time(:millisecond) end)
+    state = %{interval: interval, sweep: sweep, clock: clock}
+    schedule(state)
+    {:ok, state}
   end
 
   @impl true
-  def handle_info(:sweep, %{interval: interval, sweep: sweep} = state) do
+  def handle_info(:sweep, %{sweep: sweep} = state) do
     sweep.()
-    schedule(interval)
+    schedule(state)
     {:noreply, state}
   end
 
@@ -99,5 +101,10 @@ defmodule Renga.Power.FindingSweeper do
     |> Repo.all()
   end
 
-  defp schedule(interval), do: Process.send_after(self(), :sweep, interval)
+  # Sweeps start on whole multiples of the interval, so history records
+  # every minute however long a sweep takes; one that overruns skips to the
+  # next boundary rather than recording a past minute.
+  defp schedule(%{interval: interval, clock: clock}) do
+    Process.send_after(self(), :sweep, interval - rem(clock.(), interval))
+  end
 end

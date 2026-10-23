@@ -11,7 +11,9 @@ defmodule Renga.Power.History do
 
   A device's input power is its host input meter when that is current, and
   otherwise the sum of its supplies' inputs when every current power port
-  has one. A partial sum would understate the load, so it is a gap too.
+  has one. A partial sum would understate the load, so it is a gap too, as
+  is a reading that declares partial coverage. Devices with readings but no
+  modeled power ports are recorded from their host meter alone.
 
   Every node's sweeper may call `record/2`; the minute is claimed per
   organization first, so each minute is written once.
@@ -78,6 +80,8 @@ defmodule Renga.Power.History do
         do: %{series: feed_series(feed), at: minute, value: load}
   end
 
+  # Every device some reading is about, whether or not it has modeled ports;
+  # the ports only matter for the supply fallback.
   defp device_samples(%Scope{organization_id: organization_id} = scope, now, minute) do
     ports =
       Port
@@ -85,10 +89,8 @@ defmodule Renga.Power.History do
       |> Repo.all()
       |> Enum.group_by(& &1.resource_id)
 
-    readings = Readings.for_resources(scope, Map.keys(ports), now)
-
-    for {resource_id, ports} <- ports,
-        %Decimal{} = input <- [input(Map.get(readings, resource_id, []), ports)],
+    for {resource_id, entries} <- Readings.for_resources(scope, :all, now),
+        %Decimal{} = input <- [input(entries, Map.get(ports, resource_id, []))],
         do: %{series: device_series(resource_id), at: minute, value: input}
   end
 
@@ -96,7 +98,10 @@ defmodule Renga.Power.History do
   def input(entries, ports) do
     power =
       entries
-      |> Enum.filter(&(&1.eligible? and &1.reading.quantity == "real_power"))
+      |> Enum.filter(
+        &(&1.eligible? and &1.reading.quantity == "real_power" and
+            &1.reading.coverage != "partial")
+      )
       |> Enum.map(& &1.reading)
 
     case shortest(Enum.filter(power, &(&1.boundary == "host_input"))) do
@@ -104,6 +109,9 @@ defmodule Renga.Power.History do
       host -> host.value
     end
   end
+
+  # With no modeled ports there is nothing to tell a whole sum from a part.
+  defp supplies_sum(_power, []), do: nil
 
   defp supplies_sum(power, ports) do
     by_supply =

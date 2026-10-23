@@ -130,4 +130,80 @@ defmodule Renga.Power.HistoryTest do
 
     assert [%Bucket{average: 330.0}] = buckets(scope, History.device_series(server.id), now)
   end
+
+  test "readings that cover only part of a device are not its input", context do
+    %{scope: scope, server: server, bmcs: bmcs} = context
+
+    reading_fixture(bmcs,
+      target: "bmc-db-1",
+      sensor: "host",
+      boundary: "host_input",
+      coverage: "partial",
+      value: 90
+    )
+
+    supply!(bmcs, "PSU1", 180)
+    supply!(bmcs, "PSU2", 170)
+    now = Renga.Time.utc_now_ms()
+
+    # A partial host meter gives way to the complete supplies.
+    assert History.record(scope, now) == 1
+    assert [%Bucket{average: 350.0}] = buckets(scope, History.device_series(server.id), now)
+  end
+
+  test "a partial supply input leaves a gap, and a real zero is kept", context do
+    %{scope: scope, server: server, bmcs: bmcs} = context
+
+    reading_fixture(bmcs,
+      target: "bmc-db-1",
+      sensor: "PSU1/input",
+      boundary: "supply_input",
+      component: {"power_port", "PSU1"},
+      coverage: "partial",
+      value: 180,
+      event_at: DateTime.add(Renga.Time.utc_now_ms(), -10, :second)
+    )
+
+    supply!(bmcs, "PSU2", 170)
+    now = Renga.Time.utc_now_ms()
+    assert History.record(scope, now) == 0
+
+    supply!(bmcs, "PSU1", 0)
+    supply!(bmcs, "PSU2", 0)
+    later = DateTime.add(now, 60, :second)
+    assert History.record(scope, later) == 1
+    assert [%Bucket{average: +0.0}] = buckets(scope, History.device_series(server.id), later)
+  end
+
+  test "a device with a host meter but no modeled ports is recorded", context do
+    %{scope: scope, bmcs: bmcs} = context
+
+    {:ok, portless} =
+      Renga.Inventory.create_resource(scope, %{
+        kind: "server",
+        name: "bare-1",
+        lifecycle_state: "active"
+      })
+
+    target_resource_fixture(bmcs, "bmc-bare-1", portless)
+
+    reading_fixture(bmcs,
+      target: "bmc-bare-1",
+      sensor: "host",
+      boundary: "host_input",
+      value: 410
+    )
+
+    reading_fixture(bmcs,
+      target: "bmc-bare-1",
+      sensor: "PSU1/input",
+      boundary: "supply_input",
+      component: {"power_port", "PSU1"},
+      value: 200
+    )
+
+    now = Renga.Time.utc_now_ms()
+    assert History.record(scope, now) == 1
+    assert [%Bucket{average: 410.0}] = buckets(scope, History.device_series(portless.id), now)
+  end
 end
