@@ -240,6 +240,7 @@ defmodule RengaWeb.Router do
       live "/activity", ActivityLive, :index
       live "/activity/jobs", JobsLive, :index
       live "/activity/jobs/:id", JobsLive, :show
+      live "/activity/queries/:batch_id", QueryBatchLive, :show
 
       live "/catalog/hardware-types", CatalogLive, :hardware_types
       live "/catalog/hardware-types/:id", CatalogLive, :hardware_type

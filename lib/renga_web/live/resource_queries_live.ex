@@ -21,6 +21,7 @@ defmodule RengaWeb.ResourceQueriesLive do
 
   import RengaWeb.InventoryComponents
   import RengaWeb.JobComponents
+  import RengaWeb.QueryComponents
 
   alias Renga.Authorization
   alias Renga.Catalog
@@ -29,8 +30,6 @@ defmodule RengaWeb.ResourceQueriesLive do
   alias Renga.Jobs.Capability
   alias Renga.Jobs.Job
   alias Renga.Jobs.Query
-  alias Renga.Jobs.Query.Schema
-  alias RengaWeb.Format
 
   @reload_after_ms 300
   @recent_runs 20
@@ -53,7 +52,7 @@ defmodule RengaWeb.ResourceQueriesLive do
          hardware?: Catalog.hardware_assignable_resource?(resource),
          reload_timer: nil,
          choice: nil,
-         run_form: run_form(%{}),
+         run_form: parameters_form(%{}),
          run_error: nil,
          run: nil
        )
@@ -75,7 +74,11 @@ defmodule RengaWeb.ResourceQueriesLive do
     socket = load_queries(socket)
 
     {:noreply,
-     assign(socket, choice: current_choice(socket, key), run_form: run_form(%{}), run_error: nil)}
+     assign(socket,
+       choice: current_choice(socket, key),
+       run_form: parameters_form(%{}),
+       run_error: nil
+     )}
   end
 
   def handle_event("run", params, socket) do
@@ -90,7 +93,7 @@ defmodule RengaWeb.ResourceQueriesLive do
         {:noreply, assign(socket, run_error: "No agent on this host offers this query.")}
 
       agent ->
-        parameters = typed_parameters(choice.module, values)
+        parameters = form_parameters(choice.module, values)
 
         case Jobs.create_job(scope, agent.id, choice.key, parameters, resource_id: resource.id) do
           {:ok, job} ->
@@ -102,7 +105,7 @@ defmodule RengaWeb.ResourceQueriesLive do
              |> push_patch(to: run_path(resource, job))}
 
           {:error, %Ecto.Changeset{} = changeset} ->
-            {:noreply, assign(socket, run_form: run_form(values, changeset.errors))}
+            {:noreply, assign(socket, run_form: parameters_form(values, changeset.errors))}
 
           {:error, reason} ->
             {:noreply, assign(socket, run_error: run_error(reason))}
@@ -183,7 +186,7 @@ defmodule RengaWeb.ResourceQueriesLive do
 
     with %Job{resource_id: resource_id} = job when resource_id == resource.id <-
            Jobs.get_job(scope, id, preload: [:agent, :requested_by_user]),
-         module when not is_nil(module) <- query_module(job) do
+         module when not is_nil(module) <- Query.module_for(Job.capability_key(job)) do
       assign(socket, :run, %{id: job.id, job: job, module: module})
     else
       _missing ->
@@ -194,44 +197,9 @@ defmodule RengaWeb.ResourceQueriesLive do
     end
   end
 
-  defp query_module(%Job{} = job) do
-    case Renga.Jobs.Registry.fetch(Job.capability_key(job)) do
-      {:ok, module} -> if Query.query?(module), do: module
-      {:error, _unknown} -> nil
-    end
-  end
-
   defp run_path(resource, job), do: ~p"/inventory/#{resource}/queries?#{[run: job.id]}"
 
   defp slug(module), do: module.name() |> String.replace_prefix("query.", "")
-
-  defp run_form(values, errors \\ []), do: to_form(values, as: :query, errors: errors)
-
-  # The form sends strings; the schema wants integers and booleans. A blank
-  # optional field is left out, and a value that does not parse is passed
-  # through for the schema to refuse.
-  defp typed_parameters(module, values) do
-    for {name, type, _required?} <- Query.parameter_fields(module),
-        value = Map.get(values, name),
-        value not in [nil, ""],
-        into: %{} do
-      {name, typed(unwrap(type), value)}
-    end
-  end
-
-  defp typed({:integer, _opts}, value) do
-    case Integer.parse(value) do
-      {integer, ""} -> integer
-      _other -> value
-    end
-  end
-
-  defp typed(:integer, value), do: typed({:integer, []}, value)
-  defp typed(:boolean, value), do: value == "true"
-  defp typed(_type, value), do: value
-
-  defp unwrap({:nullable, type}), do: type
-  defp unwrap(type), do: type
 
   defp run_error(:capability_not_allowed), do: "This organization has this query off."
   defp run_error(:capability_not_advertised), do: "The agent no longer offers this query."
@@ -348,21 +316,7 @@ defmodule RengaWeb.ResourceQueriesLive do
           class="space-y-4"
         >
           <p class="-mt-2 text-sm text-fg-muted">{@choice.module.summary()}</p>
-          <%!-- Names come from the query's own schema, so the atoms are
-                bounded; they may not exist yet on a fresh node. --%>
-          <div :for={{name, type, required?} <- Query.parameter_fields(@choice.module)}>
-            <.parameter_input
-              field={@run_form[String.to_atom(name)]}
-              type={unwrap(type)}
-              required?={required?}
-            />
-          </div>
-          <p
-            :if={Query.parameter_fields(@choice.module) == []}
-            class="text-sm text-fg-muted"
-          >
-            It takes no parameters.
-          </p>
+          <.parameter_fields form={@run_form} module={@choice.module} />
           <p :if={@run_error} id="query-run-error" role="alert" class="text-sm text-crit">
             {@run_error}
           </p>
@@ -385,78 +339,6 @@ defmodule RengaWeb.ResourceQueriesLive do
       </.side_panel>
     </Layouts.app>
     """
-  end
-
-  attr :field, Phoenix.HTML.FormField, required: true
-  attr :type, :any, required: true
-  attr :required?, :boolean, required: true
-
-  defp parameter_input(%{type: {:integer, opts}} = assigns) do
-    assigns = assign(assigns, min: opts[:min], max: opts[:max])
-
-    ~H"""
-    <.input
-      field={@field}
-      type="number"
-      label={label(@field.field)}
-      min={@min}
-      max={@max}
-      placeholder={unless @required?, do: "Any"}
-    />
-    """
-  end
-
-  defp parameter_input(%{type: :integer} = assigns),
-    do: parameter_input(%{assigns | type: {:integer, []}})
-
-  defp parameter_input(%{type: :boolean} = assigns) do
-    ~H"""
-    <.input field={@field} type="checkbox" label={label(@field.field)} />
-    """
-  end
-
-  defp parameter_input(%{type: {:enum, values}} = assigns) do
-    assigns = assign(assigns, :values, values)
-
-    ~H"""
-    <.input
-      field={@field}
-      type="select"
-      label={label(@field.field)}
-      prompt={unless @required?, do: "Any"}
-      options={@values}
-    />
-    """
-  end
-
-  defp parameter_input(assigns) do
-    ~H"""
-    <.input
-      field={@field}
-      type="text"
-      label={label(@field.field)}
-      placeholder={unless @required?, do: "Any"}
-      autocomplete="off"
-    />
-    """
-  end
-
-  @acronyms %{"fs" => "FS", "pid" => "PID", "sql" => "SQL", "vrf" => "VRF"}
-
-  # A field's name as a label: `fs_type` reads "FS type", and a unit the
-  # value already shows (`size_bytes`, `offset_us`) is left off. An osquery
-  # SQL column names itself, so it can be blank or nothing but a unit.
-  defp label(field) do
-    name = to_string(field)
-    stripped = String.replace(name, ~r/_(bytes|us)$/, "")
-
-    case stripped
-         |> then(&if(&1 == "", do: name, else: &1))
-         |> String.split("_")
-         |> Enum.map_join(" ", &Map.get(@acronyms, &1, &1)) do
-      <<first::utf8, rest::binary>> -> String.upcase(<<first::utf8>>) <> rest
-      "" -> ""
-    end
   end
 
   attr :run, :map, required: true
@@ -540,95 +422,6 @@ defmodule RengaWeb.ResourceQueriesLive do
     </section>
     """
   end
-
-  # A succeeded run's result, split the way its schema reads: lists of
-  # objects as tables, other fields as properties, and `truncated` as a note.
-  defp result_parts(module, %Job{state: "succeeded", payload_hidden: false, result: %{} = result}) do
-    {:object, _fields} = schema = module.result_schema()
-
-    Enum.reduce(Schema.fields(schema), %{scalars: [], lists: [], truncated?: false}, fn
-      {"truncated", :boolean, _required?}, parts ->
-        %{parts | truncated?: result["truncated"] == true}
-
-      {name, {:list, {:object, _} = item, _opts}, _required?}, parts ->
-        list = %{name: name, columns: Schema.fields(item), rows: result[name] || []}
-        %{parts | lists: parts.lists ++ [list]}
-
-      # A table of strings (`query.sql@1`): `columns` names each row's cells
-      # in order, so the two read as one table rather than as two fields.
-      {"columns", {:list, _item, _opts}, _required?}, parts ->
-        parts
-
-      {name, {:list, {:list, _cell, _cell_opts}, _opts}, _required?}, parts ->
-        names = result["columns"] || []
-        rows = for row <- result[name] || [], do: Map.new(Enum.zip(names, row))
-
-        list = %{
-          name: name,
-          columns: for(column <- names, do: {column, :string, true}),
-          rows: rows
-        }
-
-        %{parts | lists: parts.lists ++ [list]}
-
-      {name, _type, _required?}, parts ->
-        %{parts | scalars: parts.scalars ++ [{name, result[name]}]}
-    end)
-  end
-
-  defp result_parts(_module, _job), do: nil
-
-  # What a run asked, in the order its schema declares: `port 22, failed
-  # only`. Hidden or absent parameters ask nothing.
-  defp asked(%Job{payload_hidden: true}), do: nil
-
-  defp asked(%Job{parameters: parameters} = job) when map_size(parameters) > 0 do
-    with module when not is_nil(module) <- query_module(job),
-         [_ | _] = terms <-
-           for(
-             {name, _type, _required?} <- Query.parameter_fields(module),
-             term = asked_term(name, Map.get(parameters, name)),
-             do: term
-           ) do
-      Enum.join(terms, ", ")
-    else
-      _nothing -> nil
-    end
-  end
-
-  defp asked(%Job{}), do: nil
-
-  defp asked_term(_name, nil), do: nil
-  defp asked_term(_name, false), do: nil
-  defp asked_term(name, true), do: Format.humanize(name)
-  defp asked_term(name, value), do: "#{Format.humanize(name)} #{value}"
-
-  defp format_value(_name, nil), do: "—"
-  defp format_value(_name, true), do: "Yes"
-  defp format_value(_name, false), do: "No"
-
-  defp format_value(name, value) when is_integer(value) do
-    cond do
-      String.ends_with?(name, "_bytes") -> bytes(value)
-      String.ends_with?(name, "_us") -> "#{value} µs"
-      true -> Integer.to_string(value)
-    end
-  end
-
-  defp format_value(_name, value), do: to_string(value)
-
-  defp value_class(value) when is_integer(value), do: "font-mono tabular-nums"
-  defp value_class(nil), do: "text-fg-subtle"
-  defp value_class(_value), do: nil
-
-  defp bytes(value) when value < 1024, do: "#{value} B"
-  defp bytes(value), do: bytes(value / 1024, ~w(KiB MiB GiB TiB PiB))
-
-  defp bytes(size, [_unit | [_ | _] = larger]) when size >= 1024, do: bytes(size / 1024, larger)
-  defp bytes(size, [unit | _larger]), do: "#{:erlang.float_to_binary(size, decimals: 1)} #{unit}"
-
-  defp sensitivity_label(:inventory), do: "Inventory"
-  defp sensitivity_label(:sensitive), do: "Sensitive"
 
   defp agent_name(%{name: name}) when is_binary(name), do: name
   defp agent_name(_agent), do: "this host's agent"
