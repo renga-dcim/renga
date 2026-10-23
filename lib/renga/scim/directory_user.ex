@@ -31,6 +31,10 @@ defmodule Renga.Scim.DirectoryUser do
     belongs_to :connection, Renga.Scim.Connection
     belongs_to :user_identity, Renga.Accounts.UserIdentity
 
+    many_to_many :groups, Renga.Scim.DirectoryGroup,
+      join_through: Renga.Scim.GroupMember,
+      join_keys: [user_id: :id, group_id: :id]
+
     timestamps(type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []})
   end
 

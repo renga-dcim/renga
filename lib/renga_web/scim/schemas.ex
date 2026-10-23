@@ -125,7 +125,8 @@ defmodule RengaWeb.Scim.Schemas do
     schema_resource(@group, "Group", "Group", [
       attribute("displayName", "string",
         required: true,
-        description: "The group's name"
+        uniqueness: "server",
+        description: "The group's name, unique within the connection"
       ),
       complex(
         "members",

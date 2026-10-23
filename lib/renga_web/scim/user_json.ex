@@ -26,7 +26,7 @@ defmodule RengaWeb.Scim.UserJSON do
       "name" => if(name == %{}, do: nil, else: name),
       "emails" => if(user.email, do: [%{"value" => user.email, "primary" => true}]),
       "active" => user.active,
-      "groups" => [],
+      "groups" => groups(user.groups),
       "meta" => %{
         "resourceType" => "User",
         "created" => DateTime.to_iso8601(user.inserted_at),
@@ -35,6 +35,19 @@ defmodule RengaWeb.Scim.UserJSON do
       }
     }
     |> compact()
+  end
+
+  # User groups are read-only: they reflect Group memberships.
+  defp groups(%Ecto.Association.NotLoaded{}), do: []
+
+  defp groups(groups) do
+    Enum.map(groups, fn group ->
+      %{
+        "value" => group.id,
+        "$ref" => url(~p"/scim/v2/Groups/#{group.id}"),
+        "display" => group.display_name
+      }
+    end)
   end
 
   defp compact(map), do: map |> Enum.reject(fn {_key, value} -> is_nil(value) end) |> Map.new()

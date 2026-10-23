@@ -70,6 +70,12 @@ defmodule RengaWeb.Router do
     put "/Users/:id", UserController, :update
     patch "/Users/:id", UserController, :patch
     delete "/Users/:id", UserController, :delete
+    get "/Groups", GroupController, :index
+    post "/Groups", GroupController, :create
+    get "/Groups/:id", GroupController, :show
+    put "/Groups/:id", GroupController, :update
+    patch "/Groups/:id", GroupController, :patch
+    delete "/Groups/:id", GroupController, :delete
     match :*, "/Me", DiscoveryController, :me
     match :*, "/Me/*path", DiscoveryController, :me
     match :*, "/*path", DiscoveryController, :not_found
