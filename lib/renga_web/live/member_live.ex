@@ -299,7 +299,14 @@ defmodule RengaWeb.MemberLive do
   # their open invitation if any.
   defp returning(scope, members, invitations) do
     invited = Map.new(invitations, &{&1.imported_principal_id, &1})
-    member_emails = MapSet.new(members, &String.downcase(&1.user.email))
+    # An account without a global email is named by its organization
+    # provider's address (RFD 15), which is also what its principal carries.
+    member_emails =
+      for %{user: user} <- members,
+          email = user.email || user.organization_email,
+          is_binary(email),
+          into: MapSet.new(),
+          do: String.downcase(email)
 
     for %{role: role} = entry when is_binary(role) <- Principals.list_unlinked(scope),
         not MapSet.member?(member_emails, String.downcase(entry.principal.email)),
