@@ -5,7 +5,8 @@ defmodule Renga.Scim.UserResource do
   idea of PUT:
 
     * `externalId`: omitted, null, or empty means none. On PUT that clears
-      it; PATCH add and replace follow PUT, and remove clears it.
+      it; PATCH add and replace follow PUT, and remove clears it. Any other
+      string is kept exactly, untrimmed, since it is correlation evidence.
     * `active`: omitted on POST means `true`; omitted on PUT keeps the
       current value; PATCH may only replace it with an explicit boolean.
       Null or any value other than a boolean or its accepted string form is
@@ -68,7 +69,7 @@ defmodule Renga.Scim.UserResource do
     name = Attributes.get(resource, "name")
 
     with {:ok, user_name} <- user_name(Attributes.get(resource, "userName")),
-         {:ok, external_id} <- string(resource, "externalId"),
+         {:ok, external_id} <- external_id("replace", Attributes.get(resource, "externalId")),
          {:ok, display_name} <- string(resource, "displayName"),
          :ok <- complex(name, "name"),
          {:ok, formatted} <- string(name || %{}, "formatted"),
@@ -166,7 +167,7 @@ defmodule Renga.Scim.UserResource do
   end
 
   defp apply_path(op, %{attribute: "externalid", filter: nil, sub: nil}, value, attrs) do
-    with {:ok, external_id} <- optional(op, value, "externalId"),
+    with {:ok, external_id} <- external_id(op, value),
          do: {:ok, %{attrs | external_id: external_id}}
   end
 
@@ -279,6 +280,13 @@ defmodule Renga.Scim.UserResource do
   end
 
   defp string(map, name), do: optional("replace", Attributes.get(map, name), name)
+
+  # externalId is correlation evidence, compared exactly with an ID token
+  # claim, so it is kept as sent: only null and the empty string mean none.
+  defp external_id("remove", _value), do: {:ok, nil}
+  defp external_id(_op, value) when value in [nil, ""], do: {:ok, nil}
+  defp external_id(_op, value) when is_binary(value), do: {:ok, value}
+  defp external_id(_op, _value), do: {:error, {:invalid_value, "externalId must be a string"}}
 
   defp complex(nil, _name), do: :ok
   defp complex(value, _name) when is_map(value), do: :ok

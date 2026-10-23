@@ -127,6 +127,13 @@ defmodule Renga.Scim.UserResourceTest do
 
       assert {:ok, %{external_id: nil}} =
                UserResource.patch([op("remove", "externalId")], @current)
+
+      # Correlation is exact, so surrounding spaces are part of the value.
+      assert {:ok, %{external_id: " 00u1 "}} =
+               UserResource.patch([op("replace", "externalId", " 00u1 ")], @current)
+
+      assert {:ok, %{external_id: " 00u1 "}} =
+               UserResource.replace(%{"userName" => "sam", "externalId" => " 00u1 "}, @current)
     end
 
     test "names, emails, and value-filtered paths" do
