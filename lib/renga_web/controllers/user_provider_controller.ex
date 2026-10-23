@@ -100,7 +100,7 @@ defmodule RengaWeb.UserProviderController do
   signing anyone in.
   """
   def test(conn, %{"token" => token}) do
-    case ProviderTests.start(token, &callback_url/1) do
+    case ProviderTests.start(token, &callback_url/1, current_user(conn)) do
       {:ok, url} ->
         redirect(conn, external: url)
 
@@ -121,7 +121,7 @@ defmodule RengaWeb.UserProviderController do
   # A test only validates and activates the revision. It leaves the browser
   # session as it was: nobody is signed in or out.
   defp finish_test(conn, test, %{"provider" => id} = params) do
-    case ProviderTests.finish(test, params, callback_url(id)) do
+    case ProviderTests.finish(test, params, callback_url(id), current_user(conn)) do
       {:ok, provider} ->
         conn
         |> put_flash(
@@ -139,6 +139,9 @@ defmodule RengaWeb.UserProviderController do
         |> redirect(to: after_test_path(IdentityProviders.get_any(id)))
     end
   end
+
+  defp current_user(%{assigns: %{current_scope: %{user: user}}}), do: user
+  defp current_user(_conn), do: nil
 
   # An owner testing their organization's provider goes back to its page.
   defp after_test_path(%{organization_id: organization_id}) when is_binary(organization_id),
@@ -275,6 +278,9 @@ defmodule RengaWeb.UserProviderController do
 
   defp test_message({:error, :test_expired}),
     do: "That test link has expired or was already used. Create a new test."
+
+  defp test_message({:error, :forbidden}),
+    do: "Only the owner who created this test can finish it, while signed in."
 
   defp test_message({:error, :revision_changed}),
     do: "The provider's settings changed since this test was created. Test the new settings."

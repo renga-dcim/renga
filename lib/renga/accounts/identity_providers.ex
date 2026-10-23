@@ -202,7 +202,7 @@ defmodule Renga.Accounts.IdentityProviders do
   @doc """
   Starts a test sign-in of the pending revision for `actor`. Returns
   `{:ok, {token, test}}`; the token opens the test once, within 15 minutes.
-  Only a successful test activates a revision (`activate_tested/1`).
+  Only a successful test activates a revision (`activate_tested/2`).
   """
   def create_test(%IdentityProvider{id: id} = provider, actor) do
     token = Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
@@ -231,12 +231,13 @@ defmodule Renga.Accounts.IdentityProviders do
   transaction that marks the test used. Refused when the test was used or
   expired, or when another edit replaced the revision it tested.
   """
-  def activate_tested(%IdentityProviderTest{id: test_id}) do
+  def activate_tested(%IdentityProviderTest{id: test_id}, tester \\ nil) do
     serialized(fn ->
       with {:ok, test} <- lock_test(test_id),
            # The test was created through a scoped lookup; its provider is
            # whichever scope that was.
            {:ok, provider} <- lock_any(test.provider_id),
+           :ok <- authorize_tester(provider, test, tester),
            :ok <- still_pending(provider, test) do
         test |> Ecto.Changeset.change(completed_at: Renga.Time.utc_now_ms()) |> Repo.update!()
 
@@ -260,6 +261,24 @@ defmodule Renga.Accounts.IdentityProviders do
       test -> {:ok, test}
     end
   end
+
+  # A deployment provider's test is the operator's or an administrator's
+  # bearer link and works without a session, as recovery needs. An
+  # organization's provider activates only for the owner who created the
+  # test, signed in, and still an owner now.
+  defp authorize_tester(%IdentityProvider{organization_id: nil}, _test, _tester), do: :ok
+
+  defp authorize_tester(
+         %IdentityProvider{organization_id: organization_id},
+         %IdentityProviderTest{actor_user_id: user_id},
+         %User{id: user_id} = tester
+       ) do
+    tester
+    |> Renga.Accounts.scope_for_user(organization_id)
+    |> Renga.Accounts.OrganizationProviders.authorize_owner!()
+  end
+
+  defp authorize_tester(_provider, _test, _tester), do: {:error, :forbidden}
 
   defp still_pending(%IdentityProvider{pending_revision: number}, %IdentityProviderTest{
          revision: number

@@ -103,8 +103,7 @@ defmodule Renga.Accounts.OrganizationProviders do
   defp authorized(%Scope{organization_id: organization_id} = scope, fun)
        when is_binary(organization_id) do
     Repo.transaction(fn ->
-      Authorization.authorize!(scope, @permission, lock: :share)
-      owner!(scope)
+      authorize_owner!(scope)
 
       case fun.() do
         {:ok, result} -> result
@@ -114,6 +113,17 @@ defmodule Renga.Accounts.OrganizationProviders do
   end
 
   defp authorized(_scope, _fun), do: {:error, :forbidden}
+
+  @doc """
+  Within a transaction, rolls it back with `:forbidden` unless `scope` is a
+  current owner of its organization. A test sign-in of an organization's
+  provider checks this again as it activates the revision.
+  """
+  def authorize_owner!(%Scope{} = scope) do
+    Authorization.authorize!(scope, @permission, lock: :share)
+    owner!(scope)
+    :ok
+  end
 
   # `organization.manage` can also come from a custom role, but it does not
   # cover identity providers (RFD 17); only the built-in owner role does,

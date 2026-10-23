@@ -1,6 +1,7 @@
 defmodule RengaWeb.OrganizationProviderLiveTest do
   use RengaWeb.ConnCase, async: true
 
+  import Ecto.Query
   import Phoenix.LiveViewTest
   import Renga.AccountsFixtures
   import Renga.InventoryFixtures
@@ -206,13 +207,49 @@ defmodule RengaWeb.OrganizationProviderLiveTest do
     assert {:error, {:redirect, %{to: "/users/providers/test/" <> token}}} =
              view |> element("#provider-#{provider.id}-test") |> render_click()
 
-    conn = get(recycle(conn), ~p"/users/providers/test/#{token}")
+    conn = get(conn, ~p"/users/providers/test/#{token}")
     params = FakeOIDCProvider.authorize(fake, redirected_to(conn, 302), %{"sub" => "owner-1"})
     conn = get(recycle(conn), ~p"/users/auth/#{provider.id}/callback", params)
 
     assert redirected_to(conn) == ~p"/settings/identity-providers"
     assert Phoenix.Flash.get(conn.assigns.flash, :info) =~ "now uses revision 1"
     assert IdentityProviders.usable?(OrganizationProviders.get(scope, provider.id))
+  end
+
+  test "only the owner who created a test, still an owner, can finish it", %{conn: conn} do
+    fake = FakeOIDCProvider.new()
+    FakeOIDCProvider.stub(fake)
+    {owner_conn, scope} = member_conn(conn, "owner")
+
+    provider =
+      provider_fixture(scope, %{"issuer" => fake.issuer, "client_id" => fake.client_id})
+
+    new_test = fn ->
+      {:ok, {token, _test}} = OrganizationProviders.create_test(scope, provider)
+      token
+    end
+
+    # A signed-out browser, or someone else, can't open the link or spend it.
+    for browser <- [build_conn(), elem(member_conn(build_conn(), "owner"), 0)] do
+      token = new_test.()
+      conn = get(browser, ~p"/users/providers/test/#{token}")
+      assert Phoenix.Flash.get(conn.assigns.flash, :error) =~ "Only the owner who created"
+    end
+
+    # An owner who started the test and then lost the role activates nothing.
+    token = new_test.()
+    conn = get(owner_conn, ~p"/users/providers/test/#{token}")
+    params = FakeOIDCProvider.authorize(fake, redirected_to(conn, 302), %{"sub" => "owner-1"})
+
+    Renga.Repo.update_all(
+      from(m in Renga.Accounts.OrganizationMembership, where: m.id == ^scope.membership_id),
+      set: [role: "member"]
+    )
+
+    conn = get(recycle(conn), ~p"/users/auth/#{provider.id}/callback", params)
+
+    assert Phoenix.Flash.get(conn.assigns.flash, :error) =~ "Only the owner who created"
+    refute IdentityProviders.usable?(OrganizationProviders.get(scope, provider.id))
   end
 
   test "a test sign-in that can't start returns to this page", %{conn: conn} do
@@ -225,7 +262,7 @@ defmodule RengaWeb.OrganizationProviderLiveTest do
     assert {:error, {:redirect, %{to: "/users/providers/test/" <> token}}} =
              view |> element("#provider-#{provider.id}-test") |> render_click()
 
-    conn = get(recycle(conn), ~p"/users/providers/test/#{token}")
+    conn = get(conn, ~p"/users/providers/test/#{token}")
 
     assert redirected_to(conn) == ~p"/settings/identity-providers"
     assert Phoenix.Flash.get(conn.assigns.flash, :error) =~ "test sign-in didn't work"
