@@ -6,6 +6,8 @@ defmodule RengaWeb.RequestComponents do
   """
   use RengaWeb, :html
 
+  alias Renga.Accounts.User
+
   alias RengaWeb.Format
 
   @doc "What the request changes, as a short phrase: \"Lifecycle → retired\"."
@@ -71,7 +73,7 @@ defmodule RengaWeb.RequestComponents do
     """
   end
 
-  defp request_author(%{requested_by_user: %{email: email}}), do: "By #{email}"
+  defp request_author(%{requested_by_user: %User{} = user}), do: "By #{User.label(user)}"
   defp request_author(_request), do: "By a former member"
 
   attr :id, :string, required: true
@@ -323,6 +325,6 @@ defmodule RengaWeb.RequestComponents do
 
   defp resource_name(resource), do: resource.display_name || resource.name
 
-  defp person(%{email: email}), do: email
+  defp person(%User{} = user), do: User.label(user)
   defp person(_missing), do: "a former member"
 end

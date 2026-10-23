@@ -120,6 +120,14 @@ defmodule Renga.Teams do
     |> order_by([_membership, _team_member, user], asc: user.email)
     |> preload([_membership, _team_member, user], user: user)
     |> Repo.all()
+    |> then(fn memberships ->
+      users =
+        memberships
+        |> Enum.map(& &1.user)
+        |> Renga.Accounts.put_organization_emails(organization_id)
+
+      Enum.zip_with(memberships, users, &%{&1 | user: &2})
+    end)
   end
 
   @doc """
@@ -202,7 +210,11 @@ defmodule Renga.Teams do
         kind: kind,
         field: "team",
         new_value: team_value(team),
-        metadata: %{"member" => membership.user.email, "membership_id" => membership.id},
+        metadata: %{
+          "member" =>
+            Renga.Accounts.label_in_organization(membership.user, membership.organization_id),
+          "membership_id" => membership.id
+        },
         occurred_at: Renga.Time.utc_now_ms()
       })
   end

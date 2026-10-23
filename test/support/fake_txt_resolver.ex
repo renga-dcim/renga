@@ -6,6 +6,9 @@ defmodule Renga.FakeTxtResolver do
 
       FakeTxtResolver.put("_renga-verification.example.com", ["renga-verification=..."])
       FakeTxtResolver.put("_renga-verification.example.com", {:error, :timeout})
+
+  An answer can also be a zero-arity function, called at lookup time and
+  returning one of those, to act while a lookup is in flight.
   """
 
   @doc "Makes `name` answer `answer`: a list of values or `{:error, reason}`."
@@ -17,10 +20,13 @@ defmodule Renga.FakeTxtResolver do
     |> Enum.find_value(fn pid -> answer(pid, name) end)
     |> case do
       nil -> {:error, :nxdomain}
-      {:error, _reason} = error -> error
-      values -> {:ok, values}
+      fun when is_function(fun, 0) -> answered(fun.())
+      answer -> answered(answer)
     end
   end
+
+  defp answered({:error, _reason} = error), do: error
+  defp answered(values), do: {:ok, values}
 
   defp answer(pid, name) when pid == self(), do: Process.get({__MODULE__, name})
 

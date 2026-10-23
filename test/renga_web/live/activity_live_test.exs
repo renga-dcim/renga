@@ -31,6 +31,23 @@ defmodule RengaWeb.ActivityLiveTest do
 
   defp minutes_ago(minutes), do: DateTime.add(DateTime.utc_now(), -minutes * 60)
 
+  test "a domain change shows up on an open page", %{conn: conn, scope: scope} do
+    Renga.Repo.insert!(%Renga.Accounts.OrganizationDomain{
+      organization_id: scope.organization_id,
+      domain: "acme.example",
+      token: "token",
+      verified_at: Renga.Time.utc_now_ms()
+    })
+
+    {:ok, view, _html} = live(conn, ~p"/activity")
+    refute render(view) =~ "acme.example"
+
+    # The daily check finds the record gone while the page is open.
+    Renga.Accounts.OrganizationDomains.recheck_verified()
+
+    assert render(view) =~ "acme.example stopped routing sign-in"
+  end
+
   test "lists the organization's changes newest first", %{
     conn: conn,
     scope: scope,

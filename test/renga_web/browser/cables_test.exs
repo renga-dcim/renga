@@ -253,6 +253,17 @@ defmodule RengaWeb.Browser.CablesTest do
     |> refute_has("#delete-plan-#{plan.id}-dialog [role=alertdialog]")
     |> click("#retract-cable-#{context.cable.id}")
     |> assert_has("#retract-cable-#{context.cable.id}-dialog [role=alertdialog]")
+    # The dialog sits in a table action cell, whose actions stay on one line;
+    # its own text still wraps inside it.
+    |> evaluate(
+      """
+      (() => {
+        const dialog = document.querySelector('#retract-cable-#{context.cable.id}-dialog [role=alertdialog]')
+        return dialog.scrollWidth <= dialog.clientWidth
+      })()
+      """,
+      &assert(&1 == true)
+    )
   end
 
   defp hover(conn, selector) do

@@ -114,6 +114,52 @@ defmodule Renga.FindingsTest do
       assert {[], 0} = Findings.list_findings(context.scope, assignee: :unassigned)
     end
 
+    test "an assignee without a global email goes by their organization address", context do
+      component_finding(context, "component_drift")
+      [finding] = open_findings(context)
+
+      # An account the organization's provider created has no global email (RFD 15).
+      owner = member_scope(context.organization, "owner")
+
+      {:ok, {provider, _revision}} =
+        Renga.Accounts.OrganizationProviders.create(owner, %{
+          "id" => Renga.Accounts.OrganizationProviders.new_id(),
+          "issuer" => "https://login.example.com",
+          "display_name" => "Example SSO",
+          "client_id" => "renga",
+          "client_secret" => "s3cret"
+        })
+
+      user = Renga.Repo.insert!(%Renga.Accounts.User{})
+      organization_membership_fixture(user, context.organization, %{role: "member"})
+
+      Renga.Repo.insert!(%Renga.Accounts.UserIdentity{
+        user_id: user.id,
+        provider_id: provider.id,
+        subject: "sam",
+        email: "sam@example.com"
+      })
+
+      assert {:ok, _workflow} = Findings.assign(context.scope, finding, user.id)
+
+      assert {[%{workflow: %{assignee_user: assignee}}], 1} =
+               Findings.list_findings(context.scope)
+
+      assert Renga.Accounts.User.label(assignee) == "sam@example.com"
+
+      assert "sam@example.com" in Enum.map(
+               Findings.assignable_users(context.scope),
+               &Renga.Accounts.User.label/1
+             )
+
+      # The assignment's history keeps that name too.
+      assert Renga.Repo.exists?(
+               from e in Renga.Inventory.ChangeEvent,
+                 where: e.kind == "finding_assigned",
+                 where: fragment("?->>'assignee' = ?", e.new_value, "sam@example.com")
+             )
+    end
+
     test "only active owners, admins, and members can be assigned", context do
       component_finding(context, "component_drift")
       [finding] = open_findings(context)

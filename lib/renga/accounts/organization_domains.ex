@@ -14,7 +14,8 @@ defmodule Renga.Accounts.OrganizationDomains do
   was.
 
   Changes need `organization.manage`, checked in the transaction that makes
-  them, and appear in the organization's Activity.
+  them, and appear in the organization's Activity, which open pages learn
+  of through `Renga.Inventory.Changes` once the change commits.
   """
 
   import Ecto.Query
@@ -24,6 +25,7 @@ defmodule Renga.Accounts.OrganizationDomains do
   alias Renga.Accounts.Scope
   alias Renga.Authorization
   alias Renga.Inventory.ChangeEvent
+  alias Renga.Inventory.Changes
   alias Renga.Repo
 
   @permission "organization.manage"
@@ -55,6 +57,7 @@ defmodule Renga.Accounts.OrganizationDomains do
         {:ok, claim}
       end
     end)
+    |> Changes.broadcast(scope.organization_id)
   end
 
   @doc """
@@ -65,8 +68,12 @@ defmodule Renga.Accounts.OrganizationDomains do
   """
   def verify(%Scope{} = scope, %OrganizationDomain{id: id}) do
     with {:ok, claim} <- fetch(scope, id),
-         {:ok, :found} <- check(claim) do
-      authorized(scope, fn -> claim_verified(scope, id) end)
+         {:ok, :found} <- check(claim),
+         {:ok, {claim, displaced_organization_id}} <-
+           authorized(scope, fn -> claim_verified(scope, id) end) do
+      # An organization that lost the domain to this one sees that too.
+      Changes.broadcast({:ok, claim}, displaced_organization_id)
+      Changes.broadcast({:ok, claim}, scope.organization_id)
     else
       {:ok, :missing} -> {:error, :record_not_found}
       {:ok, :unavailable} -> {:error, :dns_unavailable}
@@ -77,13 +84,14 @@ defmodule Renga.Accounts.OrganizationDomains do
   defp claim_verified(scope, id) do
     case lock_claim(scope, id) do
       nil -> {:error, :not_found}
-      %OrganizationDomain{verified_at: %DateTime{}} = claim -> {:ok, claim}
+      %OrganizationDomain{verified_at: %DateTime{}} = claim -> {:ok, {claim, nil}}
       claim -> take_over(scope, claim)
     end
   end
 
   # The domain is this organization's unless another still holds it and
   # still proves control; a holder whose record is gone loses it here.
+  # Returns the claim with the organization it was taken from, if any.
   defp take_over(scope, claim) do
     holder =
       OrganizationDomain
@@ -93,11 +101,13 @@ defmodule Renga.Accounts.OrganizationDomains do
 
     case holder && check(holder) do
       nil ->
-        mark_verified(scope, claim)
+        with {:ok, claim} <- mark_verified(scope, claim), do: {:ok, {claim, nil}}
 
       {:ok, :missing} ->
         unverify!(holder)
-        mark_verified(scope, claim)
+
+        with {:ok, claim} <- mark_verified(scope, claim),
+             do: {:ok, {claim, holder.organization_id}}
 
       {:ok, _found_or_unavailable} ->
         {:error, :verified_elsewhere}
@@ -136,6 +146,7 @@ defmodule Renga.Accounts.OrganizationDomains do
           {:ok, claim}
       end
     end)
+    |> Changes.broadcast(scope.organization_id)
   end
 
   @doc """
@@ -150,30 +161,34 @@ defmodule Renga.Accounts.OrganizationDomains do
     |> Enum.each(&recheck/1)
   end
 
+  # A DNS answer only speaks for the verification it was asked about. By the
+  # time it arrives, a sweep on another node may have unverified the claim
+  # and its owner verified it again, so the result applies only while the
+  # claim still carries the `verified_at` this sweep read.
   defp recheck(claim) do
     case check(claim) do
       {:ok, :found} ->
-        Repo.update_all(where(OrganizationDomain, id: ^claim.id),
-          set: [checked_at: Renga.Time.utc_now_ms()]
-        )
+        Repo.update_all(same_verification(claim), set: [checked_at: Renga.Time.utc_now_ms()])
 
       {:ok, :missing} ->
-        Repo.transaction(fn -> unverify_if_verified(claim.id) end)
+        fn -> unverify_if_unchanged(claim) end
+        |> Repo.transaction()
+        |> Changes.broadcast(claim.organization_id)
 
       {:ok, :unavailable} ->
         :ok
     end
   end
 
-  defp unverify_if_verified(id) do
-    case Repo.one(
-           from d in OrganizationDomain,
-             where: d.id == ^id and not is_nil(d.verified_at),
-             lock: "FOR UPDATE"
-         ) do
+  defp unverify_if_unchanged(claim) do
+    case claim |> same_verification() |> lock("FOR UPDATE") |> Repo.one() do
       nil -> :ok
-      claim -> unverify!(claim)
+      current -> unverify!(current)
     end
+  end
+
+  defp same_verification(%OrganizationDomain{id: id, verified_at: verified_at}) do
+    where(OrganizationDomain, [d], d.id == ^id and d.verified_at == ^verified_at)
   end
 
   defp unverify!(claim) do

@@ -10,6 +10,7 @@ defmodule Renga.Accounts.OrganizationDomainsTest do
   alias Renga.Accounts.Scope
   alias Renga.FakeTxtResolver
   alias Renga.Inventory.ChangeEvent
+  alias Renga.Inventory.Changes
   alias RengaWeb.ChangeDescription
 
   defp scope(organization, role) do
@@ -156,9 +157,16 @@ defmodule Renga.Accounts.OrganizationDomainsTest do
         OrganizationDomains.record_value(claim)
       ])
 
+      Changes.subscribe(owner)
+      Changes.subscribe(other)
+
       assert {:ok, claim} = OrganizationDomains.verify(other, claim)
       assert claim.verified_at
       refute Repo.reload!(held).verified_at
+
+      # Both organizations' open Activity pages hear of it.
+      assert_received {:inventory_changed, id} when id == organization.id
+      assert_received {:inventory_changed, id} when id == other_organization.id
 
       assert ["added", "verified", "unverified"] ==
                Enum.map(changes(organization), & &1.metadata["change"])
@@ -219,6 +227,29 @@ defmodule Renga.Accounts.OrganizationDomainsTest do
 
       assert ChangeDescription.describe(event) =~
                "acme.dev stopped routing sign-in: its DNS record is gone"
+    end
+
+    test "a stale answer doesn't undo a verification made while it was in flight", %{
+      organization: organization,
+      owner: owner
+    } do
+      claim = verified(owner, "acme.example")
+      reverified_at = DateTime.add(claim.verified_at, 1, :second)
+
+      # While this sweep waits on DNS, another node finds the record gone and
+      # the owner restores it and verifies again; then the old answer lands.
+      FakeTxtResolver.put(OrganizationDomains.record_name(claim), fn ->
+        Repo.update_all(where(OrganizationDomain, id: ^claim.id),
+          set: [verified_at: reverified_at]
+        )
+
+        {:error, :nxdomain}
+      end)
+
+      assert :ok = OrganizationDomains.recheck_verified()
+
+      assert Repo.reload!(claim).verified_at == reverified_at
+      refute Enum.any?(changes(organization), &(&1.metadata["change"] == "unverified"))
     end
   end
 

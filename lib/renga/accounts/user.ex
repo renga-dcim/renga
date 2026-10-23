@@ -51,10 +51,14 @@ defmodule Renga.Accounts.User do
   How to name the account: its global email or, for an account an
   organization's provider created without one (RFD 15), the address that
   organization's provider asserts where a lookup filled it in, else a
-  placeholder.
+  placeholder that tells such accounts apart by the start of their ID.
   """
   def label(%__MODULE__{email: email}) when is_binary(email), do: email
   def label(%__MODULE__{organization_email: email}) when is_binary(email), do: email
+
+  def label(%__MODULE__{id: <<short::binary-size(8), _rest::binary>>}),
+    do: "Account without an email (#{short})"
+
   def label(%__MODULE__{}), do: "Account without an email"
 
   @doc """

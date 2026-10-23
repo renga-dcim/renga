@@ -525,7 +525,7 @@ defmodule RengaUI.Components do
           aria-modal="true"
           aria-labelledby={"#{@id}-title"}
           aria-describedby={@description && "#{@id}-description"}
-          class="hidden h-full w-full flex-col border-l border-edge bg-surface text-fg shadow-2xl"
+          class="hidden h-full w-full flex-col whitespace-normal border-l border-edge bg-surface text-fg shadow-2xl"
         >
           <header class="flex items-start gap-3 border-b border-edge px-5 py-4">
             <div class="min-w-0 flex-1">
@@ -599,7 +599,7 @@ defmodule RengaUI.Components do
           aria-modal="true"
           aria-labelledby={"#{@id}-title"}
           aria-describedby={"#{@id}-message"}
-          class="hidden w-full max-w-sm flex-col rounded-xl border border-edge bg-surface p-5 text-fg shadow-2xl"
+          class="hidden w-full max-w-sm flex-col whitespace-normal rounded-xl border border-edge bg-surface p-5 text-fg shadow-2xl"
         >
           <h2 id={"#{@id}-title"} class="text-base font-semibold">{@title}</h2>
           <div id={"#{@id}-message"} class="mt-1.5 text-sm text-fg-muted">

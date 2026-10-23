@@ -285,24 +285,49 @@ defmodule Renga.Accounts do
 
   def scope_for_user(nil, _organization_id), do: Scope.for_user(nil)
 
-  # Within an organization, an account without a global email is named by
-  # the address the organization's own provider asserts for it (RFD 15).
-  defp put_organization_email(%User{email: nil} = user, organization_id) do
-    email =
-      Repo.one(
-        from i in Renga.Accounts.UserIdentity,
-          join: p in assoc(i, :provider),
-          where: i.user_id == ^user.id and p.organization_id == ^organization_id,
-          where: not is_nil(i.email),
-          order_by: [desc: i.last_signed_in_at],
-          limit: 1,
-          select: i.email
-      )
-
-    %{user | organization_email: email}
+  defp put_organization_email(user, organization_id) do
+    [user] = put_organization_emails([user], organization_id)
+    user
   end
 
-  defp put_organization_email(user, _organization_id), do: user
+  @doc """
+  Within an organization, names each account without a global email by the
+  address the organization's own provider asserts for it, as
+  `user.organization_email` (RFD 15). The most recent sign-in's address
+  wins. Entries that are not users, such as a deleted actor's nil, pass
+  through unchanged.
+  """
+  def put_organization_emails(users, organization_id) when is_list(users) do
+    user_ids = for %User{email: nil, id: id} <- users, uniq: true, do: id
+    emails = organization_emails(organization_id, user_ids)
+
+    Enum.map(users, fn
+      %User{email: nil, id: id} = user -> %{user | organization_email: emails[id]}
+      other -> other
+    end)
+  end
+
+  @doc """
+  How to name `user` within the organization, for a record such as Activity
+  metadata that keeps the name the person had then. See `User.label/1`.
+  """
+  def label_in_organization(%User{} = user, organization_id) do
+    [user] |> put_organization_emails(organization_id) |> hd() |> User.label()
+  end
+
+  defp organization_emails(_organization_id, []), do: %{}
+
+  defp organization_emails(organization_id, user_ids) do
+    Repo.all(
+      from i in Renga.Accounts.UserIdentity,
+        join: p in assoc(i, :provider),
+        where: i.user_id in ^user_ids and p.organization_id == ^organization_id,
+        where: not is_nil(i.email),
+        order_by: [asc: i.last_signed_in_at],
+        select: {i.user_id, i.email}
+    )
+    |> Map.new()
+  end
 
   ## Database getters
 

@@ -316,8 +316,9 @@ defmodule Renga.Jobs do
     users =
       Renga.Accounts.User
       |> where([user], user.id in ^ids.("user"))
-      |> select([user], {user.id, user.email})
       |> Repo.all()
+      |> Renga.Accounts.put_organization_emails(organization_id)
+      |> Enum.map(&{&1.id, Renga.Accounts.User.label(&1)})
 
     agents =
       Agent

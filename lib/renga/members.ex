@@ -21,6 +21,7 @@ defmodule Renga.Members do
 
   import Ecto.Query, warn: false
 
+  alias Renga.Accounts
   alias Renga.Accounts.OrganizationInvitation
   alias Renga.Accounts.OrganizationMembership
   alias Renga.Accounts.Scope
@@ -60,26 +61,8 @@ defmodule Renga.Members do
   end
 
   defp put_organization_emails(members, organization_id) do
-    user_ids = for %{user: %User{email: nil, id: id}} <- members, do: id
-    emails = organization_emails(organization_id, user_ids)
-
-    Enum.map(members, fn member ->
-      %{member | user: %{member.user | organization_email: emails[member.user_id]}}
-    end)
-  end
-
-  defp organization_emails(_organization_id, []), do: %{}
-
-  defp organization_emails(organization_id, user_ids) do
-    UserIdentity
-    |> join(:inner, [identity], provider in assoc(identity, :provider))
-    |> where([identity], identity.user_id in ^user_ids and not is_nil(identity.email))
-    |> where([_identity, provider], provider.organization_id == ^organization_id)
-    |> order_by([identity], asc: identity.last_signed_in_at)
-    |> select([identity], {identity.user_id, identity.email})
-    |> Repo.all()
-    # The most recent sign-in's address wins.
-    |> Map.new()
+    users = members |> Enum.map(& &1.user) |> Accounts.put_organization_emails(organization_id)
+    Enum.zip_with(members, users, &%{&1 | user: &2})
   end
 
   @doc """
@@ -596,7 +579,10 @@ defmodule Renga.Members do
   end
 
   defp activity_metadata(member, reason) do
-    %{"membership_id" => member.id, "member" => member.user.email}
+    %{
+      "membership_id" => member.id,
+      "member" => Accounts.label_in_organization(member.user, member.organization_id)
+    }
     |> then(&if(present?(reason), do: Map.put(&1, "reason", String.trim(reason)), else: &1))
   end
 

@@ -360,7 +360,7 @@ defmodule Renga.Assignments do
       %{
         "assignment_id" => assignment.id,
         "membership_id" => assignment.membership_id,
-        "member" => assignment.membership.user.email,
+        "member" => member_label(assignment),
         "role_id" => assignment.role_id,
         "valid_until" => assignment.valid_until && DateTime.to_iso8601(assignment.valid_until),
         "reason" => reason
@@ -379,6 +379,9 @@ defmodule Renga.Assignments do
     |> Repo.insert!()
   end
 
+  defp member_label(%{membership: membership}),
+    do: Renga.Accounts.label_in_organization(membership.user, membership.organization_id)
+
   defp record_expiry!(assignment) do
     value = %{"value" => Assignment.role_name(assignment)}
 
@@ -390,7 +393,7 @@ defmodule Renga.Assignments do
       metadata: %{
         "assignment_id" => assignment.id,
         "membership_id" => assignment.membership_id,
-        "member" => assignment.membership.user.email,
+        "member" => member_label(assignment),
         "role_id" => assignment.role_id,
         "valid_until" => DateTime.to_iso8601(assignment.valid_until)
       },
