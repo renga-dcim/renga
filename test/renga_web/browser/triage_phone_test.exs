@@ -11,7 +11,9 @@ defmodule RengaWeb.Browser.TriagePhoneTest do
 
   alias Renga.DCIM
   alias Renga.Inventory
+  alias Renga.ResourceGroups
   alias Renga.Teams
+  alias Renga.TriageRules
 
   @moduletag :playwright
   @moduletag browser_context_opts: [
@@ -49,7 +51,7 @@ defmodule RengaWeb.Browser.TriagePhoneTest do
         RengaWeb.Endpoint.session_options()
       )
 
-    %{conn: conn, server: server, rack: rack}
+    %{conn: conn, scope: scope, server: server, rack: rack}
   end
 
   test "sets an owner and places a resource at phone width", %{conn: conn} = context do
@@ -68,6 +70,39 @@ defmodule RengaWeb.Browser.TriagePhoneTest do
     |> assert_has("#triage-hardware")
   end
 
+  test "accepts a group suggestion at phone width", context do
+    {:ok, _host} = Inventory.create_host(context.scope, context.server.id, %{hostname: "web-01"})
+    {:ok, group} = ResourceGroups.create_group(context.scope, %{name: "Web tier"})
+
+    assert {:ok, %{applied: 1}} =
+             TriageRules.create_rule(context.scope, %{
+               "kind" => "group",
+               "name" => "Web hosts",
+               "hostname_pattern" => "web-*",
+               "resource_group_id" => group.id
+             })
+
+    [suggestion] = ResourceGroups.list_suggestions(context.scope)
+
+    context.conn
+    |> visit("/inbox?group=triage")
+    |> assert_has("body .phx-connected")
+    |> assert_has("#group-suggestion-#{suggestion.id}", text: "Web tier")
+    |> evaluate("matchMedia('(pointer: coarse)').matches", &assert(&1 == true))
+    |> evaluate(no_horizontal_scroll_js(), &assert(&1 == true))
+    |> evaluate(suggestion_tap_heights_js(suggestion.id), fn heights ->
+      assert Enum.all?(heights, &(round(&1) >= 44))
+    end)
+    |> click("#group-suggestion-#{suggestion.id}-accept")
+    |> refute_has("#group-suggestion-#{suggestion.id}")
+    |> assert_has("#flash-info", text: "Added to the group")
+
+    assert [%{group: %{id: id}, direct: true}] =
+             ResourceGroups.list_resource_groups(context.scope, context.server.id)
+
+    assert id == group.id
+  end
+
   defp fits_screen_js do
     """
     (() => {
@@ -82,6 +117,18 @@ defmodule RengaWeb.Browser.TriagePhoneTest do
     """
     Array.from(document.querySelectorAll(
       '#triage-owner-team, #triage-owner-save, #triage-placement-rack, #triage-placement-save'
+    )).map((element) => element.getBoundingClientRect().height)
+    """
+  end
+
+  defp no_horizontal_scroll_js do
+    "document.documentElement.scrollWidth <= document.documentElement.clientWidth"
+  end
+
+  defp suggestion_tap_heights_js(id) do
+    """
+    Array.from(document.querySelectorAll(
+      '#group-suggestion-#{id}-accept, #group-suggestion-#{id}-dismiss'
     )).map((element) => element.getBoundingClientRect().height)
     """
   end

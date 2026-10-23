@@ -12,6 +12,7 @@ defmodule RengaWeb.Browser.TriageRulePhoneTest do
   import Renga.TriageFixtures
 
   alias Renga.Inventory
+  alias Renga.ResourceGroups
   alias Renga.Teams
   alias Renga.TriageRules
 
@@ -77,6 +78,34 @@ defmodule RengaWeb.Browser.TriageRulePhoneTest do
     |> evaluate(fits_screen_js(), &assert(&1 == true))
     |> click_button("Save and apply")
     |> assert_has("#rules-ownership li", text: "owned by Platform")
+  end
+
+  test "previews and saves a group suggestion rule at phone width", context do
+    {:ok, _group} = ResourceGroups.create_group(context.scope, %{name: "Web tier"})
+
+    context.conn
+    |> visit("/settings/triage-rules")
+    |> assert_has("body .phx-connected")
+    |> click_button("New rule")
+    |> assert_has("#rule-panel [role=dialog]")
+    |> select("Kind", option: "Group suggestions", exact: false)
+    |> fill_in("Name", with: "Web groups")
+    |> fill_in("Hostname pattern", with: "web-*")
+    |> select("Suggest the group", option: "Web tier", exact: false)
+    |> assert_has("#rule-group-help", text: "never changes membership")
+    |> assert_has("#rule-preview-will-set", text: "Suggests the group for 2 resources")
+    |> evaluate("matchMedia('(pointer: coarse)').matches", &assert(&1 == true))
+    |> evaluate(fits_screen_js(), &assert(&1 == true))
+    |> evaluate(group_form_tap_heights_js(), fn heights ->
+      assert Enum.all?(heights, &(round(&1) >= 44))
+    end)
+    |> click_button("Save and apply")
+    |> assert_has("#rules-group li", text: "suggest Web tier")
+
+    assert [rule] = TriageRules.list_rules(context.scope)
+    assert rule.kind == "group"
+    assert ResourceGroups.list_resource_groups(context.scope, context.server.id) == []
+    assert length(ResourceGroups.list_suggestions(context.scope)) == 2
   end
 
   test "turns a triage pattern into a rule at phone width", %{conn: conn} do
@@ -166,6 +195,15 @@ defmodule RengaWeb.Browser.TriageRulePhoneTest do
       return box.left >= 0 && box.right <= document.documentElement.clientWidth + 0.5 &&
         document.documentElement.scrollWidth <= document.documentElement.clientWidth;
     })()
+    """
+  end
+
+  defp group_form_tap_heights_js do
+    """
+    Array.from(document.querySelectorAll(
+      '#rule_kind, #rule_name, #rule_match_on, #rule_hostname_pattern, ' +
+      '#rule_resource_group_id, #rule-save'
+    )).map((element) => element.getBoundingClientRect().height)
     """
   end
 end
