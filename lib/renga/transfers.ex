@@ -126,9 +126,14 @@ defmodule Renga.Transfers do
   def run(export_id, url_fun) do
     export = Repo.get!(OrganizationExport, export_id)
     organization = Repo.get!(Organization, export.organization_id)
-    path = Path.join(System.tmp_dir!(), "renga-export-#{export.id}.tar.zst")
+    # The archive holds the whole organization, so it is written in a new
+    # directory only this node's user can read, as the CLI's output is.
+    dir = Path.join(System.tmp_dir!(), "renga-export-#{Ecto.UUID.generate()}")
 
     try do
+      File.mkdir!(dir)
+      File.chmod!(dir, 0o700)
+      path = Path.join(dir, "#{export.id}.tar.zst")
       {:ok, summary} = Export.write(organization, path, parts: export.parts)
 
       case store(export, path, summary) do
@@ -140,7 +145,7 @@ defmodule Renga.Transfers do
         Logger.error("Organization export #{export.id} failed: #{Exception.message(exception)}")
         fail(export)
     after
-      File.rm(path)
+      File.rm_rf(dir)
     end
   end
 
