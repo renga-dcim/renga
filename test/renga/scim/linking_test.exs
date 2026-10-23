@@ -138,4 +138,27 @@ defmodule Renga.Scim.LinkingTest do
     assert Repo.reload!(entry).user_identity_id == nil
     assert DirectoryUser |> Repo.all() |> Enum.all?(&is_nil(&1.user_identity_id))
   end
+
+  test "unlinking the identity gives up the grant it carried", context do
+    context.connection |> Ecto.Changeset.change(default_role: "member") |> Repo.update!()
+    entry = entry!(context.client, %{"externalId" => "sub-1"})
+    user = set_password(user_fixture())
+    identity = identity!(user, context.provider, "sub-1")
+    Linking.link_identity(identity, %{"sub" => "sub-1"})
+
+    membership =
+      Repo.get_by!(Renga.Accounts.OrganizationMembership,
+        organization_id: context.connection.organization_id,
+        user_id: user.id
+      )
+
+    assert membership.status == "active"
+
+    token = Renga.Accounts.generate_user_session_token(user)
+    :ok = Renga.Accounts.recheck_with_password(user, token, valid_user_password())
+    assert {:ok, _identity} = Renga.Accounts.unlink_identity(user, token, identity.id)
+
+    assert Repo.reload!(entry).user_identity_id == nil
+    assert Repo.reload!(membership).status == "disabled"
+  end
 end

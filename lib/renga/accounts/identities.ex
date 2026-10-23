@@ -32,6 +32,7 @@ defmodule Renga.Accounts.Identities do
   alias Renga.Accounts.UserIdentity
   alias Renga.Accounts.UserToken
   alias Renga.Repo
+  alias Renga.Scim.Grants
   alias Renga.Scim.Linking
 
   @doc "The account's linked identities with their providers, by provider name."
@@ -152,28 +153,38 @@ defmodule Renga.Accounts.Identities do
   under the deployment's local sign-in policy and providers.
   """
   def unlink(%User{} = user, session_token, identity_id) do
-    MFA.with_account_lock(user, fn ->
-      with true <-
-             Recheck.authorized?(user, session_token, :unlink_identity) ||
-               {:error, :recheck_required},
-           %UserIdentity{} = identity <-
-             Repo.one(
-               from i in UserIdentity,
-                 where: i.id == ^identity_id and i.user_id == ^user.id,
-                 preload: :provider
-             ) || {:error, :not_found},
-           true <- can_sign_in_without?(user, identity) || {:error, :last_sign_in_method} do
-        Repo.delete!(identity)
-        SecurityLog.record(user, "identity_unlinked", %{"provider" => identity.provider_id})
-        {:ok, identity}
-      end
-    end)
+    Grants.announcing(fn -> unlink_locked(user, session_token, identity_id) end)
     |> tap(fn result ->
       with {:ok, _identity} <- result, do: SecurityLog.notify(user, "identity_unlinked")
     end)
   catch
     # A malformed ID from a crafted event names no identity.
     :error, %Ecto.Query.CastError{} -> {:error, :not_found}
+  end
+
+  defp unlink_locked(user, session_token, identity_id) do
+    MFA.with_account_lock(user, fn ->
+      with true <-
+             Recheck.authorized?(user, session_token, :unlink_identity) ||
+               {:error, :recheck_required},
+           # Locked before its SCIM bindings are read, as a returning
+           # sign-in locks it before linking: one that commits first is
+           # seen, and the two never wait on each other's locks in turn.
+           %UserIdentity{} = identity <-
+             Repo.one(
+               from i in UserIdentity,
+                 where: i.id == ^identity_id and i.user_id == ^user.id,
+                 lock: "FOR UPDATE",
+                 preload: :provider
+             ) || {:error, :not_found},
+           true <- can_sign_in_without?(user, identity) || {:error, :last_sign_in_method} do
+        # The SCIM grants it carried go with it (RFD 16).
+        Linking.unlink_identity!(identity)
+        Repo.delete!(identity)
+        SecurityLog.record(user, "identity_unlinked", %{"provider" => identity.provider_id})
+        {:ok, identity}
+      end
+    end)
   end
 
   # With local sign-in on, the account's email still signs it in. Otherwise
