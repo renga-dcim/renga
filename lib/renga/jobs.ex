@@ -1279,16 +1279,29 @@ defmodule Renga.Jobs do
 
   defp activity_actor(_actor), do: %{}
 
+  # Activity is a generic feed anyone who sees the resource reads, and what
+  # it records stays there. A job with sensitive output (every query) records
+  # only what ran and how it ended, never the agent's reason or result.
   defp activity_metadata(%Job{} = job) do
-    %{
-      "job_id" => job.id,
-      "title" => title(job),
-      "noun" => noun(job),
-      "state" => job.state,
-      "failure_reason" => job.failure_reason,
-      "observation_id" => job.result && job.result["observation_id"]
-    }
+    details =
+      if sensitive_output?(job),
+        do: %{},
+        else: %{
+          "failure_reason" => job.failure_reason,
+          "observation_id" => job.result && job.result["observation_id"]
+        }
+
+    %{"job_id" => job.id, "title" => title(job), "noun" => noun(job), "state" => job.state}
+    |> Map.merge(details)
     |> Map.reject(fn {_key, value} -> is_nil(value) end)
+  end
+
+  # A job whose capability is no longer registered is treated as sensitive.
+  defp sensitive_output?(%Job{} = job) do
+    case Registry.fetch(Job.capability_key(job)) do
+      {:ok, capability} -> capability.sensitive_output?()
+      {:error, _unknown} -> true
+    end
   end
 
   defp event_parts({type, actor, payload}), do: {type, actor, payload, nil}

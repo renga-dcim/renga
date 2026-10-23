@@ -74,6 +74,32 @@ defmodule Renga.Jobs.QueryAccessTest do
              Jobs.create_system_job(context.organization.id, context.agent.id, @collect, %{})
   end
 
+  test "Activity never records an agent's reason for a failed query", context do
+    enable(context.owner, [@packages])
+    grant(context.owner, context.owner, ~w(queries.run queries.run_sensitive))
+    resource = reported_resource_fixture(context.organization, context.agent)
+    system = Renga.Accounts.scope_for(context.organization)
+
+    {:ok, job} =
+      Jobs.create_job(context.owner, context.agent.id, @packages, %{"name" => "ssl"},
+        resource_id: resource.id
+      )
+
+    {:ok, [{_job, token}]} = Jobs.lease_jobs(system, context.agent, [@packages], 1)
+    {:ok, _} = Jobs.report(system, context.agent, job.id, token, "started", %{})
+
+    {:ok, _} =
+      Jobs.report(system, context.agent, job.id, token, "failed", %{
+        "reason" => "rpmdb open failed"
+      })
+
+    outcome =
+      context.owner |> Renga.Inventory.list_activity() |> Enum.find(&(&1.kind == "job_outcome"))
+
+    assert outcome.metadata["state"] == "failed"
+    refute Map.has_key?(outcome.metadata, "failure_reason")
+  end
+
   test "running a query needs queries.run, not a built-in role", context do
     enable(context.owner, [@disk])
 
