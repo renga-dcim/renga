@@ -12,6 +12,8 @@ defmodule RengaWeb.Operator.OrganizationControllerTest do
   alias Renga.Inventory
   alias Renga.Members
   alias Renga.Operators
+  alias Renga.Operators.InvitationDeliveries
+  alias Renga.Operators.InvitationDelivery
   alias Renga.Repo
 
   setup %{conn: conn} do
@@ -305,25 +307,58 @@ defmodule RengaWeb.Operator.OrganizationControllerTest do
       refute_received {:email, _}
     end
 
-    test "a failed delivery rolls back and the same key can be retried",
+    test "a failed delivery stays queued and a replay returns the same invitation",
          %{conn: conn, organization: organization} do
       mailer_config = Application.fetch_env!(:renga, Renga.Mailer)
       on_exit(fn -> Application.put_env(:renga, Renga.Mailer, mailer_config) end)
       Application.put_env(:renga, Renga.Mailer, adapter: Renga.FailingMailerAdapter)
 
       failed = invite(conn, organization, "owner@acme.test")
-      assert valid_operator_response(failed, 502) == %{"error" => "delivery_failed"}
-      refute Repo.get_by(OrganizationInvitation, email: "owner@acme.test")
-      assert events("organization.invite_owner") == [{"rejected", "delivery_failed"}]
+      body = valid_operator_response(failed, 201)
+
+      assert %OrganizationInvitation{id: invitation_id} =
+               Repo.get_by(OrganizationInvitation, email: "owner@acme.test")
+
+      assert %InvitationDelivery{attempts: 1} =
+               Repo.get_by(InvitationDelivery, invitation_id: invitation_id)
+
+      assert events("organization.invite_owner") == [{"succeeded", nil}]
+
+      replay = invite(conn, organization, "owner@acme.test")
+      assert valid_operator_response(replay, 201) == body
 
       Application.put_env(:renga, Renga.Mailer, mailer_config)
 
-      retried = invite(conn, organization, "owner@acme.test")
-      assert valid_operator_response(retried, 201)["email"] == "owner@acme.test"
-      assert_received {:email, %{to: [{_, "owner@acme.test"}]}}
+      assert :ok =
+               InvitationDeliveries.dispatch(
+                 invitation_id,
+                 DateTime.add(Renga.Time.utc_now_ms(), 10, :second)
+               )
 
-      assert events("organization.invite_owner") ==
-               [{"rejected", "delivery_failed"}, {"succeeded", nil}]
+      assert_received {:email, %{to: [{_, "owner@acme.test"}]}}
+      refute Repo.get_by(InvitationDelivery, invitation_id: invitation_id)
+
+      assert events("organization.invite_owner") == [{"succeeded", nil}]
+    end
+
+    test "refuses before mutation when invitation secrets cannot be encrypted",
+         %{conn: conn, organization: organization} do
+      vault_config = Application.fetch_env!(:renga, Renga.Vault)
+      on_exit(fn -> Application.put_env(:renga, Renga.Vault, vault_config) end)
+      Application.put_env(:renga, Renga.Vault, keys: nil)
+
+      conn = invite(conn, organization, "owner@acme.test")
+
+      assert valid_operator_response(conn, 503) == %{
+               "error" => "secret_storage_unavailable"
+             }
+
+      refute Repo.get_by(OrganizationInvitation, email: "owner@acme.test")
+      assert Repo.aggregate(InvitationDelivery, :count) == 0
+
+      assert events("organization.invite_owner") == [
+               {"rejected", "secret_storage_unavailable"}
+             ]
     end
 
     test "a new key replaces the open invitation for the address",

@@ -9,7 +9,7 @@ defmodule Renga.Repo.Migrations.AddOperatorToOrganizationInvitations do
       add :invited_by_operator, :text
 
       add :invited_by_operator_token_id,
-          references(:operator_tokens, type: :binary_id, on_delete: :nilify_all)
+          references(:operator_tokens, type: :binary_id, on_delete: :restrict)
     end
   end
 end

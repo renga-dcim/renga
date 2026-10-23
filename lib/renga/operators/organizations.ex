@@ -24,10 +24,10 @@ defmodule Renga.Operators.Organizations do
   alias Renga.Accounts.Organization
   alias Renga.Accounts.OrganizationInvitation
   alias Renga.Accounts.OrganizationMembership
-  alias Renga.Accounts.UserNotifier
   alias Renga.DeploymentAudit
   alias Renga.Inventory.ChangeEvent
   alias Renga.Operators.Idempotency
+  alias Renga.Operators.InvitationDeliveries
   alias Renga.Operators.OperatorToken
   alias Renga.Repo
 
@@ -77,14 +77,15 @@ defmodule Renga.Operators.Organizations do
   end
 
   @doc """
-  Invites `email` to own the organization `organization_id` and emails them
-  a link built by `url_fun` from the invitation's secret. Inviting an
-  address again replaces its open invitation.
+  Invites `email` to own the organization `organization_id` and durably queues
+  an email whose link `url_fun` builds from the invitation's secret. Inviting
+  an address again replaces its open invitation.
 
   Returns `{:ok, invitation}`, `{:error, :not_found}` for an unknown or
   disabled organization, `{:error, changeset}` for an invalid address or
-  one that already belongs to a member, `{:error, :delivery_failed}` when the
-  email could not be sent, or `{:error, :replayed}`.
+  one that already belongs to a member, `{:error,
+  :secret_storage_unavailable}` when its delivery secret cannot be encrypted,
+  or `{:error, :replayed}`.
   """
   def invite_owner(organization_id, email, context, url_fun, idempotency \\ nil)
       when is_function(url_fun, 1) do
@@ -97,19 +98,18 @@ defmodule Renga.Operators.Organizations do
              {:ok, invitation} <- insert_invitation(organization, email, token_hash, context) do
           invitation = %{invitation | organization: organization}
 
-          case deliver_invitation(invitation, token, url_fun) do
-            :ok ->
-              :ok = Idempotency.finish!(idempotency, invitation)
+          with {:ok, _delivery} <- InvitationDeliveries.enqueue(invitation, token, url_fun) do
+            :ok = Idempotency.finish!(idempotency, invitation)
 
-              {:ok, invitation,
-               %{
-                 organization: organization,
-                 target_id: invitation.id,
-                 changed: [:invitation]
-               }}
-
-            {:error, :delivery_failed} ->
-              {:error, :delivery_failed, %{organization: organization, target_id: invitation.id}}
+            {:ok, invitation,
+             %{
+               organization: organization,
+               target_id: invitation.id,
+               changed: [:invitation]
+             }}
+          else
+            {:error, reason} ->
+              {:error, reason, %{organization: organization, target_id: invitation.id}}
           end
         else
           {:error, :not_found} ->
@@ -123,18 +123,13 @@ defmodule Renga.Operators.Organizations do
         end
       end)
 
-    result
-  end
+    case result do
+      {:ok, invitation} = success ->
+        InvitationDeliveries.dispatch(invitation.id)
+        success
 
-  defp deliver_invitation(invitation, token, url_fun) do
-    case UserNotifier.deliver_organization_invitation(
-           invitation.email,
-           invitation.organization.name,
-           invitation.role,
-           url_fun.(token)
-         ) do
-      {:ok, _email} -> :ok
-      {:error, _reason} -> {:error, :delivery_failed}
+      error ->
+        error
     end
   end
 

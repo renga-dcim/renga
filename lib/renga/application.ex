@@ -26,6 +26,7 @@ defmodule Renga.Application do
         assignment_expiry_worker(),
         job_sweeper(),
         job_history_purger(),
+        invitation_delivery_worker(),
         # Keep the endpoints last so infrastructure dependencies are ready first.
         RengaWeb.Endpoint,
         RengaWeb.OperatorEndpoint
@@ -71,5 +72,10 @@ defmodule Renga.Application do
   defp assignment_expiry_worker do
     if Application.get_env(:renga, :assignment_expiry_worker_enabled, true),
       do: Renga.Assignments.ExpiryWorker
+  end
+
+  defp invitation_delivery_worker do
+    if Application.get_env(:renga, :invitation_delivery_worker_enabled, true),
+      do: Renga.Operators.InvitationDeliveryWorker
   end
 end

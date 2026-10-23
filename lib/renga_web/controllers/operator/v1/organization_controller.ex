@@ -69,11 +69,12 @@ defmodule RengaWeb.Operator.V1.OrganizationController do
     operation_id: "inviteOrganizationOwner",
     summary: "Invite an owner",
     description:
-      "Emails `email` an invitation to own the organization, replacing any open " <>
-        "invitation for the address. Accepting it requires signing in or registering with " <>
-        "that confirmed address under the deployment's sign-in rules. The response never " <>
-        "carries the invitation's link, and the invitation stops working if this token " <>
-        "is revoked. Needs `organizations:write`.",
+      "Durably queues an email inviting `email` to own the organization, replacing any " <>
+        "open invitation for the address. Delivery retries reuse the same invitation and " <>
+        "may duplicate its email after an ambiguous provider failure. Accepting it requires " <>
+        "signing in or registering with that confirmed address under the deployment's " <>
+        "sign-in rules. The response never carries the invitation's link, and the invitation " <>
+        "stops working if this token is revoked. Needs `organizations:write`.",
     parameters: [
       id: [in: :path, required: true, schema: %{type: :string, format: :uuid}],
       "idempotency-key": Schemas.idempotency_key_parameter()
@@ -84,17 +85,17 @@ defmodule RengaWeb.Operator.V1.OrganizationController do
         created:
           Schemas.idempotent_response(
             Schemas.OwnerInvitation,
-            "The invitation, already emailed."
+            "The invitation, durably queued for email delivery."
           ),
         not_found: {Schemas.Error, description: "No active organization has this ID."},
         unprocessable_entity:
           {Schemas.ValidationError,
            description: "The address is invalid or already belongs to a member."},
-        bad_gateway:
+        service_unavailable:
           {Schemas.Error,
            description:
-             "The email could not be sent, so the invitation was not made. Retry with " <>
-               "the same key."}
+             "Renga cannot securely queue the invitation email because secret storage " <>
+               "is unavailable."}
       ] ++ Schemas.write_responses()
 
   def invite_owner(conn, %{"id" => id}) do
@@ -159,8 +160,8 @@ defmodule RengaWeb.Operator.V1.OrganizationController do
 
   defp respond(conn, _idempotency, {:error, :not_found}), do: error(conn, 404, "not_found")
 
-  defp respond(conn, _idempotency, {:error, :delivery_failed}),
-    do: error(conn, 502, "delivery_failed")
+  defp respond(conn, _idempotency, {:error, :secret_storage_unavailable}),
+    do: error(conn, 503, "secret_storage_unavailable")
 
   defp authorize(conn, scope) do
     if Operators.authorized?(conn.assigns.operator_token, scope),

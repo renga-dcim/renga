@@ -5,8 +5,8 @@ defmodule RengaWeb.Operator.V1.Schemas.OwnerInvitation do
     %{
       title: "OwnerInvitation",
       description:
-        "An invitation to own an organization. Renga emails its link to the address; " <>
-          "the secret is never returned.",
+        "An invitation to own an organization. Renga durably queues its link for email " <>
+          "delivery to the address; the secret is never returned.",
       type: :object,
       properties: %{
         id: %{type: :string, format: :uuid},

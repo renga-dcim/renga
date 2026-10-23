@@ -158,7 +158,7 @@
       "OwnerInvitation": {
         "title": "OwnerInvitation",
         "additionalProperties": false,
-        "description": "An invitation to own an organization. Renga emails its link to the address; the secret is never returned.",
+        "description": "An invitation to own an organization. Renga durably queues its link for email delivery to the address; the secret is never returned.",
         "properties": {
           "email": {
             "type": "string"
@@ -480,7 +480,7 @@
                 }
               }
             },
-            "description": "The invitation, already emailed.",
+            "description": "The invitation, durably queued for email delivery.",
             "headers": {
               "idempotency-key-expires-at": {
                 "description": "The time through which this response can be replayed.",
@@ -552,7 +552,7 @@
             },
             "description": "The address is invalid or already belongs to a member."
           },
-          "502": {
+          "503": {
             "content": {
               "application/json": {
                 "schema": {
@@ -560,10 +560,10 @@
                 }
               }
             },
-            "description": "The email could not be sent, so the invitation was not made. Retry with the same key."
+            "description": "Renga cannot securely queue the invitation email because secret storage is unavailable."
           }
         },
-        "description": "Emails `email` an invitation to own the organization, replacing any open invitation for the address. Accepting it requires signing in or registering with that confirmed address under the deployment's sign-in rules. The response never carries the invitation's link, and the invitation stops working if this token is revoked. Needs `organizations:write`.",
+        "description": "Durably queues an email inviting `email` to own the organization, replacing any open invitation for the address. Delivery retries reuse the same invitation and may duplicate its email after an ambiguous provider failure. Accepting it requires signing in or registering with that confirmed address under the deployment's sign-in rules. The response never carries the invitation's link, and the invitation stops working if this token is revoked. Needs `organizations:write`.",
         "operationId": "inviteOrganizationOwner",
         "parameters": [
           {
