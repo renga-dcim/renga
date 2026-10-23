@@ -234,6 +234,18 @@ defmodule Renga.Transfers.ImportTest do
              ).rows
 
     assert is_binary(principal_id)
+
+    # The source's cabling is trusted only once someone here grants it.
+    assert %{revoked_at: %DateTime{}} =
+             Repo.get_by!(Renga.Topology.CableImportContract, source_id: source.id)
+
+    %{scope: owner} = job_organization_for(target)
+
+    assert {:error, :cable_import_not_granted} =
+             Topology.import_cable_assertion(owner, source.id, %{
+               interface_a_id: a.id,
+               interface_b_id: b.id
+             })
   end
 
   test "an import is refused while any of its IDs exists", context do

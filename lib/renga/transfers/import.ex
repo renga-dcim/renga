@@ -586,6 +586,10 @@ defmodule Renga.Transfers.Import do
     })
   end
 
+  # Trust in a source's cabling is granted at the destination, not carried.
+  defp secure(%{"revoked_at" => nil} = record, "cable_import_contracts", state),
+    do: Map.merge(record, %{"revoked_at" => timestamp(state.now), "revoked_by_id" => nil})
+
   defp secure(record, "jobs", state) do
     # A leased job keeps its shape with a lease token no one holds.
     lease =
