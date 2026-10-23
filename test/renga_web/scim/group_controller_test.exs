@@ -223,6 +223,22 @@ defmodule RengaWeb.Scim.GroupControllerTest do
              conn |> get(~p"/scim/v2/Groups?#{[filter: ~s(members eq "x")]}") |> body(400)
   end
 
+  # The column holds 255 code points; a combining accent is a code point but
+  # not a grapheme, so a grapheme count would pass this and fail in Postgres.
+  test "a displayName too long for its column is invalidValue with a readable detail",
+       %{conn: conn} do
+    refused =
+      conn
+      |> post(
+        ~p"/scim/v2/Groups",
+        Jason.encode!(%{"displayName" => String.duplicate("e\u0301", 128)})
+      )
+      |> body(400)
+
+    assert refused["scimType"] == "invalidValue"
+    assert refused["detail"] =~ "at most 255 character(s)"
+  end
+
   test "displayName is required", %{conn: conn} do
     assert %{"scimType" => "invalidValue"} =
              conn |> post(~p"/scim/v2/Groups", Jason.encode!(%{})) |> body(400)

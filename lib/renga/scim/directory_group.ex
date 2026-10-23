@@ -29,7 +29,8 @@ defmodule Renga.Scim.DirectoryGroup do
     group
     |> cast(attrs, [:display_name, :external_id], empty_values: [])
     |> validate_required([:display_name])
-    |> validate_length(:display_name, max: 255)
-    |> validate_length(:external_id, max: 255)
+    # The columns are varchar(255), which counts code points, not graphemes.
+    |> validate_length(:display_name, max: 255, count: :codepoints)
+    |> validate_length(:external_id, max: 255, count: :codepoints)
   end
 end

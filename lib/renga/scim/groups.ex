@@ -218,9 +218,17 @@ defmodule Renga.Scim.Groups do
   defp invalid({:ok, group}), do: {:ok, group}
 
   defp invalid({:error, changeset}) do
-    {field, {message, _opts}} = hd(changeset.errors)
+    {field, {message, opts}} = hd(changeset.errors)
     name = if field == :display_name, do: "displayName", else: "externalId"
-    {:error, {:invalid_value, "#{name} #{message}"}}
+    {:error, {:invalid_value, "#{name} #{interpolate(message, opts)}"}}
+  end
+
+  # Ecto keeps messages as templates such as "should be at most %{count}
+  # character(s)"; a SCIM detail is read as is.
+  defp interpolate(message, opts) do
+    Regex.replace(~r/%{(\w+)}/, message, fn match, key ->
+      opts |> Keyword.get(String.to_existing_atom(key), match) |> to_string()
+    end)
   end
 
   defp filtered(query, nil), do: {:ok, query}
