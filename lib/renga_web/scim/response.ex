@@ -72,19 +72,34 @@ defmodule RengaWeb.Scim.Response do
   """
   def page(params) do
     with {:ok, start_index} <- integer(params["startIndex"], 1),
-         {:ok, count} <- integer(params["count"], Schemas.max_results()) do
+         {:ok, count} <- integer(params["count"], Schemas.max_results()),
+         :ok <- within_offset(start_index) do
       {:ok, {max(start_index, 1), count |> max(0) |> min(Schemas.max_results())}}
     end
   end
+
+  # The offset is a Postgres bigint; anything past it cannot be a real page.
+  @max_start_index 9_223_372_036_854_775_807
+
+  defp within_offset(start_index) when start_index <= @max_start_index, do: :ok
+
+  defp within_offset(_start_index),
+    do: {:error, {:invalid_value, "startIndex is larger than any list"}}
 
   defp integer(nil, default), do: {:ok, default}
 
   defp integer(value, _default) when is_binary(value) do
     case Integer.parse(value) do
       {integer, ""} -> {:ok, integer}
-      _other -> {:error, {:invalid_value, "startIndex and count must be integers"}}
+      _other -> not_integer()
     end
   end
+
+  # A repeated or bracketed parameter, such as count[]=1, arrives as a list
+  # or map.
+  defp integer(_value, _default), do: not_integer()
+
+  defp not_integer, do: {:error, {:invalid_value, "startIndex and count must be integers"}}
 
   @doc "Sends a `ListResponse` of `resources`, one page of `total`."
   def list(conn, total, start_index, resources) do

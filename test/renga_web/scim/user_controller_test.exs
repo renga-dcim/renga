@@ -152,6 +152,18 @@ defmodule RengaWeb.Scim.UserControllerTest do
     assert %{"scimType" => "invalidValue"} = body(get(conn, ~p"/scim/v2/Users?count=many"), 400)
   end
 
+  test "malformed list parameters are SCIM errors, not crashes", %{conn: conn} do
+    for query <- ["count[]=1", "startIndex[a]=1", "startIndex=9223372036854775808"] do
+      assert %{"scimType" => "invalidValue"} = body(get(conn, "/scim/v2/Users?" <> query), 400)
+    end
+
+    assert %{"scimType" => "invalidFilter"} = body(get(conn, "/scim/v2/Users?filter[]=x"), 400)
+
+    # The largest offset Postgres takes is still a page, just an empty one.
+    last = body(get(conn, "/scim/v2/Users?startIndex=9223372036854775807"), 200)
+    assert last["Resources"] == []
+  end
+
   test "count is capped at the maximum page size", %{conn: conn} do
     body(create_user(conn), 201)
     page = conn |> get(~p"/scim/v2/Users?count=1000") |> then(&body(&1, 200))

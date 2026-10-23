@@ -23,6 +23,9 @@ defmodule Renga.Scim.Filter do
     end
   end
 
+  # filter[]=... arrives as a list or map.
+  def parse(_filter, _attributes), do: {:error, "filter must be a single string"}
+
   defp field(attribute, attributes) do
     # A fully qualified name such as
     # urn:ietf:params:scim:schemas:core:2.0:User:userName names the same
