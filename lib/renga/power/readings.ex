@@ -26,7 +26,7 @@ defmodule Renga.Power.Readings do
   @max_future_skew_seconds 300
   @insert_chunk 500
 
-  @series [:source_id, :target, :sensor, :boundary, :quantity, :window_seconds]
+  @series [:source_id, :target, :sensor, :boundary, :quantity, :window_ms]
 
   @doc """
   Records validated samples from `source` received at `now`. Returns how
@@ -110,7 +110,7 @@ defmodule Renga.Power.Readings do
       boundary: sample.boundary,
       quantity: sample.quantity,
       unit: sample.unit,
-      window_seconds: DateTime.diff(sample.window_end, sample.window_start, :second),
+      window_ms: DateTime.diff(sample.window_end, sample.window_start, :millisecond),
       leg: sample.leg,
       component_kind: sample.component && sample.component.kind,
       component_name: sample.component && sample.component.name,
@@ -139,7 +139,7 @@ defmodule Renga.Power.Readings do
       asc: reading.sensor,
       asc: reading.boundary,
       asc: reading.quantity,
-      asc: reading.window_seconds
+      asc: reading.window_ms
     )
     |> Repo.all()
   end

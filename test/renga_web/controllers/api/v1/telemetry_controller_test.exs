@@ -62,7 +62,7 @@ defmodule RengaWeb.Api.V1.TelemetryControllerTest do
       assert reading.boundary == "host_input"
       assert reading.validity == "valid"
       assert Decimal.equal?(reading.value, Decimal.new("412.5"))
-      assert reading.window_seconds == 60
+      assert reading.window_ms == 60_000
       assert reading.mapping_name == "hwmon"
       assert DateTime.compare(reading.fresh_until, ~U[2026-08-13 07:33:00Z]) == :eq
 
@@ -165,10 +165,10 @@ defmodule RengaWeb.Api.V1.TelemetryControllerTest do
 
       [agent] = Inventory.list_agents(scope)
 
-      assert [%Reading{window_seconds: 0}, %Reading{window_seconds: 60}] =
+      assert [%Reading{window_ms: 0}, %Reading{window_ms: 60_000}] =
                scope
                |> Readings.list_source_readings(agent.source_id)
-               |> Enum.sort_by(& &1.window_seconds)
+               |> Enum.sort_by(& &1.window_ms)
     end
 
     test "unusable evidence is kept as invalid, never as zero", %{scope: scope, token: token} do
@@ -266,6 +266,61 @@ defmodule RengaWeb.Api.V1.TelemetryControllerTest do
         assert %{"errors" => errors} = valid_api_response(conn, 422)
         assert Enum.any?(errors, &(&1["path"] == path)), "expected #{path} in #{inspect(errors)}"
       end
+    end
+
+    test "windows differing by milliseconds are separate series, up to a day long", %{
+      scope: scope,
+      token: token
+    } do
+      check_in!(token)
+      start = "2026-08-13T07:30:00Z"
+
+      batch =
+        host_batch(
+          for finish <- [
+                start,
+                "2026-08-13T07:30:00.500Z",
+                "2026-08-13T07:31:00Z",
+                "2026-08-13T07:31:00.500Z",
+                "2026-08-14T07:30:00Z"
+              ] do
+            sample(window: %{"start" => start, "end" => finish}, event_at: finish)
+          end
+        )
+
+      assert %{"samples" => %{"current" => 5}} = valid_api_response(post_batch(token, batch), 202)
+
+      [agent] = Inventory.list_agents(scope)
+
+      assert [0, 500, 60_000, 60_500, 86_400_000] ==
+               scope |> Readings.list_source_readings(agent.source_id) |> Enum.map(& &1.window_ms)
+
+      too_long = %{"start" => start, "end" => "2026-08-14T07:30:00.001Z"}
+      batch = host_batch([sample(window: too_long)])
+      assert %{"errors" => errors} = valid_api_response(post_batch(token, batch), 422)
+      assert Enum.any?(errors, &(&1["path"] == "samples[0].window"))
+    end
+
+    test "a string fits its column, counted in code points", %{scope: scope, token: token} do
+      check_in!(token)
+      # 128 graphemes, but 256 code points.
+      combining = String.duplicate("e\u0301", 128)
+
+      for {payload, path} <- [
+            {host_batch([sample(sensor: combining)]), "samples[0].sensor"},
+            {Map.put(host_batch([sample()]), "replay_id", combining), "replay_id"},
+            {host_batch([sample(sensor: "hwmon0\u0000power1")]), "samples[0].sensor"}
+          ] do
+        assert %{"errors" => errors} = valid_api_response(post_batch(token, payload), 422)
+        assert Enum.any?(errors, &(&1["path"] == path)), "expected #{path} in #{inspect(errors)}"
+      end
+
+      [agent] = Inventory.list_agents(scope)
+      assert Readings.list_source_readings(scope, agent.source_id) == []
+
+      longest = String.duplicate("e\u0301", 127) <> "e"
+      valid_api_response(post_batch(token, host_batch([sample(sensor: longest)])), 202)
+      assert [%Reading{sensor: ^longest}] = Readings.list_source_readings(scope, agent.source_id)
     end
 
     test "a disabled agent's telemetry is refused", %{scope: scope, token: token} do

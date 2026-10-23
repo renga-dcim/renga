@@ -26,28 +26,27 @@ defmodule RengaWeb.Api.V1.Schemas.TelemetryAccepted do
           required: [:id, :replay_id, :source_id, :received_at, :sample_count],
           additionalProperties: false
         },
-        samples:
-          nullable(%{
-            type: :object,
-            description:
-              "What became of the samples. Absent for a duplicate, whose samples were " <>
-                "settled when it was first accepted.",
-            properties: %{
-              current: %{type: :integer, minimum: 0, description: "Now their series' value."},
-              superseded: %{
-                type: :integer,
-                minimum: 0,
-                description: "Not newer than their series' value, so kept out of it."
-              },
-              rejected: %{
-                type: :integer,
-                minimum: 0,
-                description: "Timed implausibly far in the future."
-              }
+        samples: %{
+          type: :object,
+          description:
+            "What became of the samples. Absent for a duplicate, whose samples were " <>
+              "settled when it was first accepted.",
+          properties: %{
+            current: %{type: :integer, minimum: 0, description: "Now their series' value."},
+            superseded: %{
+              type: :integer,
+              minimum: 0,
+              description: "Not newer than their series' value, so kept out of it."
             },
-            required: [:current, :superseded, :rejected],
-            additionalProperties: false
-          })
+            rejected: %{
+              type: :integer,
+              minimum: 0,
+              description: "Timed implausibly far in the future."
+            }
+          },
+          required: [:current, :superseded, :rejected],
+          additionalProperties: false
+        }
       },
       required: [:status, :duplicate, :batch],
       additionalProperties: false

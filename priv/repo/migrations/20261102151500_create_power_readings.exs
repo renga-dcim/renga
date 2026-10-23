@@ -60,7 +60,7 @@ defmodule Renga.Repo.Migrations.CreatePowerReadings do
       add :boundary, :string, null: false
       add :quantity, :string, null: false
       add :unit, :string
-      add :window_seconds, :integer, null: false
+      add :window_ms, :integer, null: false
       add :leg, :string
       add :component_kind, :string
       add :component_name, :string
@@ -82,7 +82,7 @@ defmodule Renga.Repo.Migrations.CreatePowerReadings do
     # value of the same sensor are different series.
     create unique_index(
              :power_readings,
-             [:source_id, :target, :sensor, :boundary, :quantity, :window_seconds],
+             [:source_id, :target, :sensor, :boundary, :quantity, :window_ms],
              nulls_distinct: false,
              name: :power_readings_series_index
            )
@@ -113,7 +113,7 @@ defmodule Renga.Repo.Migrations.CreatePowerReadings do
 
     create constraint(:power_readings, :power_readings_window,
              check: """
-             window_start <= window_end AND window_seconds >= 0 AND fresh_until > event_at
+             window_start <= window_end AND window_ms >= 0 AND fresh_until > event_at
              """
            )
   end
@@ -122,11 +122,9 @@ defmodule Renga.Repo.Migrations.CreatePowerReadings do
     drop table(:power_readings)
     drop table(:telemetry_batches)
 
-    execute "ALTER TABLE sources DROP CONSTRAINT sources_collector_stream"
-
-    create constraint(:sources, :sources_collector_stream,
-             check: collector_stream_check(~w(switch_poller vm_provider))
-           )
+    # The widened collector stream check stays: a power poller's or BMC
+    # collector's source outlives these tables, and keeping it is safer than
+    # deleting that provenance or failing the rollback on it.
   end
 
   defp collector_stream_check(kinds) do

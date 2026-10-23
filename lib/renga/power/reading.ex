@@ -42,7 +42,7 @@ defmodule Renga.Power.Reading do
     field :boundary, :string
     field :quantity, :string
     field :unit, :string
-    field :window_seconds, :integer
+    field :window_ms, :integer
     field :leg, :string
     field :component_kind, :string
     field :component_name, :string

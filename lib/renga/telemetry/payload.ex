@@ -27,6 +27,9 @@ defmodule Renga.Telemetry.Payload do
   @max_unit_length 16
   @max_mapping_version 1_000_000
   @max_freshness_seconds 86_400
+  # A series is keyed by its window length in milliseconds, which an
+  # integer column holds for windows of up to a day.
+  @max_window_seconds 86_400
   # Readings are electrical quantities of real equipment; anything larger is
   # a broken sensor, not a load.
   @max_value Decimal.new("1000000000000")
@@ -48,6 +51,7 @@ defmodule Renga.Telemetry.Payload do
       max_unit_length: @max_unit_length,
       max_mapping_version: @max_mapping_version,
       max_freshness_seconds: @max_freshness_seconds,
+      max_window_seconds: @max_window_seconds,
       statuses: @statuses,
       collector_kinds: @collector_kinds,
       boundaries: Reading.boundaries(),
@@ -268,9 +272,7 @@ defmodule Renga.Telemetry.Payload do
   defp validate_unit(errors, nil, _path), do: errors
 
   defp validate_unit(errors, unit, path) when is_binary(unit) do
-    if String.length(unit) <= @max_unit_length,
-      do: errors,
-      else: [error(path, "must be at most #{@max_unit_length} characters") | errors]
+    storable(errors, unit, path, @max_unit_length)
   end
 
   defp validate_unit(errors, _unit, path), do: [error(path, "must be a string") | errors]
@@ -281,9 +283,7 @@ defmodule Renga.Telemetry.Payload do
   defp validate_state(errors, nil, _path), do: errors
 
   defp validate_state(errors, state, path) when is_binary(state) do
-    if String.length(state) <= @max_state_length,
-      do: errors,
-      else: [error(path, "must be at most #{@max_state_length} characters") | errors]
+    storable(errors, state, path, @max_state_length)
   end
 
   defp validate_state(errors, _state, path), do: [error(path, "must be a string") | errors]
@@ -327,9 +327,23 @@ defmodule Renga.Telemetry.Payload do
     {window_start, errors} = timestamp([], start, "#{path}.start")
     {window_end, errors} = timestamp(errors, finish, "#{path}.end")
 
-    if window_start && window_end && DateTime.compare(window_start, window_end) == :gt,
-      do: {nil, nil, [error(path, "must not end before it starts") | errors]},
-      else: {window_start, window_end, errors}
+    cond do
+      is_nil(window_start) or is_nil(window_end) ->
+        {window_start, window_end, errors}
+
+      DateTime.compare(window_start, window_end) == :gt ->
+        {nil, nil, [error(path, "must not end before it starts") | errors]}
+
+      DateTime.diff(window_end, window_start, :millisecond) > @max_window_seconds * 1_000 ->
+        {nil, nil,
+         [
+           error(path, "must last at most #{@max_window_seconds} seconds")
+           | errors
+         ]}
+
+      true ->
+        {window_start, window_end, errors}
+    end
   end
 
   defp window(_window, path),
@@ -348,11 +362,9 @@ defmodule Renga.Telemetry.Payload do
   defp validate_name(errors, value, path, max_length) when is_binary(value) do
     value = String.trim(value)
 
-    cond do
-      value == "" -> [error(path, "must not be blank") | errors]
-      String.length(value) > max_length -> [error(path, too_long(max_length)) | errors]
-      true -> errors
-    end
+    if value == "",
+      do: [error(path, "must not be blank") | errors],
+      else: storable(errors, value, path, max_length)
   end
 
   defp validate_name(errors, nil, path, _max_length), do: [error(path, "is required") | errors]
@@ -406,7 +418,22 @@ defmodule Renga.Telemetry.Payload do
   defp trim(nil), do: nil
   defp trim(value) when is_binary(value), do: String.trim(value)
 
-  defp too_long(max_length), do: "must be at most #{max_length} characters"
+  # An accepted string is always stored, so it must fit its column:
+  # PostgreSQL counts code points, which graphemes can undercount, and
+  # rejects NUL outright.
+  defp storable(errors, value, path, max_length) do
+    cond do
+      length(String.codepoints(value)) > max_length ->
+        [error(path, "must be at most #{max_length} characters") | errors]
+
+      String.contains?(value, <<0>>) ->
+        [error(path, "must not contain a NUL character") | errors]
+
+      true ->
+        errors
+    end
+  end
+
   defp list(values), do: Enum.join(values, ", ")
   defp error(path, message), do: %{path: path, message: message}
 end

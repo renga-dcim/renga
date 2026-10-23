@@ -1616,10 +1616,7 @@
               "superseded",
               "rejected"
             ],
-            "type": [
-              "object",
-              "null"
-            ]
+            "type": "object"
           },
           "status": {
             "const": "accepted"
@@ -1634,7 +1631,7 @@
       },
       "TelemetryBatch": {
         "title": "TelemetryBatch",
-        "description": "A versioned batch of timed readings (RFD 10, \"Measured history\"), apart from inventory observations. Accepting one never renews the installation's lease, advances an inventory clock, or triggers reconciliation; the installation must have checked in first. The encoded body must be at most 512000 bytes.",
+        "description": "A versioned batch of timed readings (RFD 10, \"Measured history\"), apart from inventory observations. Accepting one never renews the installation's lease, advances an inventory clock, or triggers reconciliation; the installation must have checked in first. The encoded body must be at most 512000 bytes. String limits count Unicode code points, and no string may contain a NUL character.",
         "properties": {
           "collector": {
             "description": "The collector module whose readings these are, resolved to its stream as an observation's collector is. Omitted for the installation's own host readings.",
@@ -1831,7 +1828,7 @@
                   ]
                 },
                 "window": {
-                  "description": "The sampling window. An instantaneous reading starts and ends at once.",
+                  "description": "The sampling window. An instantaneous reading starts and ends at once; any window lasts at most 86400 seconds. Windows of different lengths, to the millisecond, are different series.",
                   "properties": {
                     "end": {
                       "description": "Not before `start`. An ISO 8601 date and time with a UTC offset, such as 2026-01-02T03:04:05Z.",

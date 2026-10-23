@@ -15,7 +15,8 @@ defmodule RengaWeb.Api.V1.Schemas.TelemetryBatch do
           "inventory observations. Accepting one never renews the installation's lease, " <>
           "advances an inventory clock, or triggers reconciliation; the installation must " <>
           "have checked in first. The encoded body must be at most " <>
-          "#{contract.max_batch_bytes} bytes.",
+          "#{contract.max_batch_bytes} bytes. String limits count Unicode code points, and " <>
+          "no string may contain a NUL character.",
       type: :object,
       properties: %{
         version: %{type: :integer, enum: contract.versions},
@@ -141,7 +142,11 @@ defmodule RengaWeb.Api.V1.Schemas.TelemetryBatch do
         },
         window: %{
           type: :object,
-          description: "The sampling window. An instantaneous reading starts and ends at once.",
+          description:
+            "The sampling window. An instantaneous reading starts and ends at once; any " <>
+              "window lasts at most " <>
+              "#{contract.max_window_seconds} seconds. Windows of different lengths, to the " <>
+              "millisecond, are different series.",
           properties: %{
             start: iso8601_timestamp(),
             end: iso8601_timestamp("Not before `start`.")
