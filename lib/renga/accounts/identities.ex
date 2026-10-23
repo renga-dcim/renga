@@ -9,12 +9,17 @@ defmodule Renga.Accounts.Identities do
   signs in to the account and links the provider there. Otherwise a provider
   that allows sign-up creates a confirmed account from a verified email, and
   any other first sign-in is refused.
+
+  A sign-in also links the SCIM directory entries that correlate with the
+  ID token (RFD 16), and an active entry opens sign-up for a person whose
+  provider does not otherwise allow it (`Renga.Scim.Linking`).
   """
 
   alias Renga.Accounts.IdentityProviderRevision, as: Revision
   alias Renga.Accounts.User
   alias Renga.Accounts.UserIdentity
   alias Renga.Repo
+  alias Renga.Scim.Linking
 
   @doc """
   The account for a validated sign-in, as `OIDC.finish/3` returns it.
@@ -28,49 +33,52 @@ defmodule Renga.Accounts.Identities do
     with {:ok, subject} <- subject(claims),
          :ok <- check_domain(revision, email) do
       case Repo.get_by(UserIdentity, provider_id: provider.id, subject: subject) do
-        %UserIdentity{} = identity -> {:ok, returning(identity, email)}
-        nil -> first_sign_in(provider, revision, subject, email)
+        %UserIdentity{} = identity -> {:ok, returning(identity, email, claims)}
+        nil -> first_sign_in(provider, revision, subject, email, claims)
       end
     end
   end
 
-  defp returning(identity, email) do
-    identity
-    |> Ecto.Changeset.change(
-      email: email && email.address,
-      last_signed_in_at: Renga.Time.utc_now_ms()
-    )
-    |> Repo.update!()
+  defp returning(identity, email, claims) do
+    identity =
+      identity
+      |> Ecto.Changeset.change(
+        email: email && email.address,
+        last_signed_in_at: Renga.Time.utc_now_ms()
+      )
+      |> Repo.update!()
+
+    Linking.link_identity(identity, claims)
 
     Repo.get!(User, identity.user_id)
   end
 
-  defp first_sign_in(provider, revision, subject, email) do
+  defp first_sign_in(provider, revision, subject, email, claims) do
     # Only a verified address is said to be in use, so an unverified claim
     # cannot ask whether an account exists.
     cond do
       email && email.verified && Repo.get_by(User, email: email.address) ->
         {:error, :email_in_use}
 
-      not revision.allow_sign_up ->
+      not revision.allow_sign_up and not Linking.permits_sign_up?(provider, claims) ->
         {:error, :sign_up_closed}
 
       is_nil(email) or not email.verified ->
         {:error, :unverified_email}
 
       true ->
-        sign_up(provider, subject, email.address)
+        sign_up(provider, subject, email.address, claims)
     end
   end
 
-  defp sign_up(provider, subject, address) do
+  defp sign_up(provider, subject, address, claims) do
     Repo.transact(fn ->
       with {:ok, user} <-
              %User{}
              |> User.email_changeset(%{email: address})
              |> Ecto.Changeset.put_change(:confirmed_at, Renga.Time.utc_now_ms())
              |> Repo.insert() do
-        link_new_user(user, provider, subject, address)
+        link_new_user(user, provider, subject, address, claims)
       end
     end)
     |> case do
@@ -80,7 +88,7 @@ defmodule Renga.Accounts.Identities do
     end
   end
 
-  defp link_new_user(user, provider, subject, address) do
+  defp link_new_user(user, provider, subject, address, claims) do
     %UserIdentity{
       user_id: user.id,
       provider_id: provider.id,
@@ -92,9 +100,13 @@ defmodule Renga.Accounts.Identities do
     |> Ecto.Changeset.unique_constraint([:provider_id, :subject])
     |> Repo.insert()
     |> case do
-      {:ok, _identity} -> {:ok, user}
+      {:ok, identity} ->
+        Linking.link_identity(identity, claims)
+        {:ok, user}
+
       # A concurrent first sign-in by the same subject linked it first.
-      {:error, _changeset} -> {:error, :already_linked}
+      {:error, _changeset} ->
+        {:error, :already_linked}
     end
   end
 

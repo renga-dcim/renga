@@ -214,6 +214,12 @@ defmodule RengaWeb.ChangeDescription do
   def describe(%{kind: "scim_group_deleted", metadata: %{"group" => name}}),
     do: "SCIM deleted the group #{name}"
 
+  def describe(%{kind: "scim_user_linked", metadata: %{"user_name" => name}}),
+    do: "Linked the SCIM user #{name} at sign-in"
+
+  def describe(%{kind: "scim_link_refused", metadata: %{"user_name" => name}}),
+    do: "Refused to relink the SCIM user #{name} to another sign-in"
+
   # Job events read as "Inventory collection failed"; the job itself keeps
   # the full history.
   def describe(%{kind: "job_requested", metadata: metadata}),
