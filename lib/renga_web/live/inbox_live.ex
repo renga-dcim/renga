@@ -30,6 +30,7 @@ defmodule RengaWeb.InboxLive do
   alias Renga.IPAM
   alias Renga.Requests
   alias Renga.Requests.Request
+  alias Renga.ResourceGroups
   alias Renga.Teams
   alias Renga.Triage
   alias Renga.Inventory.Changes
@@ -37,6 +38,7 @@ defmodule RengaWeb.InboxLive do
 
   @reload_after_ms 400
   @pattern_limit 6
+  @suggestion_limit 20
   # Expiry changes queue membership without an inventory broadcast.
   @expiry_refresh_ms 30_000
 
@@ -75,6 +77,8 @@ defmodule RengaWeb.InboxLive do
        request_current: nil,
        decision_form: decision_form(),
        can_triage?: Teams.can_manage?(scope),
+       can_decide_suggestions?: ResourceGroups.can_change_membership?(scope),
+       suggestion_limit: @suggestion_limit,
        selected_triage: nil,
        can_adopt?: Authorization.allowed?(scope, "ipam.edit"),
        can_request?: Requests.can_request?(scope),
@@ -101,7 +105,8 @@ defmodule RengaWeb.InboxLive do
      |> load_requests()
      |> load_selected_request()
      |> load_triage()
-     |> load_selected_triage()}
+     |> load_selected_triage()
+     |> load_group_suggestions()}
   end
 
   @impl true
@@ -277,6 +282,33 @@ defmodule RengaWeb.InboxLive do
     end
   end
 
+  # Group suggestions (RFD 18) change membership only when a person
+  # accepts them; the context rechecks inventory.edit and exclusivity.
+  def handle_event("accept_suggestion", %{"id" => id}, socket) do
+    socket.assigns.current_scope
+    |> ResourceGroups.accept_suggestion(id)
+    |> suggestion_decided(socket, "Added to the group")
+  end
+
+  def handle_event("dismiss_suggestion", %{"id" => id}, socket) do
+    socket.assigns.current_scope
+    |> ResourceGroups.dismiss_suggestion(id)
+    |> suggestion_decided(socket, "Suggestion dismissed")
+  end
+
+  def handle_event("accept_suggestion", _malformed, socket),
+    do: suggestion_decided({:error, :not_found}, socket, nil)
+
+  def handle_event("dismiss_suggestion", _malformed, socket),
+    do: suggestion_decided({:error, :not_found}, socket, nil)
+
+  def handle_event("show_more_suggestions", _params, socket) do
+    {:noreply,
+     socket
+     |> update(:suggestion_limit, &(&1 + @suggestion_limit))
+     |> load_group_suggestions()}
+  end
+
   @impl true
   def handle_info(
         {:inventory_changed, _organization_id},
@@ -297,7 +329,8 @@ defmodule RengaWeb.InboxLive do
      |> load_requests()
      |> load_selected_request()
      |> load_triage()
-     |> load_selected_triage()}
+     |> load_selected_triage()
+     |> load_group_suggestions()}
   end
 
   def handle_info(:refresh_expiry, socket) do
@@ -405,6 +438,23 @@ defmodule RengaWeb.InboxLive do
   end
 
   defp after_triage(socket), do: socket |> load_triage() |> load_selected_triage()
+
+  defp suggestion_decided({:ok, _suggestion}, socket, message),
+    do: {:noreply, socket |> put_flash(:info, message) |> load_group_suggestions()}
+
+  defp suggestion_decided({:error, :not_found}, socket, _message) do
+    {:noreply,
+     socket
+     |> put_flash(:info, "Someone already decided that suggestion")
+     |> load_group_suggestions()}
+  end
+
+  defp suggestion_decided({:error, reason}, socket, _message) do
+    {:noreply,
+     socket
+     |> put_flash(:error, RengaWeb.GroupComponents.refusal_message(reason))
+     |> load_group_suggestions()}
+  end
 
   defp triage_error(socket, :forbidden),
     do: put_flash(socket, :error, "Triage changes require the owner or admin role")
@@ -598,6 +648,20 @@ defmodule RengaWeb.InboxLive do
        do: scope |> Triage.Patterns.list(fact: missing) |> Enum.take(@pattern_limit)
 
   defp triage_patterns(_scope, _query), do: []
+
+  # Open group suggestions lead the Triage tab. Accepting or dismissing
+  # needs inventory.edit; everyone else reads them.
+  defp load_group_suggestions(%{assigns: %{query: %{group: "triage", page: 1}}} = socket) do
+    suggestions = ResourceGroups.list_suggestions(socket.assigns.current_scope)
+
+    assign(socket,
+      group_suggestions: Enum.take(suggestions, socket.assigns.suggestion_limit),
+      group_suggestion_total: length(suggestions)
+    )
+  end
+
+  defp load_group_suggestions(socket),
+    do: assign(socket, group_suggestions: [], group_suggestion_total: 0)
 
   defp with_ids(entries), do: Enum.map(entries, &Map.put(&1, :id, &1.resource.id))
 
@@ -1083,6 +1147,12 @@ defmodule RengaWeb.InboxLive do
         </:option>
       </.segmented>
 
+      <.group_suggestions
+        suggestions={@group_suggestions}
+        total={@group_suggestion_total}
+        can_decide?={@can_decide_suggestions?}
+      />
+
       <.triage_patterns patterns={@triage_patterns} can_create_rules?={@can_triage?} />
 
       <.triage_table
@@ -1116,6 +1186,87 @@ defmodule RengaWeb.InboxLive do
         </.link>
       </nav>
     </div>
+    """
+  end
+
+  attr :suggestions, :list, required: true
+  attr :total, :integer, required: true
+  attr :can_decide?, :boolean, required: true
+
+  defp group_suggestions(assigns) do
+    ~H"""
+    <section
+      :if={@suggestions != []}
+      id="group-suggestions"
+      aria-labelledby="group-suggestions-title"
+      class="space-y-2"
+    >
+      <div>
+        <h2 id="group-suggestions-title" class="text-sm font-semibold text-fg">
+          Group suggestions <span class="ml-1 font-mono text-xs text-fg-muted">{@total}</span>
+        </h2>
+        <p class="text-xs text-fg-muted">
+          Triage rules suggest these. Nothing joins a group until someone accepts.
+        </p>
+      </div>
+      <ul class="divide-y divide-edge rounded-lg border border-edge bg-surface">
+        <li
+          :for={suggestion <- @suggestions}
+          id={"group-suggestion-#{suggestion.id}"}
+          class="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3"
+        >
+          <div class="min-w-0 flex-1">
+            <p class="text-sm text-fg">
+              <.link
+                navigate={~p"/inventory/#{suggestion.resource_id}"}
+                class="font-medium text-link hover:underline"
+              >
+                {suggestion.resource.name}
+              </.link>
+              <.icon name="hero-arrow-right-mini" class="mx-1 size-4 align-text-bottom" />
+              <span class="font-medium">{suggestion.group.name}</span>
+              <span :if={suggestion.group.group_set} class="text-xs text-fg-muted">
+                in {suggestion.group.group_set.name}
+              </span>
+            </p>
+            <p class="mt-0.5 text-xs text-fg-muted">Suggested by {suggestion.rule_name}</p>
+          </div>
+          <div :if={@can_decide?} class="flex items-center gap-3">
+            <button
+              id={"group-suggestion-#{suggestion.id}-accept"}
+              type="button"
+              phx-click={JS.push("accept_suggestion", value: %{id: suggestion.id})}
+              class="min-h-tap cursor-pointer text-sm text-link hover:underline"
+            >
+              Accept
+            </button>
+            <button
+              id={"group-suggestion-#{suggestion.id}-dismiss"}
+              type="button"
+              phx-click={JS.push("dismiss_suggestion", value: %{id: suggestion.id})}
+              class="min-h-tap cursor-pointer text-sm text-fg-muted hover:underline"
+            >
+              Dismiss
+            </button>
+          </div>
+        </li>
+        <li
+          :if={@total > length(@suggestions)}
+          id="group-suggestions-more"
+          class="flex items-center justify-between gap-3 px-4 py-2 text-xs text-fg-muted"
+        >
+          <span>{@total - length(@suggestions)} more after these.</span>
+          <button
+            id="group-suggestions-show-more"
+            type="button"
+            phx-click="show_more_suggestions"
+            class="min-h-tap cursor-pointer text-sm text-link hover:underline"
+          >
+            Show more
+          </button>
+        </li>
+      </ul>
+    </section>
     """
   end
 

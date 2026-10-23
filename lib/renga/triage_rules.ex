@@ -82,23 +82,44 @@ defmodule Renga.TriageRules do
   ## Rules
 
   @doc "The organization's rules by kind, then name, with what they reference."
-  def list_rules(%Scope{organization_id: organization_id}) do
+  def list_rules(%Scope{organization_id: organization_id} = scope) do
     Rule
     |> where([rule], rule.organization_id == ^organization_id)
     |> order_by([rule], asc: rule.kind, asc: fragment("lower(?)", rule.name))
     |> preload(^@preloads)
     |> Repo.all()
+    |> visible_rules(scope)
   end
 
   @doc "Fetches a rule in the caller's organization, or nil (ids often come from a URL)."
-  def get_rule(%Scope{organization_id: organization_id}, id) do
+  def get_rule(%Scope{organization_id: organization_id} = scope, id) do
     with {:ok, id} <- Ecto.UUID.cast(id || ""),
-         %Rule{} = rule <- Repo.get_by(Rule, id: id, organization_id: organization_id) do
+         %Rule{} = rule <- Repo.get_by(Rule, id: id, organization_id: organization_id),
+         true <- visible_rule?(scope, rule) do
       Repo.preload(rule, @preloads)
     else
       _missing -> nil
     end
   end
+
+  # Group names follow the same visibility boundary in rule lists and
+  # lookups as they do everywhere else; ordinary rules remain organization-wide.
+  defp visible_rules(rules, scope) do
+    visible_group_ids = scope |> ResourceGroups.list_groups() |> MapSet.new(& &1.id)
+
+    Enum.filter(rules, fn
+      %Rule{kind: "group", resource_group_id: group_id} ->
+        MapSet.member?(visible_group_ids, group_id)
+
+      %Rule{} ->
+        true
+    end)
+  end
+
+  defp visible_rule?(_scope, %Rule{kind: kind}) when kind != "group", do: true
+
+  defp visible_rule?(scope, %Rule{resource_group_id: group_id}),
+    do: not is_nil(ResourceGroups.get_group(scope, group_id))
 
   @doc "A changeset for the rule form."
   def change_rule(%Rule{} = rule, attrs \\ %{}), do: Rule.changeset(rule, attrs)
