@@ -38,6 +38,8 @@ const TIMEOUT_MAX: u64 = 30;
 /// node_exporter's full output on a large host is a few megabytes.
 const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const WAIT_SLICE: Duration = Duration::from_millis(250);
+/// Renga keeps sensor names of up to this many characters.
+const MAX_SENSOR_CHARS: usize = 255;
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -59,6 +61,20 @@ impl Exporter {
     /// How check-ins name this source.
     pub fn source(&self) -> &str {
         self.endpoint.url.as_str()
+    }
+
+    /// What tells this endpoint's series apart from another endpoint's on the same host: its
+    /// host and port, and its path unless it is the usual `/metrics`. Two ipmi_exporters would
+    /// otherwise both report `ipmi_exporter/dcmi`, and one's failure would hide the other's
+    /// reading.
+    fn series_prefix(&self) -> String {
+        let url = &self.endpoint.url;
+        let host = url.host_str().unwrap_or_default();
+        let port = url.port_or_known_default().unwrap_or_default();
+        match url.path() {
+            "/metrics" => format!("{host}:{port}"),
+            path => format!("{host}:{port}{path}"),
+        }
     }
 }
 
@@ -181,11 +197,34 @@ fn text_of(exporter: &Exporter) -> Result<Vec<Reading>, FetchError> {
     let body = fetch::fetch(&exporter.endpoint)?;
     let samples = text::parse(&body, text::Limits::default(), mapping::wanted)
         .map_err(|error| FetchError::Failed(format!("malformed response: {error}")))?;
-    Ok(mapping::map(&samples))
+    Ok(namespaced(exporter, mapping::map(&samples)))
+}
+
+/// Puts the endpoint into each reading's sensor, after the mapping's name, so every series
+/// belongs to one endpoint.
+fn namespaced(exporter: &Exporter, readings: Vec<Reading>) -> Vec<Reading> {
+    let prefix = exporter.series_prefix();
+    readings
+        .into_iter()
+        .filter_map(|mut reading| {
+            let local = reading
+                .sensor
+                .strip_prefix(reading.mapping)
+                .unwrap_or(&reading.sensor);
+            reading.sensor = format!("{}/{prefix}{local}", reading.mapping);
+            if reading.sensor.chars().count() > MAX_SENSOR_CHARS {
+                warn!(sensor = %reading.sensor, "exporter sensor name is too long to report; skipping it");
+                return None;
+            }
+            Some(reading)
+        })
+        .collect()
 }
 
 /// Queues one scrape's batch. A failed scrape reports every reading the exporter last served as
 /// failed, so Renga knows those series are unknown now rather than waiting for them to expire.
+/// So does a successful scrape for a series it no longer serves: ipmi_exporter drops the DCMI
+/// reading when its DCMI collector fails, and still answers 200.
 fn scrape(
     exporter: &Exporter,
     result: Result<Vec<Reading>, FetchError>,
@@ -202,8 +241,16 @@ fn scrape(
             } else {
                 "available"
             };
+            let gone: Vec<Reading> = known
+                .iter()
+                .filter(|old| !readings.iter().any(|new| new.sensor == old.sensor))
+                .map(|old| Reading {
+                    measurement: old.measurement.unreadable(),
+                    ..old.clone()
+                })
+                .collect();
             *known = readings.clone();
-            (readings, false, status)
+            (readings.into_iter().chain(gone).collect(), false, status)
         }
         Err(error) => {
             warn!(exporter = source, %error, "exporter scrape failed");
@@ -244,10 +291,11 @@ pub fn batch(readings: &[Reading], failed: bool, now: DateTime<Utc>) -> Telemetr
 }
 
 fn to_sample(reading: &Reading, failed: bool, now: DateTime<Utc>) -> TelemetrySample {
+    // The mapping bounds windows to a day, so this cannot overflow.
     let window = chrono::Duration::milliseconds((reading.window_seconds * 1_000.0) as i64);
     let (quantity, unit, value, state) = match reading.measurement {
         Measurement::Watts(watts) => ("real_power", Some("W"), watts, None),
-        Measurement::State(state) => ("state", None, None, Some(state)),
+        Measurement::State(state) => ("state", None, None, state),
     };
     let readable = value.is_some() || state.is_some();
     let status = if failed || !readable {
@@ -376,7 +424,7 @@ mod tests {
             sensor: "ipmi_exporter/sensor/120".into(),
             boundary: Boundary::SupplyInput,
             supply: Some("PSU2".into()),
-            measurement: Measurement::State("failed"),
+            measurement: Measurement::State(Some("failed")),
             ..dcmi(0.0)
         };
         let mut known = Vec::new();
@@ -472,6 +520,100 @@ mod tests {
         assert_eq!(failed["status"], "failed");
         assert!(failed.get("value").is_none());
         assert_eq!(sources.status(exporter.source()), Some("not_permitted"));
+    }
+
+    #[test]
+    fn a_series_an_exporter_stops_serving_is_failed_not_kept() {
+        let exporter = exporter("http://127.0.0.1:9290/metrics");
+        let (sink, batches) = capture();
+        let sources = PowerSources::default();
+        let supply = Reading {
+            sensor: "ipmi_exporter/sensor/98".into(),
+            boundary: Boundary::SupplyInput,
+            supply: Some("PSU1".into()),
+            ..dcmi(151.0)
+        };
+        let mut known = Vec::new();
+
+        scrape(
+            &exporter,
+            Ok(vec![dcmi(312.0), supply.clone()]),
+            Utc::now(),
+            &mut known,
+            &sink,
+            &sources,
+        );
+        // ipmi_exporter's DCMI collector failed: it answers 200 without the reading.
+        scrape(
+            &exporter,
+            Ok(vec![supply]),
+            Utc::now(),
+            &mut known,
+            &sink,
+            &sources,
+        );
+        // Then the exporter goes away.
+        scrape(
+            &exporter,
+            Err(FetchError::Failed("connection refused".into())),
+            Utc::now(),
+            &mut known,
+            &sink,
+            &sources,
+        );
+
+        let batches = batches.lock().unwrap();
+        let summary = |batch: &Value| -> Vec<(String, String)> {
+            batch["samples"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|sample| {
+                    (
+                        sample["sensor"].as_str().unwrap().to_owned(),
+                        sample["status"].as_str().unwrap().to_owned(),
+                    )
+                })
+                .collect()
+        };
+        let pair = |sensor: &str, status: &str| (sensor.to_owned(), status.to_owned());
+        assert_eq!(
+            summary(&batches[1]),
+            [
+                pair("ipmi_exporter/sensor/98", "valid"),
+                pair("ipmi_exporter/dcmi", "failed")
+            ]
+        );
+        assert!(batches[1]["samples"][1].get("value").is_none());
+        assert_eq!(
+            summary(&batches[2]),
+            [pair("ipmi_exporter/sensor/98", "failed")]
+        );
+    }
+
+    #[test]
+    fn each_endpoint_reports_its_own_series() {
+        let mapped = || vec![dcmi(312.0)];
+        let sensors = |url: &str| -> Vec<String> {
+            namespaced(&exporter(url), mapped())
+                .into_iter()
+                .map(|reading| reading.sensor)
+                .collect()
+        };
+        assert_eq!(
+            sensors("http://127.0.0.1:9290/metrics"),
+            ["ipmi_exporter/127.0.0.1:9290/dcmi"]
+        );
+        assert_eq!(
+            sensors("http://127.0.0.1:9291/metrics"),
+            ["ipmi_exporter/127.0.0.1:9291/dcmi"]
+        );
+        assert_eq!(
+            sensors("http://localhost/ipmi/metrics"),
+            ["ipmi_exporter/localhost:80/ipmi/metrics/dcmi"]
+        );
+        let long = format!("http://127.0.0.1:9290/{}", "p".repeat(300));
+        assert!(sensors(&long).is_empty());
     }
 
     #[test]

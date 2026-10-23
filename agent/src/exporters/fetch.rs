@@ -6,6 +6,10 @@
 //! the peer the request actually reached. Proxies are never used, since a proxy would make the
 //! peer check meaningless, and redirects are never followed. The Renga intake key is never sent;
 //! a remote endpoint may present a bearer token read from its own local file.
+//!
+//! The whole scrape, from resolving the host to the last byte of the body, must finish within
+//! the endpoint's timeout, so a slow resolver or an exporter that trickles its response cannot
+//! hold the scraper past it.
 
 use reqwest::{
     blocking::Client,
@@ -17,7 +21,9 @@ use std::{
     io::Read,
     net::{IpAddr, SocketAddr, ToSocketAddrs},
     path::PathBuf,
-    time::Duration,
+    sync::mpsc,
+    thread,
+    time::{Duration, Instant},
 };
 use url::Url;
 
@@ -61,6 +67,7 @@ impl From<&str> for FetchError {
 
 /// Fetches the endpoint's body as text, or says why the scrape failed.
 pub fn fetch(endpoint: &Endpoint) -> Result<String, FetchError> {
+    let deadline = Instant::now() + endpoint.timeout;
     let host = endpoint
         .url
         .host_str()
@@ -74,10 +81,16 @@ pub fn fetch(endpoint: &Endpoint) -> Result<String, FetchError> {
         .ok_or("the exporter URL has no port")?;
     let addresses: Vec<SocketAddr> = match host.parse::<IpAddr>() {
         Ok(ip) => vec![SocketAddr::new(ip, port)],
-        Err(_) => (host.as_str(), port)
-            .to_socket_addrs()
+        Err(_) => {
+            let name = host.clone();
+            within(deadline, move || {
+                (name.as_str(), port)
+                    .to_socket_addrs()
+                    .map(Iterator::collect::<Vec<_>>)
+            })
+            .ok_or_else(|| format!("resolving {host} timed out"))?
             .map_err(|error| format!("cannot resolve {host}: {error}"))?
-            .collect(),
+        }
     };
     if addresses.is_empty() {
         return Err(format!("{host} resolves to no address").into());
@@ -94,8 +107,15 @@ pub fn fetch(endpoint: &Endpoint) -> Result<String, FetchError> {
         .resolve_to_addrs(&host, &addresses)
         .build()
         .map_err(|error| format!("cannot build the exporter client: {error}"))?;
+    // A request timeout is a deadline for the whole exchange, body included; the client's own
+    // timeout would restart with every read of the body.
+    let remaining = deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or("the scrape timed out before connecting")?;
     let mut request = client
         .get(endpoint.url.clone())
+        .timeout(remaining)
         .header("Accept", "text/plain");
     if let Some(path) = &endpoint.bearer_token_file {
         let token = fs::read_to_string(path)
@@ -135,6 +155,24 @@ pub fn fetch(endpoint: &Endpoint) -> Result<String, FetchError> {
         return Err(format!("response exceeds {} bytes", endpoint.max_bytes).into());
     }
     String::from_utf8(body).map_err(|_| "response is not UTF-8".into())
+}
+
+/// Runs `work` on its own thread and waits for it until `deadline`. The standard resolver has no
+/// timeout, so a stuck lookup is left to finish on its own.
+fn within<T: Send + 'static>(
+    deadline: Instant,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    let (sender, receiver) = mpsc::channel();
+    thread::Builder::new()
+        .name("exporter-resolve".into())
+        .spawn(move || {
+            let _ = sender.send(work());
+        })
+        .ok()?;
+    receiver
+        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        .ok()
 }
 
 fn check_destination(addresses: &[SocketAddr], allow_remote: bool) -> Result<(), String> {
@@ -265,6 +303,53 @@ mod tests {
             .unwrap()
             .to_ascii_lowercase()
             .contains("authorization: bearer exporter-secret"));
+    }
+
+    #[test]
+    fn a_trickling_response_cannot_outlast_the_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = Url::parse(&format!(
+            "http://{}/metrics",
+            listener.local_addr().unwrap()
+        ))
+        .unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 1024];
+            let _ = std::io::Read::read(&mut stream, &mut request);
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 100\r\n\r\n",
+            );
+            // One byte every 200 ms: each read is quick, the whole body is not.
+            for _ in 0..100 {
+                if stream.write_all(b"#").is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(200));
+            }
+        });
+        let mut endpoint = endpoint(url);
+        endpoint.timeout = Duration::from_secs(1);
+
+        let started = Instant::now();
+        let result = fetch(&endpoint);
+        let elapsed = started.elapsed();
+        assert!(result.is_err(), "{result:?}");
+        assert!(elapsed < Duration::from_secs(3), "took {elapsed:?}");
+        drop(server);
+    }
+
+    #[test]
+    fn a_slow_lookup_counts_against_the_deadline() {
+        let deadline = Instant::now() + Duration::from_millis(100);
+        let started = Instant::now();
+        let result = within(deadline, || thread::sleep(Duration::from_secs(5)));
+        assert!(result.is_none());
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(
+            within(Instant::now() + Duration::from_secs(1), || 7),
+            Some(7)
+        );
     }
 
     #[test]

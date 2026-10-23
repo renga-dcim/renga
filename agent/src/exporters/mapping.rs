@@ -35,10 +35,28 @@ pub struct Reading {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Measurement {
-    /// `None` when the exporter served a value that is not a reading, such as NaN.
+    /// `None` when the exporter served a value that is not a reading, such as NaN, or an
+    /// average whose interval is unknown.
     Watts(Option<f64>),
-    State(&'static str),
+    /// `None` when the state is not one ipmi_exporter defines, such as the NaN it serves for a
+    /// sensor that reads N/A.
+    State(Option<&'static str>),
 }
+
+impl Measurement {
+    /// The same series with nothing readable in it, for a series that has gone missing.
+    pub fn unreadable(&self) -> Self {
+        match self {
+            Self::Watts(_) => Self::Watts(None),
+            Self::State(_) => Self::State(None),
+        }
+    }
+}
+
+/// The longest averaging interval a reading may declare, which Renga accepts as a window.
+const MAX_WINDOW_SECONDS: f64 = 86_400.0;
+/// The shortest, since Renga keeps windows in milliseconds.
+const MIN_WINDOW_SECONDS: f64 = 0.001;
 
 /// The metric names any mapping reads, so the parser can drop the rest early.
 pub fn wanted(name: &str) -> bool {
@@ -53,13 +71,19 @@ pub fn wanted(name: &str) -> bool {
     ) || node_power_element(name).is_some()
 }
 
-/// `node_hwmon_power_<element>_watt`, in either spelling node_exporter has used.
+/// The element of a node_exporter hwmon power metric, `average` or `input`, in either unit
+/// spelling node_exporter has used. node_exporter names a `powerN_input` file
+/// `node_hwmon_power_watt`, adding `_input` only when a bare `powerN` file also exists.
 fn node_power_element(name: &str) -> Option<&str> {
-    let element = name.strip_prefix("node_hwmon_power_")?;
-    let element = element
+    let rest = name.strip_prefix("node_hwmon_power")?;
+    let element = rest
         .strip_suffix("_watts")
-        .or_else(|| element.strip_suffix("_watt"))?;
-    matches!(element, "average" | "input").then_some(element)
+        .or_else(|| rest.strip_suffix("_watt"))?;
+    match element {
+        "" | "_input" => Some("input"),
+        "_average" => Some("average"),
+        _ => None,
+    }
 }
 
 pub fn map(samples: &[Sample]) -> Vec<Reading> {
@@ -107,24 +131,27 @@ fn node_exporter(samples: &[Sample]) -> Vec<Reading> {
                 .get(&(chip.clone(), sensor.clone()))
                 .and_then(|label| label.labels.get("label").cloned());
             let boundary = hwmon::boundary(driver, sensor_label)?;
-            let window_seconds = if element == "average" {
-                intervals
+            // An average whose interval is missing or unusable is a failed reading, never an
+            // instantaneous one, as for the agent's own hwmon source.
+            let (watts, window_seconds) = if element == "average" {
+                match intervals
                     .get(&(chip.clone(), sensor.clone()))
-                    .map_or(0.0, |interval| interval.value)
+                    .map(|interval| interval.value)
+                    .filter(|seconds| (MIN_WINDOW_SECONDS..=MAX_WINDOW_SECONDS).contains(seconds))
+                {
+                    Some(seconds) => (watts(sample.value), seconds),
+                    None => (None, 0.0),
+                }
             } else {
-                0.0
+                (watts(sample.value), 0.0)
             };
             Some(Reading {
                 mapping: NODE_EXPORTER,
                 sensor: format!("{NODE_EXPORTER}/{chip}/{sensor}"),
                 boundary,
                 supply: None,
-                measurement: Measurement::Watts(watts(sample.value)),
-                window_seconds: if window_seconds.is_finite() && window_seconds > 0.0 {
-                    window_seconds
-                } else {
-                    0.0
-                },
+                measurement: Measurement::Watts(watts),
+                window_seconds,
             })
         })
         .collect()
@@ -185,12 +212,17 @@ fn watts(value: f64) -> Option<f64> {
     (value.is_finite() && value >= 0.0).then_some(value)
 }
 
-/// ipmi_exporter's sensor state: 0 nominal, 1 warning, 2 critical.
-fn supply_state(value: f64) -> &'static str {
-    match value {
-        0.0 => "ok",
-        1.0 => "warning",
-        _ => "failed",
+/// ipmi_exporter's sensor state: 0 nominal, 1 warning, 2 critical. It serves NaN for a sensor
+/// that reads N/A or a state it does not know, which is no evidence the supply failed.
+fn supply_state(value: f64) -> Option<&'static str> {
+    if value == 0.0 {
+        Some("ok")
+    } else if value == 1.0 {
+        Some("warning")
+    } else if value == 2.0 {
+        Some("failed")
+    } else {
+        None
     }
 }
 
@@ -268,14 +300,57 @@ node_hwmon_power_input_watt{chip="unknown_chip",sensor="power1"} 10
 node_hwmon_chip_names{chip="i2c_3_3_0068",chip_name="ibm_cffps1"} 1
 node_hwmon_sensor_label{chip="i2c_3_3_0068",label="pin",sensor="power1"} 1
 node_hwmon_sensor_label{chip="i2c_3_3_0068",label="pout1",sensor="power2"} 1
-node_hwmon_power_input_watts{chip="i2c_3_3_0068",sensor="power1"} 512
+node_hwmon_power_watt{chip="i2c_3_3_0068",sensor="power1"} 512
 node_hwmon_power_input_watts{chip="i2c_3_3_0068",sensor="power2"} 480
 "#;
-        let boundaries: Vec<_> = readings(text)
+        let mapped: Vec<_> = readings(text)
             .iter()
-            .map(|reading| reading.boundary)
+            .map(|reading| (reading.boundary, reading.measurement.clone()))
             .collect();
-        assert_eq!(boundaries, [Boundary::SupplyInput, Boundary::SupplyOutput]);
+        assert_eq!(
+            mapped,
+            [
+                (Boundary::SupplyInput, Measurement::Watts(Some(512.0))),
+                (Boundary::SupplyOutput, Measurement::Watts(Some(480.0))),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_average_with_an_unusable_interval_is_a_failure_not_instantaneous() {
+        let meter = |interval: Option<&str>| {
+            let interval = interval.map_or(String::new(), |seconds| {
+                format!("node_hwmon_power_average_interval_seconds{{chip=\"lnxsybus:00_acpi000d:00\",sensor=\"power1\"}} {seconds}\n")
+            });
+            let text = format!(
+                "{interval}node_hwmon_power_average_watt{{chip=\"lnxsybus:00_acpi000d:00\",sensor=\"power1\"}} 245\n"
+            );
+            let [reading] = readings(&text).try_into().unwrap();
+            (reading.measurement, reading.window_seconds)
+        };
+        for interval in [
+            None,
+            Some("0"),
+            Some("-1"),
+            Some("NaN"),
+            Some("+Inf"),
+            Some("86401"),
+            Some("1e300"),
+        ] {
+            assert_eq!(
+                meter(interval),
+                (Measurement::Watts(None), 0.0),
+                "{interval:?}"
+            );
+        }
+        assert_eq!(
+            meter(Some("0.001")),
+            (Measurement::Watts(Some(245.0)), 0.001)
+        );
+        assert_eq!(
+            meter(Some("86400")),
+            (Measurement::Watts(Some(245.0)), 86_400.0)
+        );
     }
 
     #[test]
@@ -327,16 +402,31 @@ ipmi_sensor_state{id="122",name="PSU 01 Status",type="Power Supply"} 0
                     "ipmi_exporter/sensor/120",
                     Boundary::SupplyInput,
                     Some("PSU2"),
-                    Measurement::State("failed")
+                    Measurement::State(Some("failed"))
                 ),
                 (
                     "ipmi_exporter/sensor/122",
                     Boundary::SupplyInput,
                     Some("PSU1"),
-                    Measurement::State("ok")
+                    Measurement::State(Some("ok"))
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn an_unknown_supply_state_is_unreadable_not_failed() {
+        let state = |value: &str| {
+            let text = format!(
+                "ipmi_sensor_state{{id=\"120\",name=\"PS2 Status\",type=\"Power Supply\"}} {value}\n"
+            );
+            readings(&text).remove(0).measurement
+        };
+        assert_eq!(state("2"), Measurement::State(Some("failed")));
+        assert_eq!(state("1"), Measurement::State(Some("warning")));
+        for value in ["NaN", "+Inf", "-1", "3", "0.5"] {
+            assert_eq!(state(value), Measurement::State(None), "{value}");
+        }
     }
 
     #[test]
