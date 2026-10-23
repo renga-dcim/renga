@@ -96,21 +96,12 @@ defmodule Renga.Operators.Organizations do
         with :ok <- Idempotency.begin(idempotency),
              {:ok, organization} <- lock_active(organization_id),
              {:ok, invitation} <- insert_invitation(organization, email, token_hash, context) do
-          invitation = %{invitation | organization: organization}
-
-          with {:ok, _delivery} <- InvitationDeliveries.enqueue(invitation, token, url_fun) do
-            :ok = Idempotency.finish!(idempotency, invitation)
-
-            {:ok, invitation,
-             %{
-               organization: organization,
-               target_id: invitation.id,
-               changed: [:invitation]
-             }}
-          else
-            {:error, reason} ->
-              {:error, reason, %{organization: organization, target_id: invitation.id}}
-          end
+          enqueue_delivery(
+            %{invitation | organization: organization},
+            token,
+            url_fun,
+            idempotency
+          )
         else
           {:error, :not_found} ->
             {:error, :not_found, %{target_id: organization_id}}
@@ -130,6 +121,25 @@ defmodule Renga.Operators.Organizations do
 
       error ->
         error
+    end
+  end
+
+  defp enqueue_delivery(invitation, token, url_fun, idempotency) do
+    organization = invitation.organization
+
+    case InvitationDeliveries.enqueue(invitation, token, url_fun) do
+      {:ok, _delivery} ->
+        :ok = Idempotency.finish!(idempotency, invitation)
+
+        {:ok, invitation,
+         %{
+           organization: organization,
+           target_id: invitation.id,
+           changed: [:invitation]
+         }}
+
+      {:error, reason} ->
+        {:error, reason, %{organization: organization, target_id: invitation.id}}
     end
   end
 
