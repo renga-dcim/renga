@@ -9,10 +9,13 @@ defmodule Renga.ResourceGroupSuggestionsTest do
   import Renga.JobsFixtures, only: [member_scope: 2]
   import Renga.TriageFixtures
 
+  alias Renga.Accounts
+  alias Renga.Assignments
   alias Renga.Inventory
   alias Renga.ResourceGroups
   alias Renga.ResourceGroups.Member
   alias Renga.ResourceGroups.Suggestion
+  alias Renga.Roles
   alias Renga.TriageRules
   alias Renga.TriageRules.Rule
 
@@ -53,7 +56,44 @@ defmodule Renga.ResourceGroupSuggestionsTest do
     assert {:error, changeset} =
              staging_rule(context, %{"resource_group_id" => theirs.id})
 
-    assert "is not in this organization" in errors_on(changeset).resource_group_id
+    assert "is not available" in errors_on(changeset).resource_group_id
+  end
+
+  test "a triage manager cannot write rules for a hidden group UUID", context do
+    {:ok, hidden} = ResourceGroups.create_group(context.admin, %{name: "Hidden"})
+    visible_resource = server_fixture(context.admin, "visible-01")
+    {:ok, 1} = ResourceGroups.add_members(context.admin, context.staging, [visible_resource.id])
+
+    {:ok, role} =
+      Roles.create_role(context.admin, %{
+        "name" => "Triage manager",
+        "permissions" => ["triage_rules.manage"]
+      })
+
+    {:ok, _assignment} =
+      Assignments.assign(context.admin, context.member.membership_id, %{"role" => role.id})
+
+    manager = Accounts.scope_for_user(context.member.user, context.organization.id)
+    hidden_attrs = group_rule_attrs(hidden.id, "hidden-*")
+
+    assert TriageRules.can_manage?(manager)
+    refute ResourceGroups.can_manage?(manager)
+    assert ResourceGroups.get_group(manager, hidden.id) == nil
+
+    assert {:error, changeset} = TriageRules.preview(manager, hidden_attrs)
+    assert "is not available" in errors_on(changeset).resource_group_id
+
+    assert {:error, changeset} = TriageRules.create_rule(manager, hidden_attrs)
+    assert "is not available" in errors_on(changeset).resource_group_id
+
+    assert {:ok, %{rule: rule}} =
+             TriageRules.create_rule(manager, group_rule_attrs(context.staging.id, "visible-*"))
+
+    assert {:error, changeset} =
+             TriageRules.update_rule(manager, rule, %{"resource_group_id" => hidden.id})
+
+    assert "is not available" in errors_on(changeset).resource_group_id
+    assert Repo.reload!(rule).resource_group_id == context.staging.id
   end
 
   test "a matching resource gets a suggestion and no membership", context do
@@ -76,6 +116,15 @@ defmodule Renga.ResourceGroupSuggestionsTest do
     assert resource_id == stg.id
     assert Repo.all(Member) == []
     assert ResourceGroups.list_resource_groups(context.admin, stg.id) == []
+  end
+
+  defp group_rule_attrs(group_id, hostname_pattern) do
+    %{
+      "kind" => "group",
+      "name" => "Group hosts",
+      "hostname_pattern" => hostname_pattern,
+      "resource_group_id" => group_id
+    }
   end
 
   test "a collector label raises a suggestion as the resource reports", context do

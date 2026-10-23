@@ -44,7 +44,6 @@ defmodule Renga.TriageRules do
   alias Renga.Inventory.Resource
   alias Renga.Repo
   alias Renga.ResourceGroups
-  alias Renga.ResourceGroups.Group
   alias Renga.ResourceGroups.Member
   alias Renga.ResourceGroups.Suggestion
   alias Renga.ResourceGroups.SuggestionDismissal
@@ -589,14 +588,25 @@ defmodule Renga.TriageRules do
 
   # Sites, locations, teams, and intake keys must be the caller's; the
   # composite foreign keys would reject others, but only with a raw error.
-  defp validate_references(changeset, %Scope{organization_id: organization_id}) do
+  defp validate_references(changeset, %Scope{organization_id: organization_id} = scope) do
     changeset
     |> validate_reference(:site_id, Site, organization_id)
     |> validate_reference(:location_id, Location, organization_id)
     |> validate_reference(:team_id, Team, organization_id)
-    |> validate_reference(:resource_group_id, Group, organization_id)
+    |> validate_group_reference(scope)
     |> validate_reference(:intake_api_key_id, IntakeApiKey, organization_id)
     |> validate_location_in_site(organization_id)
+  end
+
+  # Group visibility is an authorization boundary, not only a tenant check:
+  # custom roles may manage triage rules without being allowed to discover an
+  # otherwise empty group by submitting a known UUID.
+  defp validate_group_reference(changeset, scope) do
+    Ecto.Changeset.validate_change(changeset, :resource_group_id, fn :resource_group_id, id ->
+      if ResourceGroups.get_group(scope, id),
+        do: [],
+        else: [resource_group_id: "is not available"]
+    end)
   end
 
   defp validate_reference(changeset, field, schema, organization_id) do
