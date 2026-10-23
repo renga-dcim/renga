@@ -92,6 +92,20 @@ defmodule RengaWeb.Scim.UserControllerTest do
     end
   end
 
+  # The columns hold 255 code points; a combining accent is a code point but
+  # not a grapheme, so a grapheme count would pass this and fail in Postgres.
+  test "a value too long for its column is invalidValue with a readable detail",
+       %{conn: conn} do
+    for attrs <- [
+          %{"displayName" => String.duplicate("e\u0301", 128)},
+          %{"emails" => [%{"value" => String.duplicate("a", 250) <> "@x.test"}]}
+        ] do
+      refused = conn |> create_user(attrs) |> then(&body(&1, 400))
+      assert refused["scimType"] == "invalidValue"
+      assert refused["detail"] =~ "at most 255 character(s)"
+    end
+  end
+
   test "users without an externalId can share the empty value", %{conn: conn} do
     body(create_user(conn, %{"externalId" => nil, "userName" => "a"}), 201)
     body(create_user(conn, %{"externalId" => "", "userName" => "b"}), 201)

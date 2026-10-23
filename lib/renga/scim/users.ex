@@ -147,9 +147,19 @@ defmodule Renga.Scim.Users do
     {field, {message, opts}} = hd(changeset.errors)
     name = field |> Atom.to_string() |> Macro.camelize() |> uncapitalize()
 
+    detail = "#{name} #{interpolate(message, opts)}"
+
     if opts[:constraint] == :unique,
-      do: {:error, {:uniqueness, "#{name} #{message}"}},
-      else: {:error, {:invalid_value, "#{name} #{message}"}}
+      do: {:error, {:uniqueness, detail}},
+      else: {:error, {:invalid_value, detail}}
+  end
+
+  # Ecto keeps messages as templates such as "should be at most %{count}
+  # character(s)"; a SCIM detail is read as is.
+  defp interpolate(message, opts) do
+    Regex.replace(~r/%{(\w+)}/, message, fn match, key ->
+      opts |> Keyword.get(String.to_existing_atom(key), match) |> to_string()
+    end)
   end
 
   defp uncapitalize(<<first::utf8, rest::binary>>), do: String.downcase(<<first::utf8>>) <> rest

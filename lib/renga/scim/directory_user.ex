@@ -46,13 +46,14 @@ defmodule Renga.Scim.DirectoryUser do
     user
     |> cast(attrs, @fields, empty_values: [])
     |> validate_required([:user_name, :active])
-    |> validate_length(:user_name, max: 255)
-    |> validate_length(:external_id, max: 255)
-    |> validate_length(:display_name, max: 255)
-    |> validate_length(:formatted_name, max: 255)
-    |> validate_length(:given_name, max: 255)
-    |> validate_length(:family_name, max: 255)
-    |> validate_length(:email, max: 320)
+    # The columns are varchar(255), which counts code points, not graphemes.
+    |> validate_length(:user_name, max: 255, count: :codepoints)
+    |> validate_length(:external_id, max: 255, count: :codepoints)
+    |> validate_length(:display_name, max: 255, count: :codepoints)
+    |> validate_length(:formatted_name, max: 255, count: :codepoints)
+    |> validate_length(:given_name, max: 255, count: :codepoints)
+    |> validate_length(:family_name, max: 255, count: :codepoints)
+    |> validate_length(:email, max: 255, count: :codepoints)
     |> unbind_on_external_id_change()
     |> unique_constraint(:user_name,
       name: :scim_users_connection_id_user_name_index,
