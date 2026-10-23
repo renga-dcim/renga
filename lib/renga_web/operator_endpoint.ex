@@ -21,9 +21,8 @@ defmodule RengaWeb.OperatorEndpoint do
   # or body.
   plug RengaWeb.OperatorAuth
 
-  # No operation takes a body yet, so nothing parses one, and nothing between
-  # authentication and an operation can refuse an authenticated request
-  # without the operation recording the attempt (RFD 22, "Audit"). An
-  # operation that takes a body must keep that true when it adds a parser.
+  # Body-taking operations read and parse their payloads inside authenticated
+  # controllers, so nothing between authentication and an operation can refuse
+  # a request without the operation recording the attempt (RFD 22, "Audit").
   plug RengaWeb.OperatorRouter
 end

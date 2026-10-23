@@ -109,8 +109,7 @@ defmodule Renga.Operators.Organizations do
                }}
 
             {:error, :delivery_failed} ->
-              {:error, :delivery_failed,
-               %{organization: organization, target_id: invitation.id}}
+              {:error, :delivery_failed, %{organization: organization, target_id: invitation.id}}
           end
         else
           {:error, :not_found} ->

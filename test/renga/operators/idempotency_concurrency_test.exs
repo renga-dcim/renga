@@ -68,6 +68,7 @@ defmodule Renga.Operators.IdempotencyConcurrencyTest do
     assert Enum.count(results, &match?({:ok, %Organization{}}, &1)) == 1
     assert Enum.count(results, &(&1 == {:error, :replayed})) == 1
     assert Repo.aggregate(where(Organization, slug: ^slug), :count) == 1
+
     assert Repo.aggregate(
              where(Idempotency.Key, [key], key.operator_token_id == ^token.id),
              :count

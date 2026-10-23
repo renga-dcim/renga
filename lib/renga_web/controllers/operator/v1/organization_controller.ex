@@ -24,8 +24,7 @@ defmodule RengaWeb.Operator.V1.OrganizationController do
     request_body: Schemas.OrganizationCreate,
     responses:
       [
-        created:
-          Schemas.idempotent_response(Schemas.Organization, "The new organization."),
+        created: Schemas.idempotent_response(Schemas.Organization, "The new organization."),
         unprocessable_entity:
           {Schemas.ValidationError, description: "The name or slug is invalid or taken."}
       ] ++ Schemas.write_responses()
