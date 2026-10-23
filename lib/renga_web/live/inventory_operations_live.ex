@@ -8,6 +8,8 @@ defmodule RengaWeb.InventoryOperationsLive do
   alias Renga.Inventory.Agent
   alias Renga.Inventory.AgentLease
   alias Renga.Inventory.CollectionClocks
+  alias Renga.Inventory.Collectors
+  alias Renga.Inventory.CollectorTarget
   alias Renga.Inventory.InstallationKeys
 
   @refresh_interval 30_000
@@ -458,6 +460,67 @@ defmodule RengaWeb.InventoryOperationsLive do
             <p class="mt-2 break-all font-mono text-xs text-fg">{key.fingerprint}</p>
           </.confirm_dialog>
         </section>
+
+        <section
+          :if={@target_rows != []}
+          id="collector-targets"
+          class="space-y-3"
+          aria-labelledby="collector-targets-heading"
+        >
+          <div>
+            <h2 id="collector-targets-heading" class="text-sm font-medium text-fg">
+              Poller targets
+            </h2>
+            <p class="mt-1 text-xs text-fg-muted">
+              The switches and hypervisors each collector module polls, as of each target's latest report. An unreachable target's inventory stays as it was, unknown rather than gone.
+            </p>
+          </div>
+
+          <%!-- Grouped by collector stream. The target and its state never
+                hide; resources, then the times, go first as it narrows. --%>
+          <.table
+            id="poller-targets"
+            rows={@target_rows}
+            row_id={fn row -> row.id end}
+            row_group={fn row -> row[:header] end}
+            overflow="clip"
+            class="rounded-lg border border-edge bg-surface"
+          >
+            <:col :let={row} label="Target" class="w-2/3 sm:w-auto">
+              <span class="font-mono text-xs text-fg">{row.display_key}</span>
+            </:col>
+            <:col :let={row} label="State" class="w-1/3 sm:w-64">
+              <span id={"poller-target-state-#{row.target.id}"}>
+                <.target_state_pill target={row.target} />
+                <span
+                  :if={row.target.status == "unreachable" && row.target.error}
+                  class="ml-1.5 hidden text-xs text-fg-muted sm:inline"
+                >
+                  Connection failed
+                </span>
+              </span>
+            </:col>
+            <:col :let={row} label="Resources" class="w-24 tabular-nums" hide_below="3xl">
+              <span id={"poller-target-resources-#{row.target.id}"}>{row.resources}</span>
+            </:col>
+            <:col
+              :let={row}
+              label="Reached"
+              class="w-44 font-mono text-xs text-fg-muted"
+              hide_below="xl"
+            >
+              {format_time(row.target.last_reachable_at)}
+            </:col>
+            <:col
+              :let={row}
+              label="Reported"
+              class="w-44 font-mono text-xs text-fg-muted"
+              hide_below="2xl"
+            >
+              {format_time(row.target.last_reported_at)}
+            </:col>
+          </.table>
+        </section>
       </.settings_page>
     </Layouts.app>
     """
@@ -519,6 +582,25 @@ defmodule RengaWeb.InventoryOperationsLive do
         if(@state == :connected, do: "rounded-full bg-ok", else: "bg-crit")
       ]} />
       {if(@state == :connected, do: "Connected", else: "Disconnected")}
+    </span>
+    """
+  end
+
+  attr :target, CollectorTarget, required: true
+
+  # The state the target's latest report gave it: a dot when reachable and a
+  # square when not, like a collector's connection.
+  defp target_state_pill(assigns) do
+    ~H"""
+    <span class={[
+      "inline-flex items-center gap-1.5 text-xs font-medium",
+      if(@target.status == "reachable", do: "text-ok", else: "text-crit")
+    ]}>
+      <span class={[
+        "size-1.5",
+        if(@target.status == "reachable", do: "rounded-full bg-ok", else: "bg-crit")
+      ]} />
+      {if(@target.status == "reachable", do: "Reachable", else: "Unreachable")}
     </span>
     """
   end
@@ -628,6 +710,7 @@ defmodule RengaWeb.InventoryOperationsLive do
     |> assign(:pending_keys, pending_keys(sources, keys_by_agent))
     |> assign(:clocks_by_source, CollectionClocks.by_source(scope))
     |> assign(:resource_by_source, Inventory.latest_resources_by_source(scope))
+    |> assign(:target_rows, target_rows(scope))
     |> stream(:intake_api_keys, Inventory.list_intake_api_keys(scope), reset: true)
     |> stream(:sources, sources, reset: true)
   end
@@ -643,6 +726,48 @@ defmodule RengaWeb.InventoryOperationsLive do
         %{status: "pending"} = key <- [Map.get(keys_by_agent, collector_agent(source).id)],
         do: {key, source.name}
   end
+
+  # Each stream's header row, then one row per target.
+  defp target_rows(scope) do
+    for {stream, targets} <- Collectors.list_stream_targets(scope),
+        row <- [
+          stream_header(stream, length(targets)) | Enum.map(targets, &target_row(stream, &1))
+        ],
+        do: row
+  end
+
+  defp stream_header(stream, count) do
+    installation =
+      case stream.installation_agent do
+        %Agent{name: name} when is_binary(name) -> " on #{name}"
+        _agent -> ""
+      end
+
+    %{
+      id: "poller-stream-#{stream.id}",
+      header: %{
+        label: "#{stream.collector_id} · #{stream_kind(stream.kind)}#{installation}",
+        count: count
+      }
+    }
+  end
+
+  defp target_row(stream, {target, resources}) do
+    %{
+      id: "poller-target-#{target.id}",
+      target: target,
+      resources: resources,
+      display_key:
+        if(stream.kind == "vm_provider",
+          do: CollectorTarget.display_uri(target.key),
+          else: target.key
+        )
+    }
+  end
+
+  defp stream_kind("switch_poller"), do: "Switch poller"
+  defp stream_kind("vm_provider"), do: "Hypervisor"
+  defp stream_kind(kind), do: kind
 
   defp key_form, do: to_form(%{"name" => ""}, as: :intake_api_key)
   defp collector_agent(%{agents: [agent]}), do: agent

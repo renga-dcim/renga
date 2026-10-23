@@ -48,6 +48,36 @@ defmodule Renga.Inventory.Collectors do
     |> Repo.all()
   end
 
+  @doc """
+  Every collector stream that has reported a target, with its targets and
+  how many resources each still reports, for the Collectors page (RFD 11,
+  "User interaction"). Within a stream, unreachable targets come first.
+  """
+  def list_stream_targets(%Scope{organization_id: organization_id} = scope) do
+    counts =
+      CollectorTargetResource
+      |> where([member], member.organization_id == ^organization_id)
+      |> where(
+        [member],
+        is_nil(member.withdrawn_at) or member.last_reported_at > member.withdrawn_at
+      )
+      |> group_by([member], member.target_id)
+      |> select([member], {member.target_id, count(member.id)})
+      |> Repo.all()
+      |> Map.new()
+
+    targets =
+      CollectorTarget
+      |> where([target], target.organization_id == ^organization_id)
+      |> order_by([target], desc: target.status == "unreachable", asc: target.key)
+      |> Repo.all()
+      |> Enum.group_by(& &1.source_id, &{&1, Map.get(counts, &1.id, 0)})
+
+    for stream <- list_streams(scope),
+        Map.has_key?(targets, stream.id),
+        do: {stream, Map.fetch!(targets, stream.id)}
+  end
+
   @doc "Lists what a stream's targets reported, with each resource."
   def list_target_resources(%Scope{organization_id: organization_id}, source_id) do
     CollectorTargetResource

@@ -38,4 +38,17 @@ defmodule Renga.Inventory.CollectorTarget do
 
     timestamps()
   end
+
+  @doc """
+  A hypervisor URI as members may see it, in the Inbox or on the Collectors
+  page. The bundled agent keeps credentials out of libvirt URIs, but the API
+  cannot promise another client did, so only the scheme, host, and path are
+  shown.
+  """
+  def display_uri(uri) do
+    case URI.new(uri) do
+      {:ok, uri} -> URI.to_string(%{uri | userinfo: nil, query: nil, fragment: nil})
+      {:error, _part} -> "(unparseable URI)"
+    end
+  end
 end

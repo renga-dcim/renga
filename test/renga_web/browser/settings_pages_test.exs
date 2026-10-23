@@ -7,7 +7,10 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
 
   import Renga.AccountsFixtures
   import Renga.InventoryFixtures
+  import Phoenix.ConnTest, only: [build_conn: 0, post: 3]
+  import Plug.Conn, only: [put_req_header: 3]
 
+  @endpoint RengaWeb.Endpoint
   @moduletag :playwright
   @moduletag browser_context_opts: [
                has_touch: true,
@@ -248,6 +251,53 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
     |> assert_has("#new-intake-key-button:focus")
   end
 
+  test "poller target and state remain readable at phone width", %{conn: conn} do
+    %{conn: conn, scope: scope, token: token} = collector_context(conn)
+
+    post_report(token, %{
+      "scope" => "hypervisor",
+      "collector" => %{"id" => "local-libvirt", "kind" => "vm_provider"},
+      "hypervisor" => %{
+        "id" => "qemu+ssh://root:secret@hv-01/system?token=hidden#private",
+        "status" => "unreachable",
+        "error" => "Failed with qemu+ssh://root:secret@hv-01/system?token=hidden#private"
+      },
+      "complete" => true,
+      "resources" => []
+    })
+
+    [{_stream, [{target, 0}]}] = Renga.Inventory.Collectors.list_stream_targets(scope)
+
+    conn
+    |> visit("/settings/collectors")
+    |> assert_has("body .phx-connected")
+    |> assert_has("#poller-target-#{target.id}", text: "qemu+ssh://hv-01/system")
+    |> assert_has("#poller-target-state-#{target.id}", text: "Unreachable")
+    |> evaluate(
+      """
+      (() => {
+        const row = document.getElementById('poller-target-#{target.id}')
+        const cells = row.querySelectorAll('td')
+        const wrapper = row.closest('table').parentElement
+        return {
+          fits: wrapper.scrollWidth <= wrapper.clientWidth,
+          target_width: cells[0].getBoundingClientRect().width,
+          state_width: cells[1].getBoundingClientRect().width,
+          optional_hidden: [...cells].slice(2).every(cell => getComputedStyle(cell).display === 'none'),
+          leaks: ['root:secret', 'token=hidden', '#private'].some(secret => document.documentElement.innerHTML.includes(secret))
+        }
+      })()
+      """,
+      fn layout ->
+        assert layout["fits"] == true
+        assert layout["target_width"] >= 160
+        assert layout["state_width"] >= 100
+        assert layout["optional_hidden"] == true
+        assert layout["leaks"] == false
+      end
+    )
+  end
+
   @tag browser_context_opts: [
          has_touch: false,
          is_mobile: false,
@@ -379,8 +429,29 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
       conn: conn,
       key: key,
       long_capability: long_capability,
-      resource: resource
+      resource: resource,
+      scope: scope,
+      token: token
     }
+  end
+
+  defp post_report(token, payload) do
+    payload =
+      Map.merge(
+        %{
+          "observation_id" => "poll-#{System.unique_integer([:positive])}",
+          "observed_at" => DateTime.to_iso8601(Renga.Time.utc_now_ms())
+        },
+        payload
+      )
+
+    response =
+      build_conn()
+      |> put_req_header("authorization", "Bearer #{token}")
+      |> put_req_header("x-renga-installation-id", "67e55044-10b1-426f-9247-bb680e5fe0c8")
+      |> post("/api/v1/observations", payload)
+
+    assert response.status == 202
   end
 
   defp authenticated_conn(conn, user, organization) do
