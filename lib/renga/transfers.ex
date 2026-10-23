@@ -219,6 +219,8 @@ defmodule Renga.Transfers do
 
   defp fail(export) do
     Repo.transaction(fn ->
+      lock_organization!(export.organization_id)
+
       case locked_export(export.organization_id, export.id) do
         %OrganizationExport{status: "running"} = export -> mark_failed!(export)
         _other -> :ok
@@ -326,6 +328,7 @@ defmodule Renga.Transfers do
     Enum.count(due, fn {organization_id, export_id} ->
       {:ok, changed?} =
         Repo.transaction(fn ->
+          lock_organization!(organization_id)
           organization_id |> locked_export(export_id) |> sweep_one(now, stale_before)
         end)
 
@@ -366,6 +369,18 @@ defmodule Renga.Transfers do
     |> Repo.insert!()
 
     :ok
+  end
+
+  # Changes made in the background lock the organization before the
+  # export, the order a member's action takes them in
+  # (Authorization.authorize!/3). Recording Activity needs a key-share lock
+  # on the organization, so the opposite order deadlocks with a revocation.
+  # Whatever the organization's status, so cleanup also runs for an
+  # inactive one.
+  defp lock_organization!(organization_id) do
+    Repo.query!("SELECT 1 FROM organizations WHERE id = $1 FOR UPDATE", [
+      Ecto.UUID.dump!(organization_id)
+    ])
   end
 
   defp locked_export(organization_id, export_id) do
