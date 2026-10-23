@@ -530,6 +530,31 @@ defmodule Renga.Accounts.IdentityProvidersTest do
       refute IdentityProviders.get(provider.id).enforces_mfa
     end
 
+    test "returns validation errors for malformed values without recording a change" do
+      {provider, _} = create()
+      events_before = event_kinds(provider)
+
+      assert {:error, changeset} =
+               IdentityProviders.set_mfa_mark(
+                 provider,
+                 %{"enforces_mfa" => "bogus"},
+                 @operator
+               )
+
+      assert errors_on(changeset).enforces_mfa
+
+      assert {:error, changeset} =
+               IdentityProviders.set_mfa_mark(
+                 provider,
+                 %{"mfa_amr_combinations" => [nil]},
+                 @operator
+               )
+
+      assert errors_on(changeset).mfa_amr_combinations == ["must be a string"]
+      refute IdentityProviders.get(provider.id).enforces_mfa
+      assert event_kinds(provider) == events_before
+    end
+
     test "never marks a GitHub provider" do
       {:ok, {provider, _}} =
         IdentityProviders.create(

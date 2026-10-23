@@ -115,6 +115,8 @@ defmodule Renga.Accounts.ProviderMFA do
     end
   end
 
+  def normalize_combination(_combination), do: {:error, "must be a string"}
+
   defp split(combination) do
     combination
     |> String.split("+")

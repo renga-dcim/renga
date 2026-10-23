@@ -351,11 +351,15 @@ defmodule Renga.Accounts.IdentityProviders do
     change_provider(id, fn provider ->
       changeset = IdentityProvider.mfa_changeset(provider, attrs)
 
-      case {changed_fields(changeset), Ecto.Changeset.fetch_change(changeset, :enforces_mfa)} do
-        {[], _} -> {:ok, provider}
-        {changed, {:ok, true}} -> save(changeset, "mfa_marked", actor, changed: changed)
-        {changed, {:ok, false}} -> save(changeset, "mfa_unmarked", actor, changed: changed)
-        {changed, :error} -> save(changeset, "updated", actor, changed: changed)
+      if changeset.valid? do
+        case {changed_fields(changeset), Ecto.Changeset.fetch_change(changeset, :enforces_mfa)} do
+          {[], _} -> {:ok, provider}
+          {changed, {:ok, true}} -> save(changeset, "mfa_marked", actor, changed: changed)
+          {changed, {:ok, false}} -> save(changeset, "mfa_unmarked", actor, changed: changed)
+          {changed, :error} -> save(changeset, "updated", actor, changed: changed)
+        end
+      else
+        {:error, changeset}
       end
     end)
   end
