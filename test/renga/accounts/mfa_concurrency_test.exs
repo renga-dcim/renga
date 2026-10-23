@@ -159,10 +159,12 @@ defmodule Renga.Accounts.MFAConcurrencyTest do
     :ok = Sandbox.checkout(Repo, sandbox: false)
     user = user_fixture()
     secret = MFA.new_totp_secret()
-    # Leaves the current step unspent.
-    totp_fixture(user, secret: secret)
 
+    # Enrolment commits outside the sandbox, so it sits inside the `try`
+    # for its user row to be deleted even when the fixture raises.
     try do
+      # Leaves the current step unspent.
+      totp_fixture(user, secret: secret)
       fun.(user, secret)
     after
       Repo.delete!(user)
