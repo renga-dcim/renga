@@ -43,6 +43,8 @@ const TELEMETRY_PER_FLUSH: usize = 120;
 const TELEMETRY_PER_FLUSH: usize = 2;
 /// How long an inventory waits for a queue flush already using the delivery worker.
 const INVENTORY_DEFER: Duration = Duration::from_secs(1);
+/// How long a flush waits for an inventory already using the delivery worker.
+const FLUSH_DEFER: Duration = Duration::from_secs(1);
 /// Queue ownership is polled so a cancelled job never waits behind a long flush.
 const QUEUE_LOCK_POLL: Duration = Duration::from_millis(25);
 /// Backoff between startup home resolutions while the resolver is unreachable.
@@ -197,10 +199,21 @@ impl DeliveryQueue {
 }
 
 /// Work running on the delivery thread, which owns the observation queue while it runs.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DeliveryTask {
     Inventory,
     Flush,
+}
+
+/// When the flush runs next, given what was using the delivery worker when it came due. An
+/// inventory delivers only observations, and only a flush delivers telemetry, so a flush
+/// that found an inventory running waits for it rather than skipping a whole interval:
+/// inventory keeps going first, and telemetry still gets its turn.
+fn next_flush(running: Option<DeliveryTask>) -> Duration {
+    match running {
+        Some(DeliveryTask::Inventory) => FLUSH_DEFER,
+        Some(DeliveryTask::Flush) | None => QUEUE_FLUSH_INTERVAL,
+    }
 }
 
 struct DeliveryWorker {
@@ -487,8 +500,8 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
                     }
                 },
                 Job::Flush => {
-                    // A running inventory drains the queue itself.
-                    if DeliveryWorker::running(&delivery_worker).is_none() {
+                    let running = DeliveryWorker::running(&delivery_worker);
+                    if running.is_none() {
                         let flush_client = client.clone();
                         let flush_stopped = stopped.clone();
                         let flush_queue = Arc::clone(&queue);
@@ -504,7 +517,7 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
                             },
                         );
                     }
-                    scheduler.reschedule(job, Instant::now(), QUEUE_FLUSH_INTERVAL);
+                    scheduler.reschedule(job, Instant::now(), next_flush(running));
                 }
                 Job::Reload => {
                     // The resolution in flight decides the home before the next reload does.
@@ -1212,12 +1225,18 @@ mod tests {
 
     /// Answers observation posts with `statuses` in order and returns each request body.
     fn stub_server(statuses: Vec<u16>) -> (String, thread::JoinHandle<Vec<Vec<u8>>>) {
+        stub_responses(statuses.into_iter().map(|status| (status, "")).collect())
+    }
+
+    fn stub_responses(
+        responses: Vec<(u16, &'static str)>,
+    ) -> (String, thread::JoinHandle<Vec<Vec<u8>>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
         let server = thread::spawn(move || {
-            statuses
+            responses
                 .into_iter()
-                .map(|status| {
+                .map(|(status, response)| {
                     let (stream, _) = listener.accept().unwrap();
                     let mut reader = BufReader::new(stream);
                     let mut length = 0;
@@ -1237,7 +1256,8 @@ mod tests {
                     reader.read_exact(&mut body).unwrap();
                     write!(
                         reader.get_mut(),
-                        "HTTP/1.1 {status} Status\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        "HTTP/1.1 {status} Status\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+                        response.len()
                     )
                     .unwrap();
                     body
@@ -3362,6 +3382,68 @@ mod tests {
         assert_eq!(server.join().unwrap(), [br#"{"t":3}"#.to_vec()]);
         assert!(state.join("telemetry").is_dir());
         std::fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn flush_replays_documented_telemetry_and_drops_a_batch_whose_collector_kind_conflicts() {
+        let state = std::env::temp_dir().join(format!("renga-telemetry-{}", uuid::Uuid::new_v4()));
+        let queue = Mutex::new(DeliveryQueue::new(state.clone()));
+        let fixture: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "../../test/fixtures/openapi/accepted_telemetry.json"
+        ))
+        .unwrap();
+        let bodies: Vec<Vec<u8>> = fixture
+            .iter()
+            .map(|batch| serde_json::to_vec(batch).unwrap())
+            .collect();
+        for body in &bodies {
+            lock(&queue)
+                .telemetry_ready()
+                .unwrap()
+                .enqueue(uuid::Uuid::new_v4(), body, SystemTime::now())
+                .unwrap();
+        }
+        let stopped = Cancellation::default();
+        let wrong_kind = r#"{"status":"rejected","errors":[{"path":"collector.kind","message":"does not match the collector's kind"}]}"#;
+
+        // A batch for a collector whose stream has another kind can never be delivered, so it
+        // is dropped and the next batch still goes, byte for byte.
+        let (origin, server) = stub_responses(vec![(409, wrong_kind), (202, "")]);
+        flush(&stub_client(&origin), &stopped, &queue).unwrap();
+        assert_eq!(server.join().unwrap(), bodies);
+        assert_eq!(
+            lock(&queue)
+                .telemetry_ready()
+                .unwrap()
+                .health()
+                .unwrap()
+                .entries,
+            0
+        );
+        std::fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn a_flush_waits_for_a_running_inventory_instead_of_skipping_an_interval() {
+        assert_eq!(next_flush(None), QUEUE_FLUSH_INTERVAL);
+        assert_eq!(next_flush(Some(DeliveryTask::Flush)), QUEUE_FLUSH_INTERVAL);
+        assert_eq!(next_flush(Some(DeliveryTask::Inventory)), FLUSH_DEFER);
+
+        // With both due at once, inventory takes the worker first and the flush comes due
+        // again as soon as the deferral passes, not a whole flush interval later.
+        let start = Instant::now();
+        let mut scheduler = Scheduler::new(
+            start,
+            Duration::from_secs(600),
+            Duration::from_secs(120),
+            Duration::from_secs(600),
+            Duration::from_secs(120),
+        );
+        let due = start + Duration::from_secs(120);
+        assert_eq!(scheduler.due(due), [Job::Inventory, Job::Flush]);
+        scheduler.reschedule(Job::Inventory, due, Duration::from_secs(120));
+        scheduler.reschedule(Job::Flush, due, next_flush(Some(DeliveryTask::Inventory)));
+        assert_eq!(scheduler.due(due + FLUSH_DEFER), [Job::Flush]);
     }
 
     #[test]

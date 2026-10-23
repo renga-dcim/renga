@@ -60,6 +60,9 @@ pub struct TransportError {
     kind: FailureKind,
     status: Option<StatusCode>,
     moved: bool,
+    /// A `409` naming `collector.kind`: the payload's collector kind differs from the stream
+    /// the server already has under that collector ID.
+    collector_kind_conflict: bool,
 }
 
 impl TransportError {
@@ -69,6 +72,7 @@ impl TransportError {
             kind,
             status: None,
             moved: false,
+            collector_kind_conflict: false,
         }
     }
 
@@ -409,6 +413,19 @@ impl HttpClient {
     /// the server recognizes a repeat by its replay ID (RFD 10, "Measured history").
     pub fn post_encoded_telemetry(&self, body: &[u8]) -> Result<(), TransportError> {
         self.post_encoded_while(&self.telemetry_url, body, || self.cancellation.cancelled())
+            .map_err(|error| {
+                // A batch's collector kind is fixed when it is encoded and a stream's kind never
+                // changes, so no retry can deliver it; unlike an observation, a telemetry batch
+                // is disposable, so it is dropped instead of holding back the batches after it.
+                if error.collector_kind_conflict {
+                    TransportError {
+                        kind: FailureKind::PayloadRejected,
+                        ..error
+                    }
+                } else {
+                    error
+                }
+            })
     }
 
     fn post_encoded_while(
@@ -675,6 +692,8 @@ fn status_error(status: StatusCode, response: &mut Response) -> TransportError {
     let excerpt = bounded_error_excerpt(response);
     TransportError {
         moved: moved(status, &excerpt),
+        collector_kind_conflict: status == StatusCode::CONFLICT
+            && rejects_path(&excerpt, "collector.kind"),
         ..TransportError::new(
             format!("server returned {status}; response excerpt: {excerpt:?}"),
             failure_kind(status, &excerpt),
@@ -835,6 +854,7 @@ mod tests {
         let reused_replay = r#"{"status":"rejected","errors":[{"path":"replay_id","message":"has already been used for a different batch"}]}"#;
         let disabled =
             r#"{"status":"rejected","errors":[{"path":"collector.id","message":"is disabled"}]}"#;
+        let wrong_kind = r#"{"status":"rejected","errors":[{"path":"collector.kind","message":"does not match the collector's kind"}]}"#;
 
         for (status, excerpt, kind) in [
             (StatusCode::SERVICE_UNAVAILABLE, "", FailureKind::Transient),
@@ -863,6 +883,8 @@ mod tests {
             ),
             (StatusCode::CONFLICT, enrolled, FailureKind::Permanent),
             (StatusCode::CONFLICT, disabled, FailureKind::Permanent),
+            // Shared by observations, which keep it queued; only telemetry drops it.
+            (StatusCode::CONFLICT, wrong_kind, FailureKind::Permanent),
             (StatusCode::CONFLICT, "not json", FailureKind::Permanent),
             (StatusCode::UNAUTHORIZED, "", FailureKind::Permanent),
             (StatusCode::FORBIDDEN, "", FailureKind::Permanent),

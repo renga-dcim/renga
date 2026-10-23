@@ -312,6 +312,10 @@ fn the_contract_accepts_edge_cases_the_server_accepts() {
             "Observation",
             include_str!("../../test/fixtures/openapi/accepted_observations.json"),
         ),
+        (
+            "TelemetryBatch",
+            include_str!("../../test/fixtures/openapi/accepted_telemetry.json"),
+        ),
     ];
 
     for (schema, fixture) in fixtures {
