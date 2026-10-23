@@ -22,6 +22,32 @@ defmodule Renga.Release.ProvidersTest do
     )
   end
 
+  test "the release wrapper preserves a final empty argument" do
+    directory =
+      Path.join(System.tmp_dir!(), "renga-providers-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(directory)
+    on_exit(fn -> File.rm_rf!(directory) end)
+
+    wrapper = Path.join(directory, "providers")
+    capture = Path.join(directory, "argv")
+    File.cp!("rel/overlays/bin/providers", wrapper)
+    File.chmod!(wrapper, 0o755)
+
+    File.write!(Path.join(directory, "renga"), """
+    #!/bin/sh
+    printf '%s' "$RENGA_ARGV" > "$CAPTURE"
+    """)
+
+    File.chmod!(Path.join(directory, "renga"), 0o755)
+
+    args = ["mark-mfa", "sso", "--actor", "jane", "--amr-combinations", ""]
+    assert {"", 0} = System.cmd(wrapper, args, env: [{"CAPTURE", capture}])
+
+    assert File.read!(capture) ==
+             "xmark-mfa\nxsso\nx--actor\nxjane\nx--amr-combinations\nx"
+  end
+
   test "adds a pending provider with the secret from the environment" do
     assert {:ok, output} = add("sso")
     assert output =~ "pending"
