@@ -353,7 +353,12 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
       post_report(token, %{
         "scope" => "hypervisor",
         "collector" => %{"id" => "local-libvirt", "kind" => "vm_provider"},
-        "hypervisor" => %{"id" => "qemu+ssh://root:secret@hv-1/system", "status" => "reachable"},
+        "hypervisor" => %{
+          "id" => "qemu+ssh://root:secret@hv-1/system?token=hidden#private",
+          "status" => "unreachable",
+          "error" =>
+            "Failed to connect to qemu+ssh://root:secret@hv-1/system?token=hidden#private"
+        },
         "complete" => true,
         "resources" => []
       })
@@ -374,17 +379,21 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
       assert has_element?(view, "#poller-target-state-#{up.id}", "Reachable")
       assert has_element?(view, "#poller-target-resources-#{up.id}", "1")
       assert has_element?(view, "#poller-target-state-#{down.id}", "Unreachable")
-      assert has_element?(view, "#poller-target-state-#{down.id}", "timeout")
+      assert has_element?(view, "#poller-target-state-#{down.id}", "Connection failed")
       assert has_element?(view, "#poller-target-#{down.id}", "Never")
 
       # Unreachable targets lead their stream.
       assert :binary.match(html, "poller-target-#{down.id}") <
                :binary.match(html, "poller-target-#{up.id}")
 
-      # A hypervisor URI never shows credentials someone put in it.
+      # Neither a target URI nor an unrestricted collector diagnostic can
+      # disclose credentials someone put in the collector configuration.
       assert has_element?(view, "#poller-targets", "local-libvirt · Hypervisor")
       assert has_element?(view, "#poller-target-#{hypervisor.id}", "qemu+ssh://hv-1/system")
-      refute html =~ "secret"
+      assert has_element?(view, "#poller-target-state-#{hypervisor.id}", "Connection failed")
+      refute html =~ "root:secret"
+      refute html =~ "token=hidden"
+      refute html =~ "#private"
     end
   end
 

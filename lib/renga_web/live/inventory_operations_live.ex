@@ -494,9 +494,9 @@ defmodule RengaWeb.InventoryOperationsLive do
                 <.target_state_pill target={row.target} />
                 <span
                   :if={row.target.status == "unreachable" && row.target.error}
-                  class="ml-1.5 font-mono text-xs text-fg-muted"
+                  class="ml-1.5 text-xs text-fg-muted"
                 >
-                  {row.target.error}
+                  Connection failed
                 </span>
               </span>
             </:col>
