@@ -16,7 +16,8 @@ defmodule Renga.Jobs.Registry do
     Renga.Jobs.Queries.DiskUsage,
     Renga.Jobs.Queries.Routes,
     Renga.Jobs.Queries.TimeSync,
-    Renga.Jobs.Queries.Packages
+    Renga.Jobs.Queries.Packages,
+    Renga.Jobs.Queries.Sql
   ]
 
   @doc "Every registered capability module."

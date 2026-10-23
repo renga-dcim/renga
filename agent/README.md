@@ -420,8 +420,8 @@ This build has these capabilities:
 * Operational queries (RFD 12), each `observe` and read-only, on Linux. They
   read procfs, system calls, and package databases directly. Where one must
   run a program, the program's arguments are fixed in the agent and never
-  include text from the request. No query takes a command, a path, or a
-  script. List answers stop at about 48 KiB and say `truncated`.
+  include text from the request. No named query takes a command, a path, a
+  script, or SQL. List answers stop at about 48 KiB and say `truncated`.
   * `query.disk_usage@1`: filesystem capacity, use, and inodes, from PID 1's
     mount table and `statvfs`.
   * `query.routes@1`: every routing table, with VRF names, from
@@ -437,6 +437,9 @@ This build has these capabilities:
   * `query.packages@1` (sensitive): installed packages from dpkg, apk, or
     pacman databases, or `rpm -qa`. `name` narrows it to names containing the
     text, and the filter is applied by the agent, never passed to a program.
+  * `query.sql@1` (sensitive): one operator-written osquery `SELECT`, answered
+    only through [osquery](#osquery) and returned as a table of strings. See
+    [Ad hoc SQL](#ad-hoc-sql) for what the agent requires first.
 
   Sensitive queries reveal what a host runs and which versions it has, so they
   run only when `[jobs]` names them. Renga also requires the organization to
@@ -499,8 +502,8 @@ status, which the Collectors page shows:
 * `not_present`: nothing answers at the socket.
 
 `enabled = false` stops the probing, and no status is reported. The agent
-speaks only to the extension manager's `ping`, `query`, and `options`
-methods, and bounds every reply at 16 MiB.
+speaks only to the extension manager's `ping`, `query`, `getQueryColumns`,
+and `options` methods, and bounds every reply at 16 MiB.
 
 When osquery is available, the named queries answer from its tables with
 fixed SQL: `listening_ports` and `processes` for listening sockets,
@@ -511,6 +514,60 @@ agent logs a warning and answers natively instead. Packages also fall back when
 both package tables are empty, since osquery has no table for apk or pacman,
 and services when `systemd_units` is empty, which is how osquery answers when
 it cannot reach systemd.
+
+#### Ad hoc SQL
+
+`query.sql@1` runs SQL from the request, so it is off unless `[jobs]` names it,
+and it answers only when all of these hold:
+
+* osquery is enabled and reachable. Without it the query fails.
+* The daemon runs with `--disable_tables` covering every table whose query
+  names what it opens: a file or directory it reads, hashes, parses, or scans;
+  a device; an address it reaches; or files it copies off the host. Opening a
+  path the query chooses can also block the daemon for good, on a FIFO for
+  one. Six `process*` tables build `/proc` paths from an unchecked `pid` and
+  four `lxd_*` tables build API paths from an unchecked name, so they are on
+  the list too, and ad hoc SQL cannot read those six. With them
+  disabled, the named listening-sockets query, which joins `processes`, reads
+  natively. The list is in the command below. `deb_packages` and `pacman_packages`
+  also take a database directory but read only fixed file names inside it,
+  and the named packages query uses `deb_packages`, so they stay enabled. The agent reads the daemon's flags before every
+  run and refuses otherwise. It does not look for table names in the SQL.
+* The daemon runs with `--carver_disable_function` (osquery's default), since
+  `carve()` copies files off the host even with the `carves` table disabled.
+* The text is one statement. osquery runs every statement it is given, so the
+  agent splits the text at semicolons outside quotes and comments and refuses
+  a second statement before osquery sees any of it. It also refuses SQLite
+  parameters (`?`, `:a`, `@a`, `$a`, `#a`) outside quotes: nothing binds them,
+  and `$a(...)` can hold a quote that would otherwise hide a second statement.
+* The statement is a `SELECT`, or a `WITH` that reads. Anything else, such as a
+  `PRAGMA`, is refused before osquery sees it.
+* The statement only reads. osquery's own SQLite database accepts `CREATE`,
+  `INSERT`, and `DROP`, so the agent has SQLite `EXPLAIN` the statement first
+  and refuses a program that opens a write transaction or writes a virtual
+  table, or that calls `sleep()`, which would hold the daemon after the agent
+  stops waiting.
+* osquery extensions add tables the agent does not know. Only load extensions
+  you trust with any SQL a holder of both query permissions may write.
+
+```sh
+osqueryd --disable_tables=ai_agent_skills,augeas,carves,certificates,curl,\
+curl_certificate,deb_package_files,device_file,device_hash,device_partitions,\
+elf_dynamic,elf_info,elf_sections,elf_segments,elf_symbols,extended_attributes,\
+file,hash,homebrew_packages,lxd_images,lxd_instance_config,lxd_instance_devices,\
+lxd_instances,magic,npm_packages,process_envs,process_memory_map,\
+process_namespaces,process_open_files,process_open_sockets,processes,\
+python_packages,sshd_config,ycloud_instance_metadata,yara,yara_file,yara_process \
+  --carver_disable_function=true ...
+```
+
+The answer lists column names in osquery's order and each row's values as
+strings, with osquery's NULL as an empty string. It stops at 256 columns,
+10,000 rows, or about 48 KiB, clips names to 128 and values to 1,024
+characters, and says `truncated` when it cut anything. osquery's own error,
+such as a syntax error or an unknown table, is shown in Renga as the reason.
+osquery returns all of a statement's rows in one reply; the agent reads at
+most 16 MiB of it and fails a larger one, so narrow such a query with `LIMIT`.
 
 ## Debian/Ubuntu package and smoke test
 

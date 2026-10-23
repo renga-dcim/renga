@@ -461,3 +461,251 @@ fn a_missing_or_disabled_daemon_reads_natively() {
     let capability = QueryCapability::new(disk_usage::DiskUsage, disabled);
     contract::assert_conforms("query.disk_usage@1", "result", &run(&capability, json!({})));
 }
+
+/// A daemon for `query.sql@1` whose `disable_tables` is `disabled`.
+fn sql_daemon(disabled: &'static str) -> (QueryCapability, std::thread::JoinHandle<Vec<String>>) {
+    let (socket, server) = fake::serve(move |method, args| {
+        let sql = args.field(1).and_then(Thrift::as_str).unwrap_or_default();
+        match (method, sql.as_str()) {
+            ("options", _) => fake::options(&[
+                ("disable_tables", disabled),
+                ("carver_disable_function", "true"),
+            ]),
+            ("getQueryColumns", "SELECT name, version FROM os_version") => {
+                fake::response(0, "OK", &[&[("name", "TEXT")], &[("version", "TEXT")]])
+            }
+            ("query", "EXPLAIN SELECT sleep(1000000)") => fake::response(
+                0,
+                "OK",
+                &[
+                    &[("opcode", "Init"), ("p2", "4"), ("p4", "")],
+                    &[("opcode", "Function"), ("p2", "1"), ("p4", "sleep(1)")],
+                    &[("opcode", "ResultRow"), ("p2", "1"), ("p4", "")],
+                ],
+            ),
+            ("query", "EXPLAIN SELECT name, version FROM os_version") => fake::response(
+                0,
+                "OK",
+                &[
+                    &[("opcode", "VOpen"), ("p2", "0")],
+                    &[("opcode", "Transaction"), ("p2", "0")],
+                ],
+            ),
+            ("query", "EXPLAIN WITH x AS (SELECT 1) INSERT INTO t SELECT * FROM x") => {
+                fake::response(
+                    0,
+                    "OK",
+                    &[
+                        &[("opcode", "CreateBtree"), ("p2", "2")],
+                        &[("opcode", "Transaction"), ("p2", "1")],
+                    ],
+                )
+            }
+            ("query", "SELECT name, version FROM os_version") => fake::response(
+                0,
+                "OK",
+                &[
+                    &[("version", "24.04"), ("name", "Ubuntu")],
+                    &[("name", "Debian")],
+                ],
+            ),
+            (_, sql) => fake::response(1, &format!("no such table: {sql}"), &[]),
+        }
+    });
+    let osquery = OsqueryConfig {
+        enabled: true,
+        socket,
+    };
+    (QueryCapability::new(sql::Sql, osquery), server)
+}
+
+static ALL_DENIED: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| sql::DENIED_TABLES.join(","));
+
+#[test]
+fn ad_hoc_sql_answers_a_table_in_column_order() {
+    let (capability, server) = sql_daemon(ALL_DENIED.as_str());
+    let value = run(
+        &capability,
+        json!({"sql": "SELECT name, version FROM os_version"}),
+    );
+    assert_eq!(
+        value,
+        json!({
+            "columns": ["name", "version"],
+            "rows": [["Ubuntu", "24.04"], ["Debian", ""]],
+            "truncated": false
+        })
+    );
+    contract::assert_conforms("query.sql@1", "result", &value);
+    drop(capability);
+    assert_eq!(
+        server.join().unwrap(),
+        ["options", "query", "getQueryColumns", "query"]
+    );
+}
+
+#[test]
+fn ad_hoc_sql_is_refused_unless_every_denied_table_is_disabled() {
+    let (capability, server) = sql_daemon("curl,carves");
+    let failure = capability
+        .run(
+            &json!({"sql": "SELECT name, version FROM os_version"}),
+            &Cancellation::default(),
+        )
+        .unwrap_err();
+    match failure {
+        JobFailure::Failed(reason) => {
+            assert!(
+                reason.starts_with("refused by the agent's policy"),
+                "{reason}"
+            );
+            for missing in ["augeas", "curl_certificate", "file", "hash", "yara"] {
+                assert!(reason.contains(missing), "{reason}");
+            }
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    drop(capability);
+    // Nothing ran: the flags were read and the statement never sent.
+    assert_eq!(server.join().unwrap(), ["options"]);
+}
+
+#[test]
+fn ad_hoc_sql_reports_osquery_s_error() {
+    let (capability, _server) = sql_daemon(ALL_DENIED.as_str());
+    match capability.run(
+        &json!({"sql": "SELECT * FROM file"}),
+        &Cancellation::default(),
+    ) {
+        Err(JobFailure::Failed(reason)) => {
+            assert_eq!(reason, "osquery: no such table: EXPLAIN SELECT * FROM file")
+        }
+        other => panic!("expected osquery's error, got {other:?}"),
+    }
+}
+
+#[test]
+fn ad_hoc_sql_needs_osquery() {
+    let missing = OsqueryConfig {
+        enabled: true,
+        socket: PathBuf::from("/nonexistent/osquery.em"),
+    };
+    let capability = QueryCapability::new(sql::Sql, missing);
+    match capability.run(&json!({"sql": "SELECT 1"}), &Cancellation::default()) {
+        Err(JobFailure::Failed(reason)) => assert!(reason.contains("not available"), "{reason}"),
+        other => panic!("expected a failure, got {other:?}"),
+    }
+}
+
+fn refusal(capability: &QueryCapability, sql: &str) -> String {
+    match capability.run(&json!({ "sql": sql }), &Cancellation::default()) {
+        Err(JobFailure::Failed(reason)) => reason,
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn ad_hoc_sql_must_be_one_statement() {
+    let (capability, server) = sql_daemon(ALL_DENIED.as_str());
+    let reason = refusal(&capability, "SELECT 1; CREATE TABLE t (a)");
+    assert!(reason.contains("one statement"), "{reason}");
+    drop(capability);
+    // osquery runs every statement it is given, so it saw none of them.
+    assert!(server.join().unwrap().is_empty());
+}
+
+#[test]
+fn ad_hoc_sql_must_only_read() {
+    let (capability, server) = sql_daemon(ALL_DENIED.as_str());
+    let reason = refusal(
+        &capability,
+        "WITH x AS (SELECT 1) INSERT INTO t SELECT * FROM x",
+    );
+    assert!(reason.contains("must only read"), "{reason}");
+    drop(capability);
+    // The write was explained, never run.
+    assert_eq!(server.join().unwrap(), ["options", "query"]);
+}
+
+#[test]
+fn ad_hoc_sql_must_be_a_select_before_osquery_sees_it() {
+    for sql in [
+        "CREATE TABLE t (a)",
+        "PRAGMA case_sensitive_like = ON",
+        "/* hi */ pragma case_sensitive_like = ON",
+        "ATTACH 'x' AS y",
+        "VALUES (1)",
+    ] {
+        let (capability, server) = sql_daemon(ALL_DENIED.as_str());
+        let reason = refusal(&capability, sql);
+        assert!(reason.contains("must be a SELECT"), "{sql}: {reason}");
+        drop(capability);
+        assert!(server.join().unwrap().is_empty(), "{sql}");
+    }
+}
+
+#[test]
+fn ad_hoc_sql_refuses_parameters_that_would_hide_a_statement() {
+    // SQLite reads `$x(')` as one parameter, so the quote never opens a
+    // string and the CREATE runs as a second statement.
+    for sql in [
+        "SELECT $x('); CREATE TABLE renga_probe(a); --'",
+        "SELECT :a",
+        "SELECT @a",
+        "SELECT ?",
+        "SELECT #a",
+    ] {
+        let (capability, server) = sql_daemon(ALL_DENIED.as_str());
+        let reason = refusal(&capability, sql);
+        assert!(reason.contains("parameters"), "{sql}: {reason}");
+        drop(capability);
+        assert!(server.join().unwrap().is_empty(), "{sql}");
+    }
+}
+
+#[test]
+fn ad_hoc_sql_must_not_sleep() {
+    let (capability, server) = sql_daemon(ALL_DENIED.as_str());
+    let reason = refusal(&capability, "SELECT sleep(1000000)");
+    assert!(reason.contains("sleep()"), "{reason}");
+    drop(capability);
+    // Explained, never run.
+    assert_eq!(server.join().unwrap(), ["options", "query"]);
+}
+
+#[test]
+fn ad_hoc_sql_needs_every_denied_table_disabled() {
+    // Leaving any one enabled refuses the query after reading the flags.
+    for table in sql::DENIED_TABLES {
+        let others = sql::DENIED_TABLES
+            .into_iter()
+            .filter(|other| *other != table)
+            .collect::<Vec<_>>()
+            .join(",");
+        let (capability, server) = sql_daemon(Box::leak(others.into_boxed_str()));
+        let reason = refusal(&capability, "SELECT name, version FROM os_version");
+        assert!(reason.contains(table), "{table}: {reason}");
+        drop(capability);
+        assert_eq!(server.join().unwrap(), ["options"], "{table}");
+    }
+}
+
+#[test]
+fn ad_hoc_sql_needs_carving_disabled() {
+    let (socket, server) = fake::serve(|method, _args| match method {
+        "options" => fake::options(&[("disable_tables", ALL_DENIED.as_str())]),
+        _ => fake::response(1, "unexpected", &[]),
+    });
+    let capability = QueryCapability::new(
+        sql::Sql,
+        OsqueryConfig {
+            enabled: true,
+            socket,
+        },
+    );
+    let reason = refusal(&capability, "SELECT carve('/etc/passwd')");
+    assert!(reason.contains("carver_disable_function"), "{reason}");
+    drop(capability);
+    assert_eq!(server.join().unwrap(), ["options"]);
+}

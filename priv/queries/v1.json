@@ -453,6 +453,59 @@
     "sensitivity": "sensitive",
     "timeout_ms": 30000
   },
+  "query.sql@1": {
+    "output_limit_bytes": 65536,
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "sql": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "sql"
+      ],
+      "type": "object"
+    },
+    "result": {
+      "additionalProperties": false,
+      "properties": {
+        "columns": {
+          "items": {
+            "maxLength": 128,
+            "type": "string"
+          },
+          "maxItems": 256,
+          "type": "array"
+        },
+        "rows": {
+          "items": {
+            "items": {
+              "maxLength": 1024,
+              "type": "string"
+            },
+            "maxItems": 256,
+            "type": "array"
+          },
+          "maxItems": 10000,
+          "type": "array"
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "columns",
+        "rows",
+        "truncated"
+      ],
+      "type": "object"
+    },
+    "sensitivity": "sensitive",
+    "timeout_ms": 30000
+  },
   "query.time_sync@1": {
     "output_limit_bytes": 65536,
     "parameters": {
