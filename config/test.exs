@@ -53,6 +53,10 @@ config :phoenix_test,
   endpoint: RengaWeb.Endpoint,
   playwright: [
     browser: :chromium,
+    # How long a page load or an assertion may wait. The 2 s default is too
+    # short for a CI runner busy with the async suite; passing tests do not
+    # wait any longer for it.
+    timeout: to_timeout(second: 10),
     trace: System.get_env("PW_TRACE", "false") in ~w(1 true),
     trace_dir: "tmp/traces",
     screenshot: System.get_env("PW_SCREENSHOT", "false") in ~w(1 true),

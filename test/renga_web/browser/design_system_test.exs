@@ -111,12 +111,16 @@ defmodule RengaWeb.Browser.DesignSystemTest do
              }
     end)
     |> evaluate(@sizes, &assert(&1 == %{"row" => 36, "button" => 32, "table_text" => 13}))
+    # Each switch patches to a URL rendered from the current preview, so wait
+    # for one patch to land before the next click or it undoes the last one.
     |> click("#preview-accent-petrol")
+    |> assert_has("#preview-accent-petrol[aria-current]")
     |> click("#preview-theme-dark")
+    |> assert_has("#preview-theme-dark[aria-current]")
     |> click("#preview-density-compact")
+    |> assert_has("#preview-density-compact[aria-current]")
     |> assert_has("#preview-accent-petrol[aria-current]")
     |> assert_has("#preview-theme-dark[aria-current]")
-    |> assert_has("#preview-density-compact[aria-current]")
     |> evaluate(@appearance, fn appearance ->
       assert appearance == %{
                "accent" => "petrol",
@@ -378,6 +382,8 @@ defmodule RengaWeb.Browser.DesignSystemTest do
     |> visit("/dev/design-system")
     |> assert_has("body .phx-connected")
     |> click("#toggle-overflow-sample")
+    # Touch only once the long value has rendered and clips.
+    |> assert_has("#sample-standalone-clip[tabindex='0']")
     |> touch("#sample-standalone-clip")
     |> evaluate(@tooltip, &assert(&1 =~ "Standalone values reveal their full text"))
     |> evaluate(

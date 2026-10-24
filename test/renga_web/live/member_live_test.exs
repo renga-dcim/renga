@@ -218,8 +218,11 @@ defmodule RengaWeb.MemberLiveTest do
       assert {:ok, _disabled} =
                Members.disable_member(context.owner, context.member.membership_id)
 
-      send(member_view.pid, {:inventory_changed, context.owner.organization_id})
-      assert_redirect(member_view, ~p"/organizations")
+      assert {"/organizations", _flash} =
+               send_and_assert_redirect(
+                 member_view,
+                 {:inventory_changed, context.owner.organization_id}
+               )
     end
 
     test "management controls honor the target's assigned access ceiling", context do

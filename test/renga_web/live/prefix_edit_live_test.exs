@@ -184,9 +184,7 @@ defmodule RengaWeb.PrefixEditLiveTest do
       {:ok, view, _html} = live(context.admin_conn, ~p"/network/prefixes/#{prefix}")
 
       {:ok, _} = Renga.IPAM.delete_prefix(context.admin, prefix)
-      send(view.pid, :reload)
-
-      {path, flash} = assert_redirect(view)
+      {path, flash} = send_and_assert_redirect(view, :reload)
       assert path == ~p"/network/prefixes"
       assert flash["error"] == "That prefix was deleted"
     end

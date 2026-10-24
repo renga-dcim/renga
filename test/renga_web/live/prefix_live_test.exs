@@ -139,7 +139,9 @@ defmodule RengaWeb.PrefixLiveTest do
     {:ok, _} = Renga.IPAM.update_vrf(scope, p.blue.vrf, %{name: "Tenant"})
     send(view.pid, :reload)
 
-    assert_patch(view, ~p"/network/prefixes?vrf=Tenant")
+    # render/1 waits for the view to handle :reload, so its patch has already arrived.
+    render(view)
+    assert_patched(view, ~p"/network/prefixes?vrf=Tenant")
     assert has_element?(view, "#prefix-row-#{p.blue.id}")
     assert has_element?(view, "#prefix-table option[selected][value='Tenant']")
   end
