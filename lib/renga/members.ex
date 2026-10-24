@@ -163,6 +163,7 @@ defmodule Renga.Members do
           }
           |> OrganizationInvitation.create_changeset(attrs)
           |> validate_invitable(scope, ceiling)
+          |> validate_imported(scope, opts[:imported_principal_id])
 
         with true <- changeset.valid? || {:error, changeset},
              :ok <- replace_open_invitation(scope, changeset.changes.email, ceiling, now),
@@ -203,6 +204,18 @@ defmodule Renga.Members do
     |> Ecto.Changeset.validate_inclusion(:role, ceiling, message: "is above what you may grant")
     |> Ecto.Changeset.validate_change(:email, fn :email, email ->
       if member_email?(scope, email), do: [email: "already belongs to a member"], else: []
+    end)
+  end
+
+  # An invitation that brings an imported person back goes to that
+  # person's address and no other (RFD 20).
+  defp validate_imported(changeset, _scope, nil), do: changeset
+
+  defp validate_imported(changeset, %Scope{organization_id: organization_id}, principal_id) do
+    Ecto.Changeset.validate_change(changeset, :email, fn :email, email ->
+      if Principals.invitable?(organization_id, principal_id, email),
+        do: [],
+        else: [email: "is not the imported person's address"]
     end)
   end
 

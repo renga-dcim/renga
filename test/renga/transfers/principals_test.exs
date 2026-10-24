@@ -172,6 +172,31 @@ defmodule Renga.Transfers.PrincipalsTest do
     assert {:error, :not_found} = invite(context, context.ada)
   end
 
+  test "an invitation brings a person back only at their own address", context do
+    principal = principal(context, context.ada)
+    url = &"https://renga.test/invitations/#{&1}"
+
+    assert {:error, changeset} =
+             Members.invite(
+               context.inviter,
+               %{"email" => "someone@example.com", "role" => "admin"},
+               url, imported_principal_id: principal.id)
+
+    assert "is not the imported person's address" in errors_on(changeset).email
+    refute_received {:email, %{subject: "You're invited" <> _}}
+
+    # An invitation whose address no longer matches its person links no one.
+    assert {:ok, invitation} = invite(context, context.ada)
+    token = token_from_email()
+
+    Repo.update_all(where(Renga.Accounts.OrganizationInvitation, id: ^invitation.id),
+      set: [email: context.bo.user.email]
+    )
+
+    assert {:error, :invalid} = Members.accept_invitation(context.bo.user, token)
+    assert Repo.get!(ImportedPrincipal, principal.id).user_id == nil
+  end
+
   test "linking never fills history or cable claims" do
     fillable = Principals.fillable()
 
