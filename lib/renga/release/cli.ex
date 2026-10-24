@@ -12,6 +12,7 @@ defmodule Renga.Release.CLI do
   alias Renga.DeploymentAudit
   alias Renga.Limits
   alias Renga.Operators
+  alias Renga.Transfers
 
   @usage """
   Usage:
@@ -22,9 +23,12 @@ defmodule Renga.Release.CLI do
     renga-admin limits show --organization SLUG
     renga-admin limits set --organization SLUG --actor NAME --LIMIT VALUE [--LIMIT VALUE...]
     renga-admin limits clear --organization SLUG --actor NAME --limit LIMIT
+    renga-admin export --organization SLUG --output FILE --actor NAME
+                       [--history] [--raw-observations]
 
-  Changes need --actor, the person making them, which the deployment audit
-  log records with an invocation ID. --scope SCOPE may also be repeated.
+  Changes and exports need --actor, the person running them, which the
+  deployment audit log records with an invocation ID. --scope SCOPE may also
+  be repeated.
 
   Limits: #{Enum.map_join(Renga.Limits.names(), ", ", &String.replace(Atom.to_string(&1), "_", "-"))}
   """
@@ -130,7 +134,88 @@ defmodule Renga.Release.CLI do
     end
   end
 
+  # RFD 20: writes the same archive an owner's export does. The file holds
+  # the whole organization, so it is created readable only by its owner and
+  # never replaces an existing file.
+  def run(["export" | args]) do
+    switches = [
+      organization: :string,
+      output: :string,
+      history: :boolean,
+      raw_observations: :boolean
+    ]
+
+    with {:ok, context, opts, rest, invalid} <- parse_change(args, switches),
+         :ok <- audited(context, "organization.export", no_extra_args(rest, invalid)),
+         {:ok, organization} <- audited_organization(context, "organization.export", opts),
+         {:ok, output} <- audited(context, "organization.export", output_file(opts[:output])) do
+      parts =
+        for {option, part} <- [history: "history", raw_observations: "raw_observations"],
+            opts[option],
+            do: part
+
+      export(organization, output, parts, context)
+    end
+  end
+
   def run(_argv), do: error(@usage)
+
+  # The archive is written in a new 0700 directory beside the output, so no
+  # one else can open it while it is written, and then hard-linked into
+  # place, which fails rather than replace a file that appeared meanwhile.
+  defp export(organization, output, parts, context) do
+    staging =
+      Path.join(
+        Path.dirname(output),
+        ".renga-export-" <> Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false)
+      )
+
+    partial = Path.join(staging, "archive.tar.zst")
+    details = %{organization: organization, target_id: organization.id}
+
+    try do
+      File.mkdir!(staging)
+      File.chmod!(staging, 0o700)
+      File.touch!(partial)
+      File.chmod!(partial, 0o600)
+      {:ok, summary} = Transfers.Export.write(organization, partial, parts: parts)
+
+      case File.ln(partial, output) do
+        :ok ->
+          :ok = DeploymentAudit.succeeded(context, "organization.export", details)
+
+          IO.puts(
+            "Exported #{organization.slug} (#{summary.records} records, snapshot at " <>
+              "#{DateTime.to_iso8601(summary.snapshot_at)}) to #{output}."
+          )
+
+          0
+
+        {:error, :eexist} ->
+          DeploymentAudit.reject(context, "organization.export", :output_exists, details)
+          error("#{output} was created during the export and was left as it is")
+
+        {:error, reason} ->
+          raise File.LinkError, reason: reason, action: "link", existing: partial, new: output
+      end
+    rescue
+      exception ->
+        :ok = DeploymentAudit.failed(context, "organization.export", details)
+        reraise exception, __STACKTRACE__
+    after
+      File.rm_rf(staging)
+    end
+  end
+
+  defp output_file(nil), do: error("--output FILE is required")
+
+  defp output_file(path) do
+    cond do
+      File.exists?(path) -> error("#{path} already exists; choose a new file")
+      not File.dir?(Path.dirname(path)) -> error("#{Path.dirname(path)} is not a directory")
+      true -> {:ok, path}
+    end
+  end
 
   defp set_limits(organization, settings, context) do
     case Limits.set(organization, settings, context) do

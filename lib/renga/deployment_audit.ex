@@ -88,6 +88,21 @@ defmodule Renga.DeploymentAudit do
   end
 
   @doc """
+  Records an operation that succeeded without a transaction of `mutate/3`,
+  such as an export, which reads in a snapshot transaction of its own.
+  """
+  def succeeded(context, operation, details \\ %{}) do
+    record!(context, operation, "succeeded", details)
+    :ok
+  end
+
+  @doc "Records an operation that failed with an exception, as `mutate/3` does."
+  def failed(context, operation, details \\ %{}) do
+    record!(context, operation, "failed", Map.put(details, :reason, "exception"))
+    :ok
+  end
+
+  @doc """
   How `context`'s actor reads in records, such as `operator: Jane`, for an
   organization's Activity entry about the same change.
   """

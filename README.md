@@ -109,7 +109,12 @@ SLUG --actor NAME --job-creation-rate N` overrides a limit for one
 organization (RFD 21) and records the change in its Activity too,
 `limits show` lists them, and `limits clear` returns one to the deployment
 default, which `LIMIT_*` variables such as `LIMIT_JOB_CREATION_RATE` set.
-Owners see their limits and usage under Settings > Limits. Run `renga-admin`
+Owners see their limits and usage under Settings > Limits. `renga-admin
+export --organization SLUG --output FILE --actor NAME` writes one
+organization's export archive (RFD 20, [format](docs/export-format.md)) from a
+consistent snapshot; `--history` and `--raw-observations` add the optional
+parts. The file is created readable only by its owner and holds no
+credentials, but it holds all of the organization's data. Run `renga-admin`
 with no arguments for usage, or `mix renga.admin` in development.
 
 Put the server behind a TLS-terminating reverse proxy; the
