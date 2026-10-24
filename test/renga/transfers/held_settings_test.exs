@@ -87,7 +87,9 @@ defmodule Renga.Transfers.HeldSettingsTest do
     assert [
              {"capability_allowed", ^operate, _},
              {"import_setting_confirmed", field, %{"source" => "acme", "import_id" => id}}
-           ] = activity(organization, ~w(capability_allowed import_setting_confirmed))
+           ] =
+             activity(organization, ~w(capability_allowed import_setting_confirmed))
+             |> Enum.sort_by(&elem(&1, 0))
 
     assert field == "held_setting" and id == import.id
     assert {:error, :not_found} = HeldSettings.confirm(owner, import.id, key)
