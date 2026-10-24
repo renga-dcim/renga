@@ -98,6 +98,15 @@ defmodule RengaWeb.ExportLiveTest do
     assert_raise RuntimeError, ~r/was removed after/, fn ->
       get(conn, ~p"/settings/export/#{export.id}/download")
     end
+
+    # Activity says the download did not finish, and how far it got.
+    assert %ChangeEvent{metadata: %{"bytes_sent" => sent, "bytes" => bytes}} =
+             Repo.get_by!(ChangeEvent,
+               organization_id: organization.id,
+               kind: "export_download_unfinished"
+             )
+
+    assert bytes == export.bytes and sent < bytes
   end
 
   test "a second export waits for the running one", %{conn: conn} do

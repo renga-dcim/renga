@@ -2,7 +2,8 @@ defmodule RengaWeb.ExportController do
   @moduledoc """
   Serves an organization export's archive (RFD 20). Each download rechecks
   `organization.export` and is recorded in Activity before the first byte
-  is sent.
+  is sent; a download that ends early is recorded again with how much was
+  sent.
   """
   use RengaWeb, :controller
 
@@ -13,7 +14,7 @@ defmodule RengaWeb.ExportController do
 
     case scope.organization_id && Transfers.authorize_download(scope, id) do
       {:ok, export} ->
-        send_archive(conn, scope.organization, export)
+        send_archive(conn, scope, export)
 
       _refused ->
         conn
@@ -22,9 +23,9 @@ defmodule RengaWeb.ExportController do
     end
   end
 
-  defp send_archive(conn, organization, export) do
+  defp send_archive(conn, scope, export) do
     filename =
-      "#{organization.slug}-#{Calendar.strftime(export.snapshot_at, "%Y%m%d-%H%M%S")}.tar.zst"
+      "#{scope.organization.slug}-#{Calendar.strftime(export.snapshot_at, "%Y%m%d-%H%M%S")}.tar.zst"
 
     conn =
       conn
@@ -35,7 +36,8 @@ defmodule RengaWeb.ExportController do
       |> send_chunked(200)
 
     case Enum.reduce_while(Transfers.chunks(export), {conn, 0}, &send_chunk/2) do
-      {conn, :closed} ->
+      {conn, {:closed, sent}} ->
+        Transfers.record_unfinished_download(scope, export, sent)
         conn
 
       {conn, sent} when sent == export.bytes ->
@@ -46,6 +48,8 @@ defmodule RengaWeb.ExportController do
       # the connection open for bytes that never come; raising closes it, so
       # the client sees a failed download.
       {_conn, sent} ->
+        Transfers.record_unfinished_download(scope, export, sent)
+
         raise "export #{export.id} was removed after #{sent} of #{export.bytes} bytes were sent"
     end
   end
@@ -54,7 +58,7 @@ defmodule RengaWeb.ExportController do
   defp send_chunk(data, {conn, sent}) do
     case chunk(conn, data) do
       {:ok, conn} -> {:cont, {conn, sent + byte_size(data)}}
-      {:error, _closed} -> {:halt, {conn, :closed}}
+      {:error, _closed} -> {:halt, {conn, {:closed, sent}}}
     end
   end
 end
