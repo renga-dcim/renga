@@ -20,9 +20,9 @@ defmodule Renga.Transfers.PrincipalsTest do
 
   @moduletag :tmp_dir
 
-  # A source with an admin, Ada, who has a team, a current and an expired
-  # assignment, a private view, and a shared view she made; and Bo, a
-  # disabled member. The source is exported, removed, and imported into a
+  # A source with an admin, Ada, who has a team, two current assignments
+  # (one an admin could not grant) and an expired one, a private view, and
+  # a shared view Ada made; and Bo, a disabled member. The source is exported, removed, and imported into a
   # target whose owner then invites people back.
   setup %{tmp_dir: tmp_dir} do
     source = Renga.InventoryFixtures.organization_fixture()
@@ -33,6 +33,7 @@ defmodule Renga.Transfers.PrincipalsTest do
     {:ok, team} = Teams.create_team(owner, %{name: "Network"})
     {:ok, _team_membership} = Teams.add_member(owner, team, ada.membership_id)
     {:ok, current} = Assignments.assign(owner, ada.membership_id, %{"role" => "viewer"})
+    {:ok, above_admin} = Assignments.assign(owner, ada.membership_id, %{"role" => "owner"})
 
     {:ok, expired} =
       Assignments.assign(owner, ada.membership_id, %{
@@ -71,7 +72,8 @@ defmodule Renga.Transfers.PrincipalsTest do
       current: current,
       expired: expired,
       mine: mine,
-      ours: ours
+      ours: ours,
+      above_admin: above_admin
     }
   end
 
@@ -95,6 +97,9 @@ defmodule Renga.Transfers.PrincipalsTest do
     [_, token] = Regex.run(~r{/invitations/(\S+)}, body)
     token
   end
+
+  defp restored_assignments(membership_id),
+    do: Repo.all(from a in Assignment, where: a.membership_id == ^membership_id, select: a.id)
 
   test "only active members with an email can come back, with their role", context do
     returning =
@@ -122,10 +127,10 @@ defmodule Renga.Transfers.PrincipalsTest do
     assert {membership.role, membership.status} == {"admin", "active"}
     assert Repo.exists?(where(TeamMembership, membership_id: ^membership.id))
 
-    # Only the assignment that is still valid comes back; the expired one
+    # Only the assignments that are still valid come back; the expired one
     # stays held.
-    assert [%Assignment{id: id}] = Repo.all(where(Assignment, membership_id: ^membership.id))
-    assert id == context.current.id
+    assert membership.id |> restored_assignments() |> Enum.sort() ==
+             Enum.sort([context.current.id, context.above_admin.id])
 
     # The private view is hers again, and the shared view names her.
     assert %SavedView{user_id: user_id} = Repo.get!(SavedView, context.mine.id)
@@ -150,7 +155,7 @@ defmodule Renga.Transfers.PrincipalsTest do
     assert joined.metadata["imported_principal_id"] == principal.id
 
     assert joined.metadata["restored"] == %{
-             "role_assignments" => 1,
+             "role_assignments" => 2,
              "saved_views" => 1,
              "team_memberships" => 1
            }
@@ -180,7 +185,9 @@ defmodule Renga.Transfers.PrincipalsTest do
              Members.invite(
                context.inviter,
                %{"email" => "someone@example.com", "role" => "admin"},
-               url, imported_principal_id: principal.id)
+               url,
+               imported_principal_id: principal.id
+             )
 
     assert "is not the imported person's address" in errors_on(changeset).email
     refute_received {:email, %{subject: "You're invited" <> _}}
@@ -195,6 +202,61 @@ defmodule Renga.Transfers.PrincipalsTest do
 
     assert {:error, :invalid} = Members.accept_invitation(context.bo.user, token)
     assert Repo.get!(ImportedPrincipal, principal.id).user_id == nil
+  end
+
+  test "assignments come back only within what the inviter may grant when Ada accepts",
+       context do
+    admin = member_scope(context.target, "admin")
+
+    assert {:ok, _invitation} =
+             Principals.invite(
+               admin,
+               principal(context, context.ada).id,
+               &"https://renga.test/invitations/#{&1}"
+             )
+
+    assert {:ok, membership} = Members.accept_invitation(context.ada.user, token_from_email())
+    assert restored_assignments(membership.id) == [context.current.id]
+  end
+
+  test "an inviter demoted before Ada accepts restores only what they may still grant",
+       context do
+    co_owner = member_scope(context.target, "owner")
+    inviter = member_scope(context.target, "owner")
+
+    assert {:ok, _invitation} =
+             Principals.invite(
+               inviter,
+               principal(context, context.ada).id,
+               &"https://renga.test/invitations/#{&1}"
+             )
+
+    token = token_from_email()
+    assert {:ok, _demoted} = Members.change_role(co_owner, inviter.membership_id, "admin")
+
+    assert {:ok, membership} = Members.accept_invitation(context.ada.user, token)
+    assert restored_assignments(membership.id) == [context.current.id]
+  end
+
+  test "an invitation from someone disabled or gone since links no one", context do
+    co_owner = member_scope(context.target, "owner")
+    principal = principal(context, context.ada)
+
+    for leave <- [
+          &Members.disable_member(co_owner, &1.membership_id),
+          &Repo.delete(&1.user)
+        ] do
+      inviter = member_scope(context.target, "owner")
+
+      assert {:ok, _invitation} =
+               Principals.invite(inviter, principal.id, &"https://renga.test/invitations/#{&1}")
+
+      token = token_from_email()
+      assert {:ok, _left} = leave.(inviter)
+
+      assert {:error, :forbidden} = Members.accept_invitation(context.ada.user, token)
+      assert Repo.get!(ImportedPrincipal, principal.id).user_id == nil
+    end
   end
 
   test "linking never fills history or cable claims" do
