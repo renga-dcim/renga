@@ -60,6 +60,10 @@ defmodule Renga.Jobs.Job do
     # result, and agent reports, which are then withheld (RFD 12).
     field :payload_hidden, :boolean, virtual: true, default: false
 
+    # Set on jobs imported from another deployment (RFD 20): history that
+    # never leases, retries, or runs, and that no one can change.
+    field :imported_at, :utc_datetime_usec
+
     belongs_to :organization, Organization
     belongs_to :agent, Agent
     # The resource the job was requested from, for context; the agent is the
@@ -85,5 +89,8 @@ defmodule Renga.Jobs.Job do
   def privileged?(%__MODULE__{risk_class: risk_class}), do: risk_class != "observe"
 
   def finished?(%__MODULE__{state: state}), do: state in @finished_states
-  def open?(%__MODULE__{state: state}), do: state in @open_states
+  # An imported job (RFD 20) keeps the state its source recorded, but it
+  # never runs, so it is never work in progress here.
+  def open?(%__MODULE__{state: state, imported_at: imported_at}),
+    do: state in @open_states and is_nil(imported_at)
 end

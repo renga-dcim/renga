@@ -348,6 +348,9 @@ defmodule RengaWeb.ChangeDescription do
   def describe(%{kind: "export_failed"}), do: "An organization export failed"
   def describe(%{kind: "exported"}), do: "Exported the organization"
 
+  def describe(%{kind: "imported", metadata: %{"source" => source}}),
+    do: "Imported the organization from an export of #{source}"
+
   # Job events read as "Inventory collection failed"; the job itself keeps
   # the full history.
   def describe(%{kind: "job_requested", metadata: metadata}),

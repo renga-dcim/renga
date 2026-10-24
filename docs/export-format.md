@@ -157,3 +157,26 @@ lands whole or not at all.
 
 Validation reports up to 100 problems, each naming the file and line where it
 can.
+
+## Importing
+
+`Renga.Transfers.Import` writes a valid archive into an organization that is
+still empty, in one transaction: either every record lands or nothing does.
+Records keep their IDs and timestamps, so an import is refused while any of
+its IDs exists in the deployment. At the destination:
+
+- resource revisions and cable and module event sequence numbers are
+  allocated again, in the source's order;
+- each principal becomes an imported principal. Person fields are left empty
+  and the principal they named is recorded beside them, or in the record's
+  own principal column where the record must name someone. Imported
+  Activity is marked as imported and names the person's email;
+- memberships, team memberships, role assignments, and private saved views
+  wait for their person to be linked;
+- intake keys arrive revoked, approved installation keys pending, and active
+  bindings revoked, so people at the destination approve each again;
+- jobs are history: they never lease, retry, or run, and nothing can change
+  them;
+- portable settings apply unless they would allow more than the destination
+  does now; those are held on the import for an owner to confirm.
+

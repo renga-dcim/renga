@@ -186,7 +186,7 @@ defmodule Renga.Jobs.SignedLeases do
       {:ok, job_id} ->
         Job
         |> where([job], job.organization_id == ^organization_id and job.id == ^job_id)
-        |> where([job], job.agent_id == ^agent.id)
+        |> where([job], job.agent_id == ^agent.id and is_nil(job.imported_at))
         |> lock("FOR UPDATE")
         |> Repo.one()
 

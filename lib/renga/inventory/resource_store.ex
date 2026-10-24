@@ -76,6 +76,27 @@ defmodule Renga.Inventory.ResourceStore do
   end
 
   @doc """
+  Allocates `count` revisions for `organization_id` at once, in increasing
+  order, under the same locks as `next_revision!/1`. An import (RFD 20)
+  maps the source's revisions onto them in order. Other organizations do
+  not wait: the sequence never blocks, and their locks are their own.
+  """
+  def allocate_revisions!(organization_id, 0) when is_binary(organization_id), do: []
+
+  def allocate_revisions!(organization_id, count)
+      when is_binary(organization_id) and is_integer(count) and count > 0 do
+    first = next_revision!(organization_id)
+
+    %{rows: rows} =
+      Repo.query!(
+        "SELECT nextval('resource_revision_sequence') FROM generate_series(1, $1)",
+        [count - 1]
+      )
+
+    Enum.sort([first | Enum.map(rows, fn [revision] -> revision end)])
+  end
+
+  @doc """
   The SQL arguments of `organization_id`'s revision lock,
   `pg_advisory_xact_lock($1, hashtext($2::text))`, also for tests that check
   lock ordering. The ID is canonicalized so that every spelling of it takes

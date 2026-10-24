@@ -716,7 +716,7 @@ defmodule Renga.Jobs do
         |> where([job], job.organization_id == ^organization_id)
         |> where([job], job.resource_id == ^resource_id)
         |> where([job], job.capability == "inventory.collect" and job.capability_version == 1)
-        |> where([job], job.state in ^Job.open_states())
+        |> where([job], job.state in ^Job.open_states() and is_nil(job.imported_at))
         |> Repo.exists?()
 
       if open?, do: Repo.rollback(:resource_collection_open)
@@ -800,6 +800,7 @@ defmodule Renga.Jobs do
     Job
     |> where([job], job.organization_id == ^organization_id and job.agent_id == ^agent.id)
     |> where([job], job.state == "queued" and job.not_after > ^now)
+    |> where([job], is_nil(job.imported_at))
     |> Repo.exists?()
   end
 
@@ -856,6 +857,7 @@ defmodule Renga.Jobs do
     Job
     |> where([job], job.organization_id == ^organization_id and job.agent_id == ^agent.id)
     |> where([job], job.state == "queued" and job.not_after > ^now)
+    |> where([job], is_nil(job.imported_at))
     |> where(
       [job],
       fragment(
@@ -914,6 +916,7 @@ defmodule Renga.Jobs do
     Job
     |> where([job], job.organization_id == ^organization_id)
     |> where([job], job.target_binding_id == ^binding_id and job.state == "queued")
+    |> where([job], is_nil(job.imported_at))
     |> lock("FOR UPDATE")
     |> Repo.all()
     |> Enum.each(&refuse!(&1, reason, now))
@@ -1168,6 +1171,7 @@ defmodule Renga.Jobs do
 
   defp sweep_ids(query) do
     query
+    |> where([job], is_nil(job.imported_at))
     |> order_by([job], asc: job.id)
     |> limit(@sweep_batch)
     |> select([job], {job.organization_id, job.id})
@@ -1210,11 +1214,22 @@ defmodule Renga.Jobs do
   defp move!(%Job{} = job, :lease, now), do: lapse_lease(job, now)
   defp move!(%Job{} = job, :deadline, now), do: expire!(job, now)
 
-  defp sweep_condition(query, :lease, now),
-    do: where(query, [job], job.state in ^Job.leased_states() and job.lease_expires_at <= ^now)
+  defp sweep_condition(query, :lease, now) do
+    where(
+      query,
+      [job],
+      job.state in ^Job.leased_states() and job.lease_expires_at <= ^now and
+        is_nil(job.imported_at)
+    )
+  end
 
-  defp sweep_condition(query, :deadline, now),
-    do: where(query, [job], job.state == "queued" and job.not_after <= ^now)
+  defp sweep_condition(query, :deadline, now) do
+    where(
+      query,
+      [job],
+      job.state == "queued" and job.not_after <= ^now and is_nil(job.imported_at)
+    )
+  end
 
   defp expire!(%Job{} = job, now) do
     apply!(
@@ -1576,6 +1591,7 @@ defmodule Renga.Jobs do
          %Job{} = job <-
            Job
            |> where([job], job.organization_id == ^organization_id and job.id == ^job_id)
+           |> where([job], is_nil(job.imported_at))
            |> lock("FOR UPDATE")
            |> Repo.one() do
       job

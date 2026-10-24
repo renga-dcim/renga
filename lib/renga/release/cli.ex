@@ -14,6 +14,7 @@ defmodule Renga.Release.CLI do
   alias Renga.Operators
   alias Renga.Transfers
   alias Renga.Transfers.Export
+  alias Renga.Transfers.Import
 
   @usage """
   Usage:
@@ -26,8 +27,9 @@ defmodule Renga.Release.CLI do
     renga-admin limits clear --organization SLUG --actor NAME --limit LIMIT
     renga-admin export --organization SLUG --output FILE --actor NAME
                        [--history] [--raw-observations]
+    renga-admin import --organization SLUG --input FILE --owner EMAIL --actor NAME
 
-  Changes and exports need --actor, the person running them, which the
+  Changes, exports, and imports need --actor, the person running them, which the
   deployment audit log records with an invocation ID. --scope SCOPE may also
   be repeated.
 
@@ -159,7 +161,91 @@ defmodule Renga.Release.CLI do
     end
   end
 
+  # RFD 20: the organization's owner, its only member, is the person
+  # importing; they invite everyone else back afterwards.
+  def run(["import" | args]) do
+    with {:ok, context, opts, rest, invalid} <-
+           parse_change(args, organization: :string, input: :string, owner: :string),
+         :ok <- audited(context, "organization.import", no_extra_args(rest, invalid)),
+         {:ok, organization} <- audited_organization(context, "organization.import", opts),
+         {:ok, input} <- audited(context, "organization.import", input_file(opts[:input])),
+         {:ok, owner} <-
+           audited(context, "organization.import", import_owner(organization, opts[:owner])) do
+      import_archive(organization, input, owner, context)
+    end
+  end
+
   def run(_argv), do: error(@usage)
+
+  defp import_owner(_organization, nil),
+    do: error("--owner EMAIL is required: the organization's owner, who invites everyone back")
+
+  defp import_owner(organization, email) do
+    with %Accounts.User{} = user <- Accounts.get_user_by_email(email),
+         %{role: "owner", status: "active"} <-
+           Accounts.get_membership_for_user(organization, user.id) do
+      {:ok, user}
+    else
+      _not_an_owner -> error("#{email} is not an active owner of #{organization.slug}")
+    end
+  end
+
+  defp import_archive(organization, input, owner, context) do
+    details = %{organization: organization, target_id: organization.id}
+
+    case Import.run(organization, input,
+           operator: DeploymentAudit.actor_label(context),
+           imported_by_user_id: owner.id
+         ) do
+      {:ok, imported} ->
+        :ok = DeploymentAudit.succeeded(context, "organization.import", details)
+
+        IO.puts(
+          "Imported #{imported.records} records from an export of #{imported.source_slug} " <>
+            "into #{organization.slug}."
+        )
+
+        if imported.held_settings != %{},
+          do:
+            IO.puts(
+              "Settings held for an owner to confirm: #{Renga.JSON.encode!(imported.held_settings)}"
+            )
+
+        IO.puts("#{owner.email} can invite people back from Settings → Members.")
+
+        0
+
+      {:error, reason} ->
+        :ok = DeploymentAudit.failed(context, "organization.import", details)
+        error(import_error(reason, organization))
+    end
+  end
+
+  defp import_error({:invalid, problems}, _organization) do
+    lines =
+      Enum.map(problems, fn problem ->
+        where = [problem.file, problem.line] |> Enum.reject(&is_nil/1) |> Enum.join(":")
+        if where == "", do: "  #{problem.message}", else: "  #{where}: #{problem.message}"
+      end)
+
+    Enum.join(["The archive is not valid:" | lines], "\n")
+  end
+
+  defp import_error(:not_empty, organization),
+    do: "#{organization.slug} is not empty; import into a new organization"
+
+  defp import_error({:id_collisions, counts}, _organization) do
+    counts = Enum.map_join(counts, ", ", fn {type, count} -> "#{count} #{type}" end)
+
+    "records in the archive already exist in this deployment (#{counts}); " <>
+      "remove the original organization first"
+  end
+
+  defp input_file(nil), do: error("--input FILE is required")
+
+  defp input_file(path) do
+    if File.regular?(path), do: {:ok, path}, else: error("#{path} is not a file")
+  end
 
   # The archive is written in a new 0700 directory beside the output, so no
   # one else can open it while it is written, and then hard-linked into

@@ -282,4 +282,29 @@ defmodule RengaWeb.ActivityLiveTest do
     assert has_element?(view, "#activity-events span", "operator: alice")
     refute has_element?(view, "#activity-events", "600")
   end
+
+  test "marks imported changes and names who the source says made them", %{
+    conn: conn,
+    scope: scope,
+    resource: resource
+  } do
+    import_id = Ecto.UUID.generate()
+
+    imported =
+      event!(Renga.Accounts.scope_for(scope.organization), %{
+        resource_id: resource.id,
+        kind: "updated",
+        occurred_at: minutes_ago(5),
+        metadata: %{"imported" => %{"import_id" => import_id, "actor" => "ada@example.com"}}
+      })
+
+    native =
+      event!(scope, %{resource_id: resource.id, kind: "updated", occurred_at: minutes_ago(1)})
+
+    {:ok, view, _html} = live(conn, ~p"/activity")
+
+    assert has_element?(view, "#events-#{imported.id} [data-imported]", "Imported")
+    assert has_element?(view, "#events-#{imported.id} span", "ada@example.com (imported)")
+    refute has_element?(view, "#events-#{native.id} [data-imported]")
+  end
 end
