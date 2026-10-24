@@ -46,8 +46,12 @@ written as JSON numbers, never as floats.
 ```
 
 - `format_version` changes whenever an exported record's shape changes. A
-  release reads archives of its own format version and converts older ones;
-  it refuses archives from newer releases.
+  release reads archives of its own format version and converts older ones
+  through `Renga.Transfers.Converters`, one converter per earlier version;
+  it refuses archives from newer releases. Every format version has a
+  round-trip fixture in `test/fixtures/transfers/`, which each release must
+  import, so a change that would break older archives fails until it comes
+  with a new version and a converter.
 - `renga_version` is the release that wrote the archive, for people; readers
   go by `format_version`.
 - `organization` is the source organization. It is informational: an import
@@ -193,7 +197,9 @@ that every other write to it waits, and at the destination:
 
 `Renga.Transfers.Principals` invites an imported principal back to the email
 address the archive had for it. Only a principal whose held membership was
-active can return, and it returns with that membership's role, which must be
+active and manual can return (a membership a SCIM directory managed is
+exported with `metadata.managed_by` set, and only the destination's own
+directory grants it again), and it returns with that membership's role, which must be
 within what the inviter may grant. Accepting needs an account that has
 confirmed that address, and in one transaction it:
 

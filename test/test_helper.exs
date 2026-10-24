@@ -15,7 +15,7 @@ cond do
     # initial protocol messages. Wait for readiness before allowing teardown.
     PlaywrightEx.Connection.initializer!(PlaywrightEx.Supervisor.Connection, "Playwright")
     Application.put_env(:phoenix_test, :base_url, RengaWeb.Endpoint.url())
-    ExUnit.start()
+    ExUnit.start(exclude: [:write_transfer_fixture])
 
     # Close browser pools and their transport before the VM tears down Node's pipe.
     ExUnit.after_suite(fn _result ->
@@ -27,7 +27,7 @@ cond do
 
   true ->
     IO.puts("Skipping :playwright browser tests; run `mix assets.setup` to install Playwright.")
-    ExUnit.start(exclude: [:playwright])
+    ExUnit.start(exclude: [:playwright, :write_transfer_fixture])
 end
 
 Ecto.Adapters.SQL.Sandbox.mode(Renga.Repo, :manual)
