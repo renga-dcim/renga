@@ -248,8 +248,9 @@ defmodule Renga.Transfers.RecordTypes do
      ~w(id interface_id vlan_id tagging_mode metadata inserted_at updated_at interface_vlan_evidence_id)}
   ]
 
-  # Every field that refers to a person, as {record type, field, the SQL
-  # condition under which it does, or nil when it always does}.
+  # Every field that refers to a person, as {record type, field, condition}:
+  # nil when it always does, or {other field, value} when it does only while
+  # the other field holds that value.
   @principal_fields [
     {"addressing_plan_levels", "created_by_id", nil},
     {"organization_memberships", "user_id", nil},
@@ -275,7 +276,7 @@ defmodule Renga.Transfers.RecordTypes do
     {"ip_address_assignments", "assigned_by_id", nil},
     {"jobs", "requested_by_user_id", nil},
     {"desired_module_assignments", "confirmed_by_user_id", nil},
-    {"job_events", "actor_id", "actor_type = 'user'"},
+    {"job_events", "actor_id", {"actor_type", "user"}},
     {"triage_rules", "created_by_user_id", nil},
     {"resource_group_members", "added_by_user_id", nil},
     {"resource_group_suggestions", "decided_by_user_id", nil},

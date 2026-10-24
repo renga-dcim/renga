@@ -23,6 +23,7 @@ defmodule Renga.Transfers.Export do
   alias Renga.Transfers.Archive
   alias Renga.Transfers.Archive.Writer
   alias Renga.Transfers.RecordTypes
+  alias Renga.Transfers.Schema
 
   @batch_rows 500
   # jsonb_build_object takes at most 100 arguments, so wide rows are built
@@ -75,7 +76,7 @@ defmodule Renga.Transfers.Export do
   defp write_records(writer, organization, parts, opts) do
     snapshot_at = snapshot_time()
     organization = Repo.get!(Organization, organization.id)
-    columns = column_types()
+    columns = Schema.columns()
     types = RecordTypes.included(parts)
     after_type = Keyword.get(opts, :after_record_type, fn _type -> :ok end)
     params = [Ecto.UUID.dump!(organization.id)]
@@ -140,19 +141,6 @@ defmodule Renga.Transfers.Export do
     |> Stream.flat_map(fn %{rows: rows} -> Enum.map(rows, fn [json] -> json end) end)
   end
 
-  defp column_types do
-    %{rows: rows} =
-      Repo.query!("""
-      SELECT table_name, column_name, udt_name
-      FROM information_schema.columns
-      WHERE table_schema = current_schema()
-      """)
-
-    Enum.reduce(rows, %{}, fn [table, column, type], acc ->
-      Map.update(acc, table, %{column => type}, &Map.put(&1, column, type))
-    end)
-  end
-
   defp organization_sql(columns) do
     """
     SELECT #{json_object("organizations", RecordTypes.organization_fields(), columns)}
@@ -214,7 +202,7 @@ defmodule Renga.Transfers.Export do
       for type <- types, {field, condition} <- type.principal_fields do
         "SELECT r.#{quote_name(field)} AS id FROM #{quote_name(type.name)} AS r " <>
           "WHERE r.organization_id = $1 AND r.#{quote_name(field)} IS NOT NULL" <>
-          if(condition, do: " AND (#{condition})", else: "")
+          condition_sql(condition)
       end
 
     # An account an organization provider created has no global email
@@ -279,6 +267,15 @@ defmodule Renga.Transfers.Export do
   defp literals(values),
     do: Enum.map_join(values, ", ", &("'" <> String.replace(&1, "'", "''") <> "'"))
 
+  defp condition_sql(nil), do: ""
+
+  defp condition_sql({field, value}) do
+    unless Regex.match?(~r/\A[a-z_]+\z/, value),
+      do: raise(ArgumentError, "unsafe SQL literal #{inspect(value)}")
+
+    " AND r.#{quote_name(field)} = '#{value}'"
+  end
+
   defp json_object(table, fields, columns, overrides \\ %{}) do
     types = Map.fetch!(columns, table)
 
@@ -288,11 +285,11 @@ defmodule Renga.Transfers.Export do
       |> Enum.map(fn chunk ->
         pairs =
           Enum.map_join(chunk, ", ", fn field ->
-            type =
+            column =
               Map.get(types, field) ||
                 raise ArgumentError, "#{table}.#{field} is not a column"
 
-            "'#{field}', #{overrides[field] || value(field, type)}"
+            "'#{field}', #{overrides[field] || value(field, column.type)}"
           end)
 
         "jsonb_build_object(#{pairs})"
