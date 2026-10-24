@@ -104,6 +104,7 @@ defmodule Renga.Transfers.Principals do
   defp returning_role(%ImportedPrincipal{email: email}, _membership) when email in [nil, ""],
     do: nil
 
+  defp returning_role(_principal, %{"metadata" => %{"managed_by" => _directory}}), do: nil
   defp returning_role(_principal, %{"status" => "active", "role" => role}), do: role
   defp returning_role(_principal, _membership), do: nil
 
@@ -200,6 +201,7 @@ defmodule Renga.Transfers.Principals do
 
   defp membership_held_id(held) do
     Enum.find_value(held, fn
+      {_id, "organization_memberships", %{"metadata" => %{"managed_by" => _directory}}} -> nil
       {id, "organization_memberships", %{"status" => "active"}} -> id
       _other -> nil
     end)

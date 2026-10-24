@@ -151,7 +151,7 @@ defmodule Renga.Transfers.Export do
 
   defp type_sql(type, types, parts, columns, readable) do
     """
-    SELECT #{json_object(type.name, type.fields, columns, withheld(type.name, readable))}
+    SELECT #{json_object(type.name, type.fields, columns, overrides(type.name, readable))}
     FROM #{quote_name(type.name)} AS t
     WHERE t.organization_id = $1#{filter(type.name, types, parts)}
     ORDER BY #{Enum.map_join(type.order_by, ", ", &("t." <> quote_name(&1)))}
@@ -224,6 +224,21 @@ defmodule Renga.Transfers.Export do
     ORDER BY p.id
     """
   end
+
+  defp overrides(table, readable), do: Map.merge(managed(table), withheld(table, readable))
+
+  # Access a directory manages (SCIM, RFD 16) stays reference data at the
+  # destination until its own directory grants it again, so the archive
+  # says what managed it; the connection itself is not exported.
+  defp managed("organization_memberships") do
+    %{
+      "metadata" =>
+        "CASE WHEN t.scim_connection_id IS NULL THEN t.metadata " <>
+          ~s|ELSE COALESCE(t.metadata, '{}'::jsonb) \|\| '{"managed_by": "scim"}'::jsonb END|
+    }
+  end
+
+  defp managed(_table), do: %{}
 
   # RFD 12: a job's parameters, result, and agent reports are read only by
   # those allowed its capability's payloads, so an export for such a reader
