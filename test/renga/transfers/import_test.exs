@@ -382,6 +382,86 @@ defmodule Renga.Transfers.ImportTest do
     refute Repo.exists?(where(OrganizationImport, organization_id: ^target.id))
   end
 
+  test "a copy gives every record a new ID and keeps what refers to it", context do
+    path = export(context)
+    target = target()
+
+    assert {:ok, %OrganizationImport{copy: true} = imported} =
+             import_archive(path, target, copy: true)
+
+    # The source stays as it was, beside its copy.
+    assert Repo.get!(Resource, context.server.id).organization_id == context.source.id
+    copy = Repo.get_by!(Resource, organization_id: target.id, name: context.server.name)
+    assert copy.id != context.server.id
+
+    assert [%ChangeEvent{metadata: %{"copy" => true, "import_id" => import_id}}] =
+             Repo.all(where(ChangeEvent, organization_id: ^target.id, kind: "imported"))
+
+    assert import_id == imported.id
+
+    # Exported again, the copy holds the same records, refers only to its
+    # own, and names no ID of the source's anywhere, JSON included.
+    again = Path.join(context.tmp_dir, "copy.tar.zst")
+    {:ok, _summary} = Export.write(Repo.get!(Organization, target.id), again, parts: ~w(history))
+    {:ok, source_archive} = Archive.open(path, tmp_dir: Path.join(context.tmp_dir, "source"))
+    {:ok, copy_archive} = Archive.open(again, tmp_dir: Path.join(context.tmp_dir, "copy"))
+    on_exit(fn -> Enum.each([source_archive, copy_archive], &Archive.close/1) end)
+
+    assert :ok = Validation.validate(copy_archive)
+
+    for type <- ~w(resources resource_revisions cables jobs job_events resource_group_members
+                   component_templates target_bindings installation_keys) do
+      assert record_count(copy_archive, type) == record_count(source_archive, type), type
+    end
+
+    source_ids =
+      for type <- Archive.record_types(source_archive),
+          type != "principals",
+          %{"id" => id} <- Archive.records(source_archive, type),
+          is_binary(id),
+          into: MapSet.new([context.source.id]),
+          do: String.downcase(id)
+
+    leaked =
+      for type <- Archive.record_types(copy_archive),
+          record <- Archive.records(copy_archive, type),
+          value <- strings(record),
+          String.downcase(value) in source_ids,
+          do: {type, value}
+
+    assert leaked == []
+  end
+
+  # A copy swaps the interfaces of these types when new IDs turn their
+  # order; a new constraint like theirs needs the same.
+  test "a copy knows every constraint that orders two IDs" do
+    %{rows: rows} =
+      Repo.query!("""
+      SELECT conrelid::regclass::text, pg_get_constraintdef(oid) FROM pg_constraint
+      WHERE contype = 'c' AND connamespace = current_schema()::regnamespace
+        AND pg_get_constraintdef(oid) ~ '_id [<>] '
+      ORDER BY 1
+      """)
+
+    assert rows ==
+             for(
+               table <- ~w(cable_assertions cable_plans cables current_interface_adjacencies),
+               do: [table, "CHECK ((interface_a_id < interface_b_id))"]
+             )
+  end
+
+  defp record_count(archive, type),
+    do: archive.manifest["files"][Archive.record_file(type)]["records"]
+
+  # Every string in a record, map keys included, however deep.
+  defp strings(value) when is_binary(value), do: [value]
+  defp strings(values) when is_list(values), do: Enum.flat_map(values, &strings/1)
+
+  defp strings(map) when is_map(map),
+    do: Enum.flat_map(map, fn {key, value} -> strings(key) ++ strings(value) end)
+
+  defp strings(_value), do: []
+
   test "only an empty organization takes an import", context do
     path = export_and_remove(context)
     target = target()

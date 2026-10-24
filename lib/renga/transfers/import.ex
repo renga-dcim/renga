@@ -13,7 +13,11 @@ defmodule Renga.Transfers.Import do
   that ends at the locked organization row, and the few rows an empty
   organization holds are locked as well. Broadcasts happen after commit.
 
-  Records keep their IDs and timestamps, with these exceptions:
+  Records keep their IDs and timestamps, unless the importer asks for a
+  copy: then every record gets a new ID, and every ID column and JSON value
+  that held an old one holds the new one, so the source can stay in the
+  same deployment; links to its records do not carry over. Either way,
+  these exceptions apply:
 
     * Revisions and event sequence numbers are reallocated from this
       deployment, in source order, so they stay unique and ordered; the
@@ -75,6 +79,10 @@ defmodule Renga.Transfers.Import do
     {"expected_component_exceptions", "confirmed_by_user_id"} => "confirmed_by_principal_id"
   }
 
+  # Record types whose check constraint orders interface_a_id before
+  # interface_b_id.
+  @canonical_order ~w(cables cable_plans cable_assertions current_interface_adjacencies)
+
   # Rows an empty organization may already have: its Activity, the person
   # importing, and security settings its owner already turned on.
   @allowed_before ~w(change_events organization_memberships role_assignments
@@ -90,6 +98,8 @@ defmodule Renga.Transfers.Import do
     * `:operator` - the operator importing, as recorded in Activity
     * `:authorize` - a function run first inside the import's transaction,
       which may roll it back
+    * `:copy` - give every record a new ID and rewrite what refers to it,
+      instead of refusing IDs that already exist in the deployment
     * `:tmp_dir` - where the archive is expanded
 
   Returns `{:ok, %OrganizationImport{}}` or `{:error, reason}`, where reason
@@ -139,6 +149,7 @@ defmodule Renga.Transfers.Import do
       columns: Schema.columns(),
       self_references: self_references(types),
       map: :ets.new(__MODULE__, [:set, :private]),
+      copy?: Keyword.get(opts, :copy, false),
       import: nil
     }
 
@@ -159,7 +170,7 @@ defmodule Renga.Transfers.Import do
     lock_existing!(state)
     Keyword.get(state.opts, :authorize, fn -> :ok end).()
     ensure_empty!(state)
-    ensure_no_collisions!(state)
+    if state.copy?, do: assign_ids!(state), else: ensure_no_collisions!(state)
 
     {settings, held_settings} = settings(organization, organization_record(state))
     held_settings = hold_security_settings(held_settings, state)
@@ -240,7 +251,6 @@ defmodule Renga.Transfers.Import do
   end
 
   # Records keep their IDs, so none may exist anywhere in the deployment.
-  # Importing a copy with new IDs is future work.
   defp ensure_no_collisions!(state) do
     counts =
       for type <- state.types,
@@ -268,7 +278,7 @@ defmodule Renga.Transfers.Import do
   ## The organization and its import
 
   defp organization_record(state),
-    do: state.archive |> Archive.records("organization") |> Enum.at(0)
+    do: state |> records("organization") |> Enum.at(0)
 
   # Portable settings apply unless they would let the organization do
   # something it cannot now: capabilities the destination does not allow
@@ -319,7 +329,7 @@ defmodule Renga.Transfers.Import do
   defp hold_security_settings(held, state) do
     security =
       if Enum.any?(state.types, &(&1.name == "organization_security_settings")) do
-        for record <- Archive.records(state.archive, "organization_security_settings"),
+        for record <- records(state, "organization_security_settings"),
             not adds_requirement?(record),
             differs?(state.organization_id, record["name"], record["value"]["value"]),
             into: %{},
@@ -390,6 +400,7 @@ defmodule Renga.Transfers.Import do
       sha256: sha256,
       source_settings: organization_record(state)["settings"] || %{},
       held_settings: held_settings,
+      copy: state.copy?,
       imported_by_user_id: state.opts[:imported_by_user_id],
       operator: state.opts[:operator]
     })
@@ -409,7 +420,8 @@ defmodule Renga.Transfers.Import do
           "import_id" => record.id,
           "source" => record.source_slug,
           "records" => record.records,
-          "operator" => record.operator
+          "operator" => record.operator,
+          "copy" => if(record.copy, do: true)
         }
         |> Enum.reject(fn {_key, value} -> is_nil(value) end)
         |> Map.new(),
@@ -417,6 +429,70 @@ defmodule Renga.Transfers.Import do
     })
     |> Repo.insert!()
   end
+
+  ## Copies
+
+  # A copy gives every record a new ID. The source organization's ID maps
+  # to the target's, so whatever names it names the target instead.
+  defp assign_ids!(state) do
+    source = state.archive.manifest["organization"]["id"]
+    :ets.insert(state.map, {{:copy, uuid(source)}, state.organization_id})
+
+    for type <- state.types, "id" in type.fields do
+      state.archive
+      |> Archive.records(type.name)
+      |> Stream.each(&:ets.insert(state.map, {{:copy, uuid(&1["id"])}, Ecto.UUID.generate()}))
+      |> Stream.run()
+    end
+  end
+
+  # The archive's records of `type`; in a copy, with every ID they hold,
+  # in an ID column or anywhere in a JSON value, rewritten to the record's
+  # new ID. IDs are random, so a value that equals a record's ID names it.
+  defp records(%{copy?: false} = state, type), do: Archive.records(state.archive, type)
+
+  defp records(state, type) do
+    columns = Map.get(state.columns, type, %{})
+
+    state.archive
+    |> Archive.records(type)
+    |> Stream.map(&(&1 |> copy_record(state, columns) |> canonical(type)))
+  end
+
+  defp copy_record(record, state, columns) do
+    Map.new(record, fn {field, value} ->
+      case columns[field] do
+        %{type: type} when type in ~w(uuid _uuid json jsonb) -> {field, copied(state, value)}
+        _column -> {field, value}
+      end
+    end)
+  end
+
+  # These keep a link's two interfaces in ID order, which new IDs can turn.
+  defp canonical(%{"interface_a_id" => a, "interface_b_id" => b} = record, type)
+       when type in @canonical_order and is_binary(a) and is_binary(b) do
+    if uuid(a) > uuid(b),
+      do: %{record | "interface_a_id" => b, "interface_b_id" => a},
+      else: record
+  end
+
+  defp canonical(record, _type), do: record
+
+  defp copied(state, value) when is_binary(value) do
+    with {:ok, id} <- Ecto.UUID.dump(value),
+         [{_key, copy}] <- :ets.lookup(state.map, {:copy, id}) do
+      copy
+    else
+      _not_a_record -> value
+    end
+  end
+
+  defp copied(state, values) when is_list(values), do: Enum.map(values, &copied(state, &1))
+
+  defp copied(state, map) when is_map(map),
+    do: Map.new(map, fn {key, value} -> {copied(state, key), copied(state, value)} end)
+
+  defp copied(_state, value), do: value
 
   ## Principals
 
@@ -454,7 +530,7 @@ defmodule Renga.Transfers.Import do
       [{"resources", "resource_version"}, {"resource_revisions", "revision"}]
       |> Enum.filter(fn {type, _field} -> type in included end)
       |> Enum.flat_map(fn {type, field} ->
-        state.archive |> Archive.records(type) |> Enum.map(& &1[field])
+        state |> records(type) |> Enum.map(& &1[field])
       end)
       |> Enum.reject(&is_nil/1)
       |> Enum.uniq()
@@ -467,8 +543,8 @@ defmodule Renga.Transfers.Import do
   defp allocate_sequence!(state, type) do
     if Enum.any?(state.types, &(&1.name == type)) do
       sources =
-        state.archive
-        |> Archive.records(type)
+        state
+        |> records(type)
         |> Enum.map(& &1["sequence"])
         |> Enum.uniq()
         |> Enum.sort()
@@ -512,7 +588,7 @@ defmodule Renga.Transfers.Import do
     do: hold_type!(state, type)
 
   defp insert_type!(state, %{name: "organization_security_settings"} = type) do
-    applied = state.archive |> Archive.records(type.name) |> Enum.filter(&adds_requirement?/1)
+    applied = state |> records(type.name) |> Enum.filter(&adds_requirement?/1)
     changed = Enum.filter(applied, &differs?(state.organization_id, &1["name"], true))
 
     # The source's value replaces the destination's row for the setting,
@@ -533,7 +609,7 @@ defmodule Renga.Transfers.Import do
         insert_by_level!(state, type, parent_field)
 
       :error ->
-        state.archive |> Archive.records(type.name) |> insert_records!(state, type)
+        state |> records(type.name) |> insert_records!(state, type)
         :ok
     end
   end
@@ -573,8 +649,8 @@ defmodule Renga.Transfers.Import do
 
   defp insert_levels!(state, type, parent_field, done, expected) do
     count =
-      state.archive
-      |> Archive.records(type.name)
+      state
+      |> records(type.name)
       |> Stream.reject(&inserted?(state, type.name, &1["id"]))
       |> Stream.filter(fn record ->
         is_nil(record[parent_field]) or inserted?(state, type.name, record[parent_field])
@@ -616,8 +692,8 @@ defmodule Renga.Transfers.Import do
   end
 
   defp hold_type!(state, type) do
-    state.archive
-    |> Archive.records(type.name)
+    state
+    |> records(type.name)
     |> Stream.map(fn record ->
       principal = holder(state, type.name, record)
 
@@ -808,8 +884,8 @@ defmodule Renga.Transfers.Import do
     for type <- state.types,
         fields = type.deferred_fields ++ Map.get(@post_fields, type.name, []),
         fields != [] do
-      state.archive
-      |> Archive.records(type.name)
+      state
+      |> records(type.name)
       |> Stream.filter(fn record -> Enum.any?(fields, &(not is_nil(record[&1]))) end)
       |> Stream.map(&Map.take(&1, ["id" | fields]))
       |> Stream.map(&encode(&1, state.columns[type.name]))
