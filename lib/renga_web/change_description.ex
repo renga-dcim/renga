@@ -343,6 +343,10 @@ defmodule RengaWeb.ChangeDescription do
 
   def describe(%{kind: "export_started"}), do: "Started an organization export"
   def describe(%{kind: "export_downloaded"}), do: "Downloaded an organization export"
+
+  def describe(%{kind: "export_download_unfinished"}),
+    do: "A download of an organization export did not finish"
+
   def describe(%{kind: "export_revoked"}), do: "Revoked an organization export"
   def describe(%{kind: "export_expired"}), do: "An organization export expired and was deleted"
   def describe(%{kind: "export_failed"}), do: "An organization export failed"

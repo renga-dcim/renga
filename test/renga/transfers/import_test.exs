@@ -343,6 +343,35 @@ defmodule Renga.Transfers.ImportTest do
     assert setting_changes(target) == []
   end
 
+  test "a parent named in another case still comes first", context do
+    {:ok, site} = Renga.DCIM.create_site(context.owner, %{name: "DC1"}, %{slug: "dc1"})
+
+    {:ok, hall} =
+      Renga.DCIM.create_location(context.owner, %{name: "Hall A"}, %{site_id: site.id})
+
+    {:ok, row} =
+      Renga.DCIM.create_location(context.owner, %{name: "Row 1"}, %{
+        site_id: site.id,
+        parent_id: hall.id
+      })
+
+    path =
+      context
+      |> export_and_remove()
+      |> rewrite(context, "locations", fn locations ->
+        Enum.map(locations, fn
+          %{"parent_id" => parent} = location when is_binary(parent) ->
+            %{location | "parent_id" => String.upcase(parent)}
+
+          location ->
+            location
+        end)
+      end)
+
+    assert {:ok, _import} = import_archive(path, target())
+    assert Repo.get!(Renga.DCIM.Location, row.id).parent_id == hall.id
+  end
+
   test "an import is refused while any of its IDs exists", context do
     path = export(context)
     target = target()
@@ -426,7 +455,11 @@ defmodule Renga.Transfers.ImportTest do
   end
 
   # Rewrites the archive at `path` with `type`'s records sorted by `key`.
-  defp reorder(path, context, type, key) do
+  defp reorder(path, context, type, key),
+    do: rewrite(path, context, type, &Enum.sort_by(&1, key))
+
+  # Rewrites the archive at `path` with `type`'s records passed through `fun`.
+  defp rewrite(path, context, type, fun) do
     {:ok, archive} = Archive.open(path, tmp_dir: context.tmp_dir)
 
     try do
@@ -435,7 +468,7 @@ defmodule Renga.Transfers.ImportTest do
         |> Archive.record_types()
         |> Enum.reduce(Writer.new(tmp_dir: context.tmp_dir), fn name, writer ->
           records = Enum.to_list(Archive.records(archive, name))
-          records = if name == type, do: Enum.sort_by(records, key), else: records
+          records = if name == type, do: fun.(records), else: records
           Writer.add_records(writer, name, records)
         end)
 
@@ -443,7 +476,9 @@ defmodule Renga.Transfers.ImportTest do
         archive.manifest
 
       {:ok, snapshot_at, 0} = DateTime.from_iso8601(at)
-      reordered = Path.join(context.tmp_dir, "reordered.tar.zst")
+
+      rewritten =
+        Path.join(context.tmp_dir, "rewritten-#{System.unique_integer([:positive])}.tar.zst")
 
       :ok =
         Writer.finish(
@@ -457,10 +492,10 @@ defmodule Renga.Transfers.ImportTest do
             snapshot_at: snapshot_at,
             parts: parts
           },
-          reordered
+          rewritten
         )
 
-      reordered
+      rewritten
     after
       Archive.close(archive)
     end

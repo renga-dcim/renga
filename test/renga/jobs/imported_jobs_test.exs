@@ -13,7 +13,7 @@ defmodule Renga.Jobs.ImportedJobsTest do
       job_organization_fixture()
 
     agent = agent_fixture(organization)
-    %{owner: owner, system_scope: system_scope, agent: agent}
+    %{organization: organization, owner: owner, system_scope: system_scope, agent: agent}
   end
 
   # Marks a job imported (RFD 20), as an import writes it.
@@ -62,5 +62,28 @@ defmodule Renga.Jobs.ImportedJobsTest do
     assert_raise Postgrex.Error, ~r/imported jobs are history/, fn ->
       Repo.update_all(where(Job, [j], j.id == ^job.id), set: [state: "cancelled"])
     end
+  end
+
+  test "deleting what an imported job names leaves the job, without the reference", context do
+    %{organization: organization, owner: owner, agent: agent} = context
+    %{resource: resource, binding: binding} = target_binding_fixture(organization, agent)
+    {:ok, job} = Jobs.create_job(owner, agent.id, @collect, %{})
+    job = import!(job, resource_id: resource.id, target_binding_id: binding.id)
+
+    Repo.delete_all(where(Renga.Jobs.TargetBinding, id: ^binding.id))
+    Repo.delete!(resource)
+
+    assert %Job{resource_id: nil, target_binding_id: nil} = deleted = Repo.get!(Job, job.id)
+    assert {deleted.state, deleted.imported_at} == {job.state, job.imported_at}
+
+    # Nulling a reference is the only change allowed alongside it.
+    assert_raise Postgrex.Error, ~r/imported jobs are history/, fn ->
+      Repo.update_all(where(Job, [j], j.id == ^job.id),
+        set: [resource_id: nil, state: "cancelled"]
+      )
+    end
+
+    Repo.delete!(organization)
+    refute Repo.get(Job, job.id)
   end
 end

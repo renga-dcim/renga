@@ -86,6 +86,8 @@ defmodule Renga.Transfers.Validation do
       problems: problems(max)
     }
 
+    context = Map.put(context, :slots, slots(context))
+
     try do
       context
       |> check_organization()
@@ -111,6 +113,35 @@ defmodule Renga.Transfers.Validation do
 
     [type.order_by | targets]
   end
+
+  # Every key a record is noted under gets a small number, so the table
+  # holds that number and the key's values rather than the type's and
+  # fields' names: an archive may hold tens of millions of records.
+  defp slots(context) do
+    keys =
+      for type <- context.types, fields <- keys_of(context, type), do: {type.name, fields}
+
+    [{"principals", ["id"]} | keys]
+    |> Enum.uniq()
+    |> Enum.with_index()
+    |> Map.new()
+  end
+
+  # The table key for `values` of `fields` under `type`'s key `key_fields`.
+  defp key(context, type, key_fields, fields, values, columns) do
+    slot = Map.get(context.slots, {type, key_fields}, {type, key_fields})
+    {slot, pack(fields, values, columns)}
+  end
+
+  # A UUID is held as its 16 bytes, which also compares it as PostgreSQL
+  # does, whatever its case; every other value as it is.
+  defp pack([field], [value], columns), do: pack_value(value, columns[field])
+
+  defp pack(fields, values, columns),
+    do: fields |> Enum.zip_with(values, &pack_value(&2, columns[&1])) |> List.to_tuple()
+
+  defp pack_value(value, %{type: "uuid"}) when is_binary(value), do: Ecto.UUID.dump!(value)
+  defp pack_value(value, _column), do: value
 
   defp check_organization(context) do
     fields = RecordTypes.organization_fields()
@@ -192,13 +223,13 @@ defmodule Renga.Transfers.Validation do
   # missing or invalid value is not noted; that field has its own problem.
   defp note_keys(context, type, [primary | others], record, line, columns) do
     for fields <- others, values = values(record, fields), checkable?(fields, values, columns) do
-      :ets.insert(context.keys, {{type, fields, normalize(values)}, line})
+      :ets.insert(context.keys, {key(context, type, fields, fields, values, columns), line})
     end
 
     values = values(record, primary)
 
     with true <- checkable?(primary, values, columns),
-         key = {type, primary, normalize(values)},
+         key = key(context, type, primary, primary, values, columns),
          false <- :ets.insert_new(context.keys, {key, line}) do
       [{_key, first}] = :ets.lookup(context.keys, key)
       ["has the same #{key_name(primary)} as line #{first}"]
@@ -211,10 +242,6 @@ defmodule Renga.Transfers.Validation do
 
   defp key_name(["id"]), do: "ID"
   defp key_name(fields), do: Enum.map_join(fields, " and ", &~s("#{&1}"))
-
-  # UUIDs compare case-insensitively, as PostgreSQL compares them.
-  defp normalize(values),
-    do: Enum.map(values, &if(is_binary(&1), do: String.downcase(&1), else: &1))
 
   defp check_references(context) do
     Enum.reduce_while(context.types, context, fn type, context ->
@@ -245,7 +272,14 @@ defmodule Renga.Transfers.Validation do
         checkable?(reference.fields, values, columns),
         not :ets.member(
           context.keys,
-          {reference.target, reference.target_fields, normalize(values)}
+          key(
+            context,
+            reference.target,
+            reference.target_fields,
+            reference.fields,
+            values,
+            columns
+          )
         ) do
       case reference.fields do
         [field] ->
@@ -272,7 +306,10 @@ defmodule Renga.Transfers.Validation do
         names_person?(record, condition),
         value = Map.get(record, field),
         checkable?([field], [value], columns),
-        not :ets.member(context.keys, {"principals", ["id"], normalize([value])}) do
+        not :ets.member(
+          context.keys,
+          key(context, "principals", ["id"], [field], [value], columns)
+        ) do
       ~s(field "#{field}" refers to principal #{value}, which principals.ndjson does not hold)
     end
   end

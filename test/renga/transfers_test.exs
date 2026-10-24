@@ -291,6 +291,9 @@ defmodule Renga.TransfersTest do
     assert describe.(%{kind: "export_downloaded", metadata: %{}}) ==
              "Downloaded an organization export"
 
+    assert describe.(%{kind: "export_download_unfinished", metadata: %{}}) ==
+             "A download of an organization export did not finish"
+
     assert describe.(%{kind: "export_expired", metadata: %{}}) ==
              "An organization export expired and was deleted"
 

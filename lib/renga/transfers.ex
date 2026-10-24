@@ -269,6 +269,22 @@ defmodule Renga.Transfers do
     |> Changes.broadcast(scope.organization_id)
   end
 
+  @doc """
+  Records that a download `authorize_download/2` allowed ended after
+  `sent` of the archive's bytes: the client went away, or a revocation or
+  expiry deleted the rest. The download itself was recorded when it was
+  allowed, before any byte was sent.
+  """
+  def record_unfinished_download(%Scope{} = scope, %OrganizationExport{} = export, sent) do
+    record!(export, scope.user.id, "export_download_unfinished", %{
+      "bytes_sent" => sent,
+      "bytes" => export.bytes
+    })
+
+    Changes.broadcast({:ok, export}, scope.organization_id)
+    :ok
+  end
+
   # An archive holds the query payloads its requester could read (RFD 12),
   # so only someone who can read at least those may download it.
   defp reads_payloads?(scope, export),

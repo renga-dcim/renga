@@ -352,6 +352,49 @@ defmodule Renga.Transfers.ValidationTest do
              ])
   end
 
+  test "UUIDs in a reference compare as PostgreSQL compares them, other values exactly",
+       context do
+    scope = member_scope(context.organization, "owner")
+
+    {:ok, chassis} =
+      Inventory.create_resource(scope, %{
+        kind: "server",
+        name: "chassis",
+        lifecycle_state: "active"
+      })
+
+    {:ok, upper} = Renga.Catalog.create_module_bay(scope, chassis.id, %{name: "Slot 1"})
+    {:ok, capitalized} = Renga.Catalog.create_module_bay(scope, chassis.id, %{name: "Slot 2"})
+
+    archive =
+      rewrite(context, export(context), fn
+        "module_bays", records ->
+          Enum.map(records, fn
+            %{"id" => id} = bay when id == upper.id ->
+              %{bay | "owner_resource_id" => String.upcase(chassis.id)}
+
+            %{"id" => id} = bay when id == capitalized.id ->
+              %{bay | "owner_kind" => "Server"}
+
+            bay ->
+              bay
+          end)
+
+        _type, records ->
+          records
+      end)
+
+    line =
+      archive
+      |> Archive.records("module_bays")
+      |> Enum.find_index(&(&1["id"] == capitalized.id))
+
+    assert messages(archive) == [
+             {"module_bays.ndjson", line + 1,
+              ~s|fields "owner_resource_id" and "owner_kind" (#{chassis.id}, Server) match no resources record the archive holds|}
+           ]
+  end
+
   test "people are referred to only through principals", context do
     archive =
       rewrite(context, export(context), fn

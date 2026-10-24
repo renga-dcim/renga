@@ -564,14 +564,18 @@ defmodule Renga.Transfers.Import do
         is_nil(record[parent_field]) or inserted?(state, type.name, record[parent_field])
       end)
       |> insert_records!(state, type, fn records ->
-        Enum.each(records, &:ets.insert(state.map, {{:inserted, type.name, &1["id"]}}))
+        Enum.each(records, &:ets.insert(state.map, {{:inserted, type.name, uuid(&1["id"])}}))
       end)
 
     if count == 0, do: raise("#{type.name} records refer to each other in a cycle")
     insert_levels!(state, type, parent_field, done + count, expected)
   end
 
-  defp inserted?(state, type, id), do: :ets.member(state.map, {:inserted, type, id})
+  defp inserted?(state, type, id), do: :ets.member(state.map, {:inserted, type, uuid(id)})
+
+  # An ID as its 16 bytes: smaller to hold, and compared as PostgreSQL
+  # compares it, whatever its case.
+  defp uuid(id), do: Ecto.UUID.dump!(id)
 
   # Inserts records a batch at a time with the people they name and the
   # records held for their person, calling `after_batch` with each batch.

@@ -89,6 +89,18 @@ defmodule Renga.Transfers.Principals do
     end
   end
 
+  @doc """
+  Whether `email` is the address of an unlinked principal of the
+  organization, so an invitation to it may bring that principal back.
+  """
+  def invitable?(organization_id, principal_id, email) do
+    ImportedPrincipal
+    |> where([principal], principal.id == ^principal_id)
+    |> where([principal], principal.organization_id == ^organization_id)
+    |> where([principal], is_nil(principal.user_id) and principal.email == ^email)
+    |> Repo.exists?()
+  end
+
   defp returning_role(%ImportedPrincipal{email: email}, _membership) when email in [nil, ""],
     do: nil
 
@@ -149,6 +161,7 @@ defmodule Renga.Transfers.Principals do
     |> where([principal], principal.id == ^invitation.imported_principal_id)
     |> where([principal], principal.organization_id == ^invitation.organization_id)
     |> where([principal], is_nil(principal.user_id))
+    |> where([principal], principal.email == ^invitation.email)
     |> lock("FOR UPDATE")
     |> Repo.one()
   end
