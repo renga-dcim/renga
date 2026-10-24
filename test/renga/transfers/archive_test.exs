@@ -1,0 +1,457 @@
+defmodule Renga.Transfers.ArchiveTest do
+  use ExUnit.Case, async: true
+
+  alias Renga.Transfers.Archive
+  alias Renga.Transfers.Archive.Writer
+
+  @moduletag :tmp_dir
+
+  @organization %{id: "6f1d5c0e-4c69-4a8a-9b65-2b4c1f0e9a11", slug: "acme", name: "Acme"}
+  @snapshot_at ~U[2026-10-22 19:00:00.000Z]
+
+  describe "a written archive" do
+    test "opens with its manifest and streams its records back", %{tmp_dir: tmp} do
+      path =
+        write(tmp, %{
+          "resources" => [%{"id" => "a", "weight" => Decimal.new("1.50")}, %{"id" => "b"}],
+          "teams" => []
+        })
+
+      assert {:ok, archive} = Archive.open(path, tmp_dir: tmp)
+
+      assert %{
+               "format" => "renga-organization-export",
+               "format_version" => 1,
+               "renga_version" => version,
+               "organization" => %{"id" => _, "slug" => "acme", "name" => "Acme"},
+               "snapshot_at" => "2026-10-22T19:00:00.000Z",
+               "parts" => [],
+               "files" => %{
+                 "resources.ndjson" => %{"records" => 2, "sha256" => <<_::binary-size(64)>>},
+                 "teams.ndjson" => %{"records" => 0, "bytes" => 0}
+               }
+             } = archive.manifest
+
+      assert version == to_string(Application.spec(:renga, :vsn))
+      assert Archive.record_types(archive) == ["resources", "teams"]
+
+      assert [%{"id" => "a", "weight" => weight}, %{"id" => "b"}] =
+               archive |> Archive.records("resources") |> Enum.to_list()
+
+      assert Decimal.equal?(weight, Decimal.new("1.50"))
+      assert archive |> Archive.records("teams") |> Enum.to_list() == []
+      assert archive |> Archive.records("cables") |> Enum.to_list() == []
+
+      assert :ok = Archive.close(archive)
+      refute File.exists?(archive.dir)
+    end
+
+    test "streams large record files in chunks", %{tmp_dir: tmp} do
+      records = for i <- 1..5_000, do: %{"id" => i, "padding" => String.duplicate("x", 40)}
+      path = write(tmp, %{"observations" => records})
+
+      assert {:ok, archive} = Archive.open(path, tmp_dir: tmp)
+      assert archive |> Archive.records("observations") |> Enum.count() == 5_000
+      Archive.close(archive)
+    end
+
+    test "leaves no working files behind", %{tmp_dir: tmp} do
+      path = write(tmp, %{"resources" => [%{"id" => "a"}]})
+      assert {:ok, archive} = Archive.open(path, tmp_dir: tmp)
+      Archive.close(archive)
+
+      assert File.ls!(tmp) == [Path.basename(path)]
+    end
+  end
+
+  describe "refusing an archive" do
+    test "that is not zstd-compressed", %{tmp_dir: tmp} do
+      path = Path.join(tmp, "plain.tar.zst")
+      File.write!(path, "not an archive")
+
+      assert {:error, [%{message: "the archive is not zstd-compressed or is corrupt"}]} =
+               Archive.open(path, tmp_dir: tmp)
+
+      assert File.ls!(tmp) == ["plain.tar.zst"]
+    end
+
+    test "that is truncated", %{tmp_dir: tmp} do
+      records =
+        for i <- 1..20_000,
+            do: %{"id" => i, "noise" => Base.encode64(:crypto.strong_rand_bytes(30))}
+
+      path = write(tmp, %{"resources" => records})
+      data = File.read!(path)
+      File.write!(path, binary_part(data, 0, div(byte_size(data), 2)))
+
+      assert {:error, [%{message: "the archive does not contain a valid tar file"}]} =
+               Archive.open(path, tmp_dir: tmp)
+    end
+
+    test "over the compressed size limit", %{tmp_dir: tmp} do
+      path = write(tmp, %{"resources" => [%{"id" => "a"}]})
+
+      assert {:error, [%{message: message}]} =
+               Archive.open(path, tmp_dir: tmp, max_compressed_bytes: 10)
+
+      assert message =~ "over the limit of 10"
+    end
+
+    test "that expands beyond the limit, before writing it all out", %{tmp_dir: tmp} do
+      # About 6 KB of zstd that expands to 200 MB.
+      path = Path.join(tmp, "bomb.tar.zst")
+      File.write!(path, :zstd.compress(:binary.copy(<<0>>, 200_000_000)))
+
+      assert {:error, [%{message: "the archive expands to more than 1000000 bytes"}]} =
+               Archive.open(path, tmp_dir: tmp, max_expanded_bytes: 1_000_000)
+
+      assert File.ls!(tmp) == ["bomb.tar.zst"]
+    end
+
+    test "that is not a tar file", %{tmp_dir: tmp} do
+      path = Path.join(tmp, "x.tar.zst")
+      File.write!(path, :zstd.compress("just some text"))
+
+      assert {:error, [%{message: "the archive does not contain a valid tar file"}]} =
+               Archive.open(path, tmp_dir: tmp)
+    end
+
+    test "with a link, a path outside the archive, or a nested name, extracting none", %{
+      tmp_dir: tmp
+    } do
+      src = Path.join(tmp, "src")
+      File.mkdir_p!(src)
+      File.write!(Path.join(src, "target"), "{}\n")
+      File.ln_s!("/etc/passwd", Path.join(src, "link.ndjson"))
+
+      path =
+        tar(tmp, [
+          {"manifest.json", manifest(%{})},
+          {:file, Path.join(src, "link.ndjson"), "link.ndjson"},
+          {"../escape.ndjson", "{}\n"},
+          {"/absolute.ndjson", "{}\n"},
+          {"nested/resources.ndjson", "{}\n"},
+          {"Resources.NDJSON", "{}\n"}
+        ])
+
+      assert {:error, problems} = Archive.open(path, tmp_dir: tmp)
+
+      assert %{
+               "link.ndjson" => "is a symlink, not a regular file",
+               "../escape.ndjson" => "is not an allowed archive file name",
+               "/absolute.ndjson" => "is not an allowed archive file name",
+               "nested/resources.ndjson" => "is not an allowed archive file name",
+               "Resources.NDJSON" => "is not an allowed archive file name"
+             } == Map.new(problems, &{&1.file, &1.message})
+
+      refute File.exists?(Path.join(tmp, "escape.ndjson"))
+      assert Enum.sort(File.ls!(tmp)) == ["archive.tar.zst", "src"]
+    end
+
+    test "with a duplicated entry", %{tmp_dir: tmp} do
+      path =
+        tar(tmp, [
+          {"manifest.json", manifest(%{"teams.ndjson" => "{}\n"})},
+          {"teams.ndjson", "{}\n"},
+          {"teams.ndjson", "{}\n"}
+        ])
+
+      assert {:error, [%{file: "teams.ndjson", message: "appears more than once in the archive"}]} =
+               Archive.open(path, tmp_dir: tmp)
+    end
+
+    test "with extended or sparse entries, before :erl_tar reads their metadata", %{
+      tmp_dir: tmp
+    } do
+      # A sparse entry stores nothing but claims 2 MiB, which listing it
+      # with :erl_tar would materialize; a PAX record with a bad uid makes
+      # :erl_tar raise.
+      sparse = :binary.copy(<<0>>, 137) <> octal(2 * 1024 * 1024, 12)
+
+      path =
+        raw_tar(tmp, [
+          {"teams.ndjson", "x", "12 uid=nope\n", []},
+          {"manifest.json", "0", manifest(%{}), []},
+          {"sites.ndjson", "S", "", magic: "ustar  \0", extra: sparse}
+        ])
+
+      assert {:error, problems} = Archive.open(path, tmp_dir: tmp, max_expanded_bytes: 1_048_576)
+
+      assert Enum.map(problems, &{&1.file, &1.message}) == [
+               {"teams.ndjson", "is a PAX extended header, not a regular file"},
+               {"sites.ndjson", "is a sparse file, not a regular file"}
+             ]
+
+      assert File.ls!(tmp) == ["raw.tar.zst"]
+    end
+
+    test "with a size field :erl_tar would read differently", %{tmp_dir: tmp} do
+      # Read up to its NUL, a.ndjson is empty and the sparse header is
+      # b.ndjson's body; :erl_tar reads 512 bytes, so the regular b.ndjson
+      # header is a's body and it extracts the 2 MiB sparse entry.
+      sparse = :binary.copy(<<0>>, 137) <> octal(2 * 1024 * 1024, 12)
+      hidden = raw_header("b.ndjson", "S", 0, magic: "ustar  \0", extra: sparse)
+
+      path =
+        raw_tar(tmp, [
+          {"a.ndjson", "0", "", size_field: <<"0", 0, "0000001000">>},
+          {"b.ndjson", "0", hidden, []}
+        ])
+
+      assert {:error, [%{message: "the archive does not contain a valid tar file"}]} =
+               Archive.open(path, tmp_dir: tmp, max_expanded_bytes: 1_048_576)
+
+      assert File.ls!(tmp) == ["raw.tar.zst"]
+    end
+
+    test "with an entry whose header checksum is wrong", %{tmp_dir: tmp} do
+      path = raw_tar(tmp, [{"manifest.json", "0", manifest(%{}), checksum: 1}])
+
+      assert {:error, [%{message: "the archive does not contain a valid tar file"}]} =
+               Archive.open(path, tmp_dir: tmp)
+    end
+
+    test "with too many files", %{tmp_dir: tmp} do
+      files = for i <- 1..5, into: %{}, do: {"type_#{i}", [%{"id" => i}]}
+      path = write(tmp, files)
+
+      assert {:error, [%{message: "the archive holds more than 4 files"}]} =
+               Archive.open(path, tmp_dir: tmp, max_files: 4)
+    end
+
+    test "without a manifest", %{tmp_dir: tmp} do
+      path = tar(tmp, [{"teams.ndjson", "{}\n"}])
+
+      assert {:error, [%{file: "manifest.json", message: "is missing"}]} =
+               Archive.open(path, tmp_dir: tmp)
+    end
+
+    test "from a newer release", %{tmp_dir: tmp} do
+      path = tar(tmp, [{"manifest.json", manifest(%{}, %{"format_version" => 2})}])
+
+      assert {:error, [%{file: "manifest.json", message: message}]} =
+               Archive.open(path, tmp_dir: tmp)
+
+      assert message ==
+               "was written by a newer release (format version 2); " <>
+                 "this release reads up to format version 1"
+    end
+
+    test "with a manifest of the wrong shape", %{tmp_dir: tmp} do
+      path =
+        tar(tmp, [
+          {"manifest.json",
+           manifest(%{}, %{
+             "organization" => %{"id" => "not-a-uuid", "slug" => "acme", "name" => "Acme"},
+             "parts" => ["everything"],
+             "snapshot_at" => "yesterday"
+           })}
+        ])
+
+      assert {:error, problems} = Archive.open(path, tmp_dir: tmp)
+
+      assert Enum.map(problems, & &1.message) == [
+               "has an invalid organization",
+               "has an invalid snapshot_at",
+               "has an invalid parts"
+             ]
+
+      not_a_manifest = tar(tmp, [{"manifest.json", ~s({"format": "zip"})}], "other.tar.zst")
+
+      assert {:error, [%{message: "is not a renga-organization-export manifest" <> _}]} =
+               Archive.open(not_a_manifest, tmp_dir: tmp)
+    end
+
+    test "whose files differ from the manifest, reporting every problem", %{tmp_dir: tmp} do
+      listed = %{"teams.ndjson" => ~s({"id":1}\n), "roles.ndjson" => ~s({"id":1}\n)}
+
+      path =
+        tar(tmp, [
+          {"manifest.json", manifest(listed)},
+          {"teams.ndjson", ~s({"id":2}\n{"id":3}\n)},
+          {"cables.ndjson", "{}\n"}
+        ])
+
+      assert {:error, problems} = Archive.open(path, tmp_dir: tmp)
+
+      assert Enum.map(problems, &{&1.file, &1.message}) == [
+               {"cables.ndjson", "is not listed in the manifest"},
+               {"roles.ndjson", "is listed in the manifest but missing"},
+               {"teams.ndjson", "does not match the manifest's SHA-256 checksum"},
+               {"teams.ndjson", "is 18 bytes, but the manifest says 9"},
+               {"teams.ndjson", "holds 2 records, but the manifest says 1"}
+             ]
+    end
+
+    test "with lines that are not JSON objects, naming each line", %{tmp_dir: tmp} do
+      body = ~s({"id":1}\n[1,2]\nnot json\n\n1.5\n{"id":6})
+
+      path =
+        tar(tmp, [{"manifest.json", manifest(%{"teams.ndjson" => body})}, {"teams.ndjson", body}])
+
+      assert {:error, problems} = Archive.open(path, tmp_dir: tmp)
+
+      assert Enum.map(problems, &{&1.line, &1.message}) == [
+               {2, "is not a JSON object"},
+               {3, "is not valid JSON"},
+               {4, "is not valid JSON"},
+               {5, "is not a JSON object"},
+               {nil, "does not end with a newline"}
+             ]
+    end
+
+    test "with a record over the size limit, without buffering it", %{tmp_dir: tmp} do
+      big = ~s({"id":") <> String.duplicate("x", 200_000) <> ~s("}\n)
+      body = ~s({"id":1}\n) <> big <> ~s({"id":3}\n)
+
+      path =
+        tar(tmp, [{"manifest.json", manifest(%{"teams.ndjson" => body})}, {"teams.ndjson", body}])
+
+      assert {:error, [%{line: 2, message: message}]} =
+               Archive.open(path, tmp_dir: tmp, max_record_bytes: 1_000)
+
+      assert message == "is longer than the record limit of 1000 bytes"
+    end
+
+    test "with more records than the limit", %{tmp_dir: tmp} do
+      path = write(tmp, %{"a" => [%{}, %{}], "b" => [%{}, %{}]})
+
+      assert {:error,
+              [%{file: "b.ndjson", line: 2, message: "the archive holds more than 3 records"} | _]} =
+               Archive.open(path, tmp_dir: tmp, max_records: 3)
+    end
+
+    test "listing at most max_problems problems", %{tmp_dir: tmp} do
+      body = String.duplicate("[]\n", 50)
+
+      path =
+        tar(tmp, [{"manifest.json", manifest(%{"teams.ndjson" => body})}, {"teams.ndjson", body}])
+
+      assert {:error, problems} = Archive.open(path, tmp_dir: tmp, max_problems: 5)
+      assert length(problems) == 5
+      assert List.last(problems).message == "more problems were found but not listed"
+    end
+  end
+
+  test "opens an archive whatever modes its entries carry", %{tmp_dir: tmp} do
+    body = "{}\n"
+    files = %{"teams.ndjson" => body}
+
+    path =
+      raw_tar(tmp, [
+        {"manifest.json", "0", manifest(files), mode: 0},
+        {"teams.ndjson", "0", body, mode: 0}
+      ])
+
+    assert {:ok, archive} = Archive.open(path, tmp_dir: tmp)
+    assert Enum.to_list(Archive.records(archive, "teams")) == [%{}]
+    Archive.close(archive)
+  end
+
+  test "record types must have safe file names" do
+    assert Archive.record_file("cable_plans") == "cable_plans.ndjson"
+    assert_raise ArgumentError, fn -> Archive.record_file("../x") end
+    assert_raise ArgumentError, fn -> Archive.record_file("Cables") end
+  end
+
+  defp write(tmp, files) do
+    path = Path.join(tmp, "archive.tar.zst")
+
+    files
+    |> Enum.reduce(Writer.new(tmp_dir: tmp), fn {type, records}, writer ->
+      Writer.add_records(writer, type, records)
+    end)
+    |> Writer.finish(%{organization: @organization, snapshot_at: @snapshot_at, parts: []}, path)
+
+    path
+  end
+
+  # A manifest listing `files` (name => contents), with `overrides` merged in.
+  defp manifest(files, overrides \\ %{}) do
+    %{
+      "format" => "renga-organization-export",
+      "format_version" => 1,
+      "renga_version" => "0.0.0",
+      "organization" => %{"id" => @organization.id, "slug" => "acme", "name" => "Acme"},
+      "snapshot_at" => "2026-10-22T19:00:00.000Z",
+      "parts" => [],
+      "files" =>
+        Map.new(files, fn {name, body} ->
+          {name,
+           %{
+             "sha256" => :sha256 |> :crypto.hash(body) |> Base.encode16(case: :lower),
+             "records" => body |> String.split("\n", trim: true) |> length(),
+             "bytes" => byte_size(body)
+           }}
+        end)
+    }
+    |> Map.merge(overrides)
+    |> Jason.encode!()
+  end
+
+  # A tar built header by header, for entries :erl_tar never writes:
+  # {name, typeflag, body, options}. Options set the `:mode`, the raw
+  # `:size_field`, the `:magic`, the header bytes after the owner fields
+  # (`:extra`), or a wrong `:checksum`.
+  defp raw_tar(tmp, entries) do
+    blocks =
+      for {name, type, body, opts} <- entries do
+        [raw_header(name, type, byte_size(body), opts), body, padding(byte_size(body))]
+      end
+
+    path = Path.join(tmp, "raw.tar.zst")
+    File.write!(path, :zstd.compress(IO.iodata_to_binary([blocks, <<0::size(1024)-unit(8)>>])))
+    path
+  end
+
+  defp raw_header(name, type, size, opts) do
+    header =
+      IO.iodata_to_binary([
+        field(name, 100),
+        octal(Keyword.get(opts, :mode, 0o644), 8),
+        octal(0, 8),
+        octal(0, 8),
+        Keyword.get_lazy(opts, :size_field, fn -> octal(size, 12) end),
+        octal(0, 12),
+        "        ",
+        type,
+        field("", 100),
+        Keyword.get(opts, :magic, "ustar\0" <> "00"),
+        field("", 80),
+        field(Keyword.get(opts, :extra, ""), 167)
+      ])
+
+    checksum = Keyword.get_lazy(opts, :checksum, fn -> Enum.sum(:binary.bin_to_list(header)) end)
+    <<before::binary-size(148), _spaces::binary-size(8), rest::binary>> = header
+    before <> String.pad_leading(Integer.to_string(checksum, 8), 6, "0") <> <<0, ?\s>> <> rest
+  end
+
+  defp field(value, size), do: value <> :binary.copy(<<0>>, size - byte_size(value))
+
+  defp octal(value, size),
+    do: String.pad_leading(Integer.to_string(value, 8), size - 1, "0") <> <<0>>
+
+  defp padding(size), do: :binary.copy(<<0>>, rem(512 - rem(size, 512), 512))
+
+  # A hand-built archive, for shapes the writer never produces.
+  defp tar(tmp, entries, name \\ "archive.tar.zst") do
+    tar = Path.join(tmp, "build.tar")
+    {:ok, handle} = :erl_tar.open(String.to_charlist(tar), [:write])
+
+    for entry <- entries do
+      case entry do
+        {:file, path, name} ->
+          :ok = :erl_tar.add(handle, String.to_charlist(path), String.to_charlist(name), [])
+
+        {name, body} ->
+          :ok = :erl_tar.add(handle, body, String.to_charlist(name), [])
+      end
+    end
+
+    :ok = :erl_tar.close(handle)
+    path = Path.join(tmp, name)
+    File.write!(path, :zstd.compress(File.read!(tar)))
+    File.rm!(tar)
+    path
+  end
+end
