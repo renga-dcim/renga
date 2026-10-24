@@ -80,22 +80,19 @@ defmodule RengaWeb.ImportLive do
     case HeldSettings.list(socket.assigns.current_scope) do
       {:ok, imports} ->
         imports =
-          for {import, items} <- imports do
-            # A live update must never reuse an open confirmation for another setting.
-            items =
-              Enum.map(items, fn item ->
-                key = :crypto.hash(:sha256, item.key) |> Base.url_encode64(padding: false)
-                Map.put(item, :dom, "held-#{import.id}-#{key}")
-              end)
-
-            {import, items}
-          end
+          for {import, items} <- imports, do: {import, Enum.map(items, &with_dom(&1, import))}
 
         assign(socket, :imports, imports)
 
       {:error, :forbidden} ->
         forbidden(socket)
     end
+  end
+
+  # A live update must never reuse an open confirmation for another setting.
+  defp with_dom(item, import) do
+    key = :crypto.hash(:sha256, item.key) |> Base.url_encode64(padding: false)
+    Map.put(item, :dom, "held-#{import.id}-#{key}")
   end
 
   @impl true
