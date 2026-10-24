@@ -118,11 +118,12 @@ defmodule Renga.Transfers.HeldSettings do
     %ChangeEvent{organization_id: scope.organization_id, actor_user_id: scope.user.id}
     |> ChangeEvent.changeset(%{
       kind: kind,
-      field: Enum.join(item.path, "."),
+      field: "held_setting",
       new_value: %{"value" => item.value},
       metadata: %{
         "import_id" => import.id,
         "source" => import.source_slug,
+        "path" => item.path,
         "label" => item.label
       },
       occurred_at: Renga.Time.utc_now_ms()
@@ -138,12 +139,18 @@ defmodule Renga.Transfers.HeldSettings do
     |> Enum.flat_map(fn {group, value} -> group_items(group, value) end)
   end
 
-  defp group_items("security", settings) when is_map(settings) do
+  defp group_items("security", settings) when is_map(settings) and map_size(settings) > 0 do
     for {name, value} <- Enum.sort(settings) do
       case SecuritySettings.parse_name(name) do
         {:ok, parsed} ->
           definition = SecuritySettings.definitions()[parsed]
-          item(["security", name], value, "#{definition.label}: #{on_off(value)}", true)
+
+          item(
+            ["security", name],
+            value,
+            "#{definition.label}: #{on_off(value)}",
+            definition.type == :boolean and is_boolean(value)
+          )
 
         :error ->
           item(["security", name], value, "Security setting #{name}", false)
@@ -151,21 +158,27 @@ defmodule Renga.Transfers.HeldSettings do
     end
   end
 
-  defp group_items("jobs", jobs) when is_map(jobs) do
+  defp group_items("jobs", jobs) when is_map(jobs) and map_size(jobs) > 0 do
     for {setting, value} <- Enum.sort(jobs), item <- job_items(setting, value), do: item
   end
 
   defp group_items(group, value), do: [item([group], value, "Setting #{group}", false)]
 
   defp job_items("allowed_capabilities", keys) when is_list(keys) do
-    for key <- keys do
-      case Jobs.Registry.fetch(key) do
-        {:ok, capability} ->
-          item(["jobs", "allowed_capabilities", key], key, "Allow #{capability.title()}", true)
+    # Imported JSON is untrusted. A malformed collection is held as a whole
+    # so every action key remains a string-only path that can be dismissed.
+    if keys != [] and Enum.all?(keys, &is_binary/1) do
+      for key <- Enum.uniq(keys) do
+        case Jobs.Registry.fetch(key) do
+          {:ok, capability} ->
+            item(["jobs", "allowed_capabilities", key], key, "Allow #{capability.title()}", true)
 
-        {:error, _unknown} ->
-          item(["jobs", "allowed_capabilities", key], key, "Allow #{key}", false)
+          {:error, _unknown} ->
+            item(["jobs", "allowed_capabilities", key], key, "Allow #{key}", false)
+        end
       end
+    else
+      [item(["jobs", "allowed_capabilities"], keys, "Job setting allowed_capabilities", false)]
     end
   end
 
@@ -191,7 +204,7 @@ defmodule Renga.Transfers.HeldSettings do
 
   # Takes `path` out of the held settings, dropping what it leaves empty.
   defp drop(map, [key]) when is_map(map), do: Map.delete(map, key)
-  defp drop(list, [item]) when is_list(list), do: List.delete(list, item)
+  defp drop(list, [item]) when is_list(list), do: Enum.reject(list, &(&1 == item))
 
   defp drop(map, [key | rest]) when is_map(map) do
     case drop(Map.fetch!(map, key), rest) do

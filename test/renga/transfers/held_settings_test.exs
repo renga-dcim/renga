@@ -89,7 +89,7 @@ defmodule Renga.Transfers.HeldSettingsTest do
              {"import_setting_confirmed", field, %{"source" => "acme", "import_id" => id}}
            ] = activity(organization, ~w(capability_allowed import_setting_confirmed))
 
-    assert field == "jobs.allowed_capabilities.#{operate}" and id == import.id
+    assert field == "held_setting" and id == import.id
     assert {:error, :not_found} = HeldSettings.confirm(owner, import.id, key)
   end
 
@@ -119,8 +119,81 @@ defmodule Renga.Transfers.HeldSettingsTest do
     assert {:ok, %{label: "Setting unknown"}} = HeldSettings.dismiss(owner, import.id, key)
     refute Map.has_key?(held(import), "unknown")
 
-    assert [{"import_setting_dismissed", "unknown", %{"label" => "Setting unknown"}}] =
+    assert [{"import_setting_dismissed", "held_setting", %{"label" => "Setting unknown"}}] =
              activity(organization, ~w(import_setting_confirmed import_setting_dismissed))
+  end
+
+  test "malformed imported values remain unsupported and dismissible", context do
+    %{owner: owner, import: import, organization: organization} = context
+    long_name = String.duplicate("unknown", 50)
+
+    for capabilities <- [
+          [%{}],
+          [["nested"]],
+          [42],
+          %{},
+          42,
+          [],
+          [context.operate, %{}],
+          [long_name]
+        ] do
+      held = %{
+        "jobs" => %{"allowed_capabilities" => capabilities},
+        "security" => %{"require_mfa" => "off", long_name => false},
+        long_name => %{"arbitrary" => [1, false]}
+      }
+
+      import |> Ecto.Changeset.change(held_settings: held) |> Repo.update!()
+      pending = items(owner)
+      assert length(pending) == 4
+
+      for item <- pending do
+        refute item.applied?
+        assert {:error, :unsupported} = HeldSettings.confirm(owner, import.id, item.key)
+        assert {:ok, ^item} = HeldSettings.dismiss(owner, import.id, item.key)
+      end
+
+      assert held(import) == %{}
+      assert {:ok, []} = HeldSettings.list(owner)
+      assert SecuritySettings.require_mfa?(organization.id)
+    end
+
+    assert Enum.all?(activity(organization, ~w(import_setting_dismissed)), fn
+             {_, "held_setting", %{"path" => path}} -> Enum.all?(path, &is_binary/1)
+           end)
+
+    assert Repo.exists?(
+             from event in ChangeEvent,
+               where:
+                 event.organization_id == ^organization.id and
+                   event.metadata["path"] == ^[long_name] and
+                   event.new_value == ^%{"value" => %{"arbitrary" => [1, false]}}
+           )
+  end
+
+  test "empty groups and duplicate capabilities can be fully resolved", context do
+    %{owner: owner, import: import, operate: operate} = context
+
+    import
+    |> Ecto.Changeset.change(held_settings: %{"jobs" => %{}, "security" => %{}})
+    |> Repo.update!()
+
+    for item <- items(owner) do
+      refute item.applied?
+      assert {:ok, _} = HeldSettings.dismiss(owner, import.id, item.key)
+    end
+
+    assert held(import) == %{}
+
+    import
+    |> Ecto.Changeset.change(
+      held_settings: %{"jobs" => %{"allowed_capabilities" => [operate, operate]}}
+    )
+    |> Repo.update!()
+
+    assert [item] = items(owner)
+    assert {:ok, _} = HeldSettings.confirm(owner, import.id, item.key)
+    assert held(import) == %{}
   end
 
   test "an import with nothing left held is no longer listed", context do
