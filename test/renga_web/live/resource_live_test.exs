@@ -464,7 +464,9 @@ defmodule RengaWeb.ResourceLiveTest do
 
     {:ok, _resource} = Inventory.update_resource_lifecycle(scope, resource, "retired")
 
-    assert Enum.any?(1..40, fn _attempt ->
+    # The page reloads 400 ms after the change notice. Allow a busy runner
+    # up to 5 s; a passing run stops polling as soon as the page updates.
+    assert Enum.any?(1..200, fn _attempt ->
              has_element?(view, "#resource-status [data-signal='lifecycle']", "Retired") or
                (Process.sleep(25) && false)
            end)
