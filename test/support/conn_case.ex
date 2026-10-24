@@ -150,6 +150,23 @@ defmodule RengaWeb.ConnCase do
     |> Plug.Conn.put_session(:user_token, token)
   end
 
+  @doc """
+  Sends `message` to a LiveView that redirects in response, and returns
+  the redirect's `{path, flash}` like `Phoenix.LiveViewTest.assert_redirect/1`.
+
+  `assert_redirect/1` alone gives the view ExUnit's `assert_receive_timeout`
+  (100 ms) to handle the message, which a busy CI runner can exceed. The
+  view exits once it has redirected, so wait for that instead.
+  """
+  def send_and_assert_redirect(view, message) do
+    ref = Process.monitor(view.pid)
+    send(view.pid, message)
+
+    receive do
+      {:DOWN, ^ref, :process, _pid, _reason} -> Phoenix.LiveViewTest.assert_redirect(view)
+    end
+  end
+
   defp maybe_set_token_authenticated_at(_token, nil), do: nil
 
   defp maybe_set_token_authenticated_at(token, authenticated_at) do
