@@ -178,7 +178,10 @@ its IDs exists in the deployment. At the destination:
 - jobs are history: they never lease, retry, or run, and nothing can change
   them;
 - portable settings apply unless they would allow more than the destination
-  does now; those are held on the import for an owner to confirm.
+  does now; those are held on the import for an owner to confirm. A security
+  setting applies only when it adds a requirement, such as requiring MFA,
+  and the destination's Activity records it as turned on by the import; a
+  security setting that would lift a requirement is held under `security`.
 
 ### Bringing people back
 
