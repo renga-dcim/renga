@@ -278,6 +278,33 @@ defmodule Renga.Transfers.ValidationTest do
            ]
   end
 
+  test "a security setting wraps its value as the import reads it", context do
+    for {name, value} <- [{"require_mfa", %{"value" => true}}, {"later", %{"value" => false}}] do
+      Repo.insert!(%Renga.SecuritySettings.Setting{
+        organization_id: context.organization.id,
+        name: name,
+        value: value,
+        changed_by: "owner@example.com"
+      })
+    end
+
+    archive =
+      rewrite(context, export(context), fn
+        "organization_security_settings", [first, second] ->
+          [%{first | "value" => %{"enabled" => true}}, %{second | "value" => [true]}]
+
+        _type, records ->
+          records
+      end)
+
+    message = ~s(field "value" is not an object with a "value" key)
+
+    assert messages(archive) == [
+             {"organization_security_settings.ndjson", 1, message},
+             {"organization_security_settings.ndjson", 2, message}
+           ]
+  end
+
   test "no two records of a type share an ID", context do
     archive =
       rewrite(context, export(context), fn

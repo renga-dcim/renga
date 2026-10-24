@@ -497,6 +497,7 @@ defmodule Renga.Transfers.Import do
 
   defp insert_type!(state, %{name: "organization_security_settings"} = type) do
     applied = state.archive |> Archive.records(type.name) |> Enum.filter(&adds_requirement?/1)
+    changed = Enum.filter(applied, &differs?(state.organization_id, &1["name"], true))
 
     # The source's value replaces the destination's row for the setting,
     # which can only have been off or already the same.
@@ -506,6 +507,7 @@ defmodule Renga.Transfers.Import do
     )
 
     insert_records!(applied, state, type)
+    Enum.each(changed, &record_setting_change!(state, &1["name"]))
     :ok
   end
 
@@ -518,6 +520,28 @@ defmodule Renga.Transfers.Import do
         state.archive |> Archive.records(type.name) |> insert_records!(state, type)
         :ok
     end
+  end
+
+  # Activity shows each change to a security setting, so a requirement the
+  # import turned on is recorded as one, by the owner importing; until then
+  # the setting was off.
+  defp record_setting_change!(state, name) do
+    %ChangeEvent{
+      organization_id: state.organization_id,
+      actor_user_id: state.import.imported_by_user_id
+    }
+    |> ChangeEvent.changeset(%{
+      kind: "security_setting_changed",
+      field: name,
+      old_value: %{"value" => false},
+      new_value: %{"value" => true},
+      metadata: %{
+        "reason" => "imported from #{state.import.source_slug}",
+        "import_id" => state.import.id
+      },
+      occurred_at: state.now
+    })
+    |> Repo.insert!()
   end
 
   # A record that refers to another of its type goes in after it, a level

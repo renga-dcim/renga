@@ -342,6 +342,7 @@ defmodule Renga.Release.CLITest do
 
       assert stdout =~ "into #{target.slug}"
       assert stdout =~ "#{owner.email} can invite people back"
+      refute stdout =~ "multi-factor"
       assert Repo.get_by!(Inventory.Resource, name: "moved").organization_id == target.id
 
       assert [%{metadata: %{"operator" => "operator: alice"}}] =
@@ -360,6 +361,30 @@ defmodule Renga.Release.CLITest do
 
       assert Repo.all(from event in Event, order_by: event.inserted_at, select: event.outcome) ==
                ~w(succeeded failed)
+    end
+
+    test "says when the imported organization requires multi-factor authentication",
+         context do
+      %{target: target, owner: owner, tmp_dir: tmp} = context
+      source = Renga.InventoryFixtures.organization_fixture()
+
+      Repo.insert!(%Renga.SecuritySettings.Setting{
+        organization_id: source.id,
+        name: "require_mfa",
+        value: %{"value" => true},
+        changed_by: "owner@example.com"
+      })
+
+      archive = Path.join(tmp, "mfa.tar.zst")
+      {:ok, _summary} = Export.write(source, archive)
+      Repo.delete!(source)
+
+      {0, stdout, ""} =
+        run(
+          ~w(import --organization #{target.slug} --input #{archive} --owner #{owner.email} --actor alice)
+        )
+
+      assert stdout =~ "#{target.slug} requires multi-factor authentication: #{owner.email}"
     end
 
     test "lists every problem with an invalid archive", context do

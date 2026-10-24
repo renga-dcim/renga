@@ -116,6 +116,14 @@ defmodule Renga.Transfers.ImportTest do
     |> Repo.all()
   end
 
+  # Security setting changes recorded at the destination, not imported.
+  defp setting_changes(organization) do
+    ChangeEvent
+    |> where(organization_id: ^organization.id, kind: "security_setting_changed")
+    |> Repo.all()
+    |> Enum.reject(& &1.metadata["imported"])
+  end
+
   defp count(schema, organization),
     do: Repo.aggregate(where(schema, organization_id: ^organization.id), :count)
 
@@ -301,6 +309,13 @@ defmodule Renga.Transfers.ImportTest do
 
     assert [%Setting{changed_by_user_id: nil}] =
              Repo.all(where(Setting, organization_id: ^target.id))
+
+    # The destination's Security history records the requirement turning
+    # on, beside the source's own history, which arrives marked imported.
+    assert [change] = setting_changes(target)
+    assert change.new_value == %{"value" => true}
+    assert change.metadata["import_id"] == imported.id
+    assert change.metadata["reason"] == "imported from #{context.source.slug}"
   end
 
   test "a security setting that would lift a requirement is held", context do
@@ -325,6 +340,7 @@ defmodule Renga.Transfers.ImportTest do
     assert {:ok, imported} = import_archive(path, target)
     assert SecuritySettings.require_mfa?(target.id)
     assert imported.held_settings["security"] == %{"require_mfa" => false}
+    assert setting_changes(target) == []
   end
 
   test "an import is refused while any of its IDs exists", context do

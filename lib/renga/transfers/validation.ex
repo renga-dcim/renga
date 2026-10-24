@@ -169,6 +169,7 @@ defmodule Renga.Transfers.Validation do
       |> scan(type.name, fn record, line, context ->
         messages =
           record_messages(record, type.fields, columns) ++
+            shape_messages(type.name, record) ++
             note_keys(context, type.name, keys, record, line, columns)
 
         add(context, type.name, line, messages)
@@ -176,6 +177,15 @@ defmodule Renga.Transfers.Validation do
       |> continue()
     end)
   end
+
+  # Shapes the import reads beyond a column's type. A security setting
+  # wraps its value as `{"value": ...}`, as `Renga.SecuritySettings` stores
+  # it.
+  defp shape_messages("organization_security_settings", %{"value" => value})
+       when not (is_map(value) and is_map_key(value, "value")),
+       do: [~s(field "value" is not an object with a "value" key)]
+
+  defp shape_messages(_type, _record), do: []
 
   # Notes the record's keys for references to resolve. The first is its
   # primary key, which no other record of the type may repeat. A key with a
