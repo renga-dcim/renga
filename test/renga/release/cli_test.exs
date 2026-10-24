@@ -363,6 +363,29 @@ defmodule Renga.Release.CLITest do
                ~w(succeeded failed)
     end
 
+    test "imports a copy beside the original with --copy", context do
+      %{target: target, owner: owner, tmp_dir: tmp} = context
+      source = Renga.InventoryFixtures.organization_fixture()
+
+      {:ok, original} =
+        Inventory.create_resource(Accounts.scope_for(source), %{kind: "server", name: "kept"})
+
+      archive = Path.join(tmp, "kept.tar.zst")
+      {:ok, _summary} = Export.write(source, archive)
+      args = ~w(import --organization #{target.slug} --input #{archive} --owner #{owner.email})
+
+      {1, "", stderr} = run(args ++ ~w(--actor alice))
+      assert stderr =~ "already exist in this deployment"
+      assert stderr =~ "--copy"
+
+      {0, stdout, ""} = run(args ++ ~w(--actor alice --copy))
+      assert stdout =~ "into #{target.slug}"
+
+      copy = Repo.get_by!(Inventory.Resource, organization_id: target.id, name: "kept")
+      assert copy.id != original.id
+      assert Repo.get!(Inventory.Resource, original.id).organization_id == source.id
+    end
+
     test "says when the imported organization requires multi-factor authentication",
          context do
       %{target: target, owner: owner, tmp_dir: tmp} = context

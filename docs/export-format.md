@@ -163,7 +163,12 @@ can.
 `Renga.Transfers.Import` writes a valid archive into an organization that is
 still empty, in one transaction: either every record lands or nothing does.
 Records keep their IDs and timestamps, so an import is refused while any of
-its IDs exists in the deployment. At the destination:
+its IDs exists in the deployment, unless the importer asks for a copy
+(`renga-admin import --copy`). A copy gives every record a new ID and
+rewrites every ID column and every ID inside a JSON value to match, and the
+source organization's ID becomes the destination's; links to the source's
+records do not carry over. Either way, the import holds the organization so
+that every other write to it waits, and at the destination:
 
 - resource revisions and cable and module event sequence numbers are
   allocated again, in the source's order;
@@ -182,6 +187,7 @@ its IDs exists in the deployment. At the destination:
   setting applies only when it adds a requirement, such as requiring MFA,
   and the destination's Activity records it as turned on by the import; a
   security setting that would lift a requirement is held under `security`.
+  Owners confirm or dismiss held settings in Settings → Import.
 
 ### Bringing people back
 

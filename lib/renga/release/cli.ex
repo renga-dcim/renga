@@ -28,6 +28,7 @@ defmodule Renga.Release.CLI do
     renga-admin export --organization SLUG --output FILE --actor NAME
                        [--history] [--raw-observations]
     renga-admin import --organization SLUG --input FILE --owner EMAIL --actor NAME
+                       [--copy]
 
   Changes, exports, and imports need --actor, the person running them, which the
   deployment audit log records with an invocation ID. --scope SCOPE may also
@@ -165,13 +166,18 @@ defmodule Renga.Release.CLI do
   # importing; they invite everyone else back afterwards.
   def run(["import" | args]) do
     with {:ok, context, opts, rest, invalid} <-
-           parse_change(args, organization: :string, input: :string, owner: :string),
+           parse_change(args,
+             organization: :string,
+             input: :string,
+             owner: :string,
+             copy: :boolean
+           ),
          :ok <- audited(context, "organization.import", no_extra_args(rest, invalid)),
          {:ok, organization} <- audited_organization(context, "organization.import", opts),
          {:ok, input} <- audited(context, "organization.import", input_file(opts[:input])),
          {:ok, owner} <-
            audited(context, "organization.import", import_owner(organization, opts[:owner])) do
-      import_archive(organization, input, owner, context)
+      import_archive(organization, input, owner, context, opts[:copy] == true)
     end
   end
 
@@ -190,12 +196,13 @@ defmodule Renga.Release.CLI do
     end
   end
 
-  defp import_archive(organization, input, owner, context) do
+  defp import_archive(organization, input, owner, context, copy?) do
     details = %{organization: organization, target_id: organization.id}
 
     case Import.run(organization, input,
            operator: DeploymentAudit.actor_label(context),
-           imported_by_user_id: owner.id
+           imported_by_user_id: owner.id,
+           copy: copy?
          ) do
       {:ok, imported} ->
         :ok = DeploymentAudit.succeeded(context, "organization.import", details)
@@ -248,7 +255,7 @@ defmodule Renga.Release.CLI do
     counts = Enum.map_join(counts, ", ", fn {type, count} -> "#{count} #{type}" end)
 
     "records in the archive already exist in this deployment (#{counts}); " <>
-      "remove the original organization first"
+      "remove the original organization first, or import a copy with new IDs with --copy"
   end
 
   defp input_file(nil), do: error("--input FILE is required")

@@ -1179,7 +1179,8 @@ defmodule Renga.Topology.NeighborReconciler do
     }
   end
 
-  defp evidence_identity_key(item) do
+  @doc false
+  def evidence_identity_key(item) do
     item
     |> evidence_identity()
     |> :erlang.term_to_binary()

@@ -382,6 +382,254 @@ defmodule Renga.Transfers.ImportTest do
     refute Repo.exists?(where(OrganizationImport, organization_id: ^target.id))
   end
 
+  test "a copy gives every record a new ID and keeps what refers to it", context do
+    [expected] = Renga.Catalog.list_expected_components(context.owner, context.server.id)
+
+    gap_key =
+      "assignment:#{expected.hardware_assignment_id}:template:#{expected.component_template_id}"
+
+    assert {:ok, _} =
+             Renga.Findings.accept_component_gap(context.owner, context.server.id, gap_key, %{
+               "exception_reason" => "DIMM out for RMA",
+               "exception_expires_at" => DateTime.add(Renga.Time.utc_now_ms(), 7, :day)
+             })
+
+    {:ok, observation} =
+      Inventory.create_observation(context.owner, context.agent.source_id, %{
+        idempotency_key: "copy-gap",
+        observed_at: Renga.Time.utc_now_ms(),
+        payload: %{}
+      })
+
+    assert :ok =
+             Renga.Catalog.reconcile_component_findings(
+               context.owner,
+               observation,
+               context.server,
+               component_snapshot_complete?: true,
+               component_snapshot_current?: true
+             )
+
+    path = export(context)
+    target = target()
+
+    assert {:ok, %OrganizationImport{copy: true} = imported} =
+             import_archive(path, target, copy: true)
+
+    # The source stays as it was, beside its copy.
+    assert Repo.get!(Resource, context.server.id).organization_id == context.source.id
+    copy = Repo.get_by!(Resource, organization_id: target.id, name: context.server.name)
+    assert copy.id != context.server.id
+
+    %{scope: scope} = job_organization_for(target)
+
+    assert %{sections: [%{rows: [%{gap: %{exception_reason: "DIMM out for RMA"}}]}]} =
+             Renga.Catalog.hardware_comparison(scope, copy.id)
+
+    [finding] = Renga.Catalog.list_component_findings(scope, copy.id)
+
+    copied_source =
+      Repo.one!(from s in Inventory.Source, where: s.organization_id == ^target.id, limit: 1)
+
+    {:ok, copied_observation} =
+      Inventory.create_observation(scope, copied_source.id, %{
+        idempotency_key: "copy-gap-next",
+        observed_at: Renga.Time.utc_now_ms(),
+        payload: %{}
+      })
+
+    assert :ok =
+             Renga.Catalog.reconcile_component_findings(scope, copied_observation, copy,
+               component_snapshot_complete?: true,
+               component_snapshot_current?: true
+             )
+
+    assert [same_finding] = Renga.Catalog.list_component_findings(scope, copy.id)
+    assert same_finding.id == finding.id
+
+    assert Map.has_key?(
+             Renga.Findings.component_exceptions(scope, copy.id),
+             {finding.kind, finding.resolution_key}
+           )
+
+    assert [%ChangeEvent{metadata: %{"copy" => true, "import_id" => import_id}}] =
+             Repo.all(where(ChangeEvent, organization_id: ^target.id, kind: "imported"))
+
+    assert import_id == imported.id
+
+    # Exported again, the copy holds the same records, refers only to its
+    # own, and names no ID of the source's anywhere, JSON included.
+    again = Path.join(context.tmp_dir, "copy.tar.zst")
+    {:ok, _summary} = Export.write(Repo.get!(Organization, target.id), again, parts: ~w(history))
+    {:ok, source_archive} = Archive.open(path, tmp_dir: Path.join(context.tmp_dir, "source"))
+    {:ok, copy_archive} = Archive.open(again, tmp_dir: Path.join(context.tmp_dir, "copy"))
+    on_exit(fn -> Enum.each([source_archive, copy_archive], &Archive.close/1) end)
+
+    assert :ok = Validation.validate(copy_archive)
+
+    for type <- ~w(resources resource_revisions cables jobs job_events resource_group_members
+                   component_templates target_bindings installation_keys) do
+      assert record_count(copy_archive, type) == record_count(source_archive, type), type
+    end
+
+    source_ids =
+      for type <- Archive.record_types(source_archive),
+          type != "principals",
+          %{"id" => id} <- Archive.records(source_archive, type),
+          is_binary(id),
+          into: MapSet.new([context.source.id]),
+          do: String.downcase(id)
+
+    leaked =
+      for type <- Archive.record_types(copy_archive),
+          record <- Archive.records(copy_archive, type),
+          value <- strings(record),
+          String.downcase(value) in source_ids,
+          do: {type, value}
+
+    assert leaked == []
+  end
+
+  test "copying preserves textual and hashed finding identities with their workflows", context do
+    scope = context.owner
+    {device, ports} = device_fixture(scope, "server", "identity-keys", ~w(eth0 eth1))
+    group = vlan_group_fixture(scope, "copy-keys")
+    vlan = vlan_fixture(scope, group, 42, "Copy VLAN")
+    vrf = vrf_fixture(scope, "Copy VRF")
+    {:ok, ip} = Renga.IPAM.create_ip_address(scope, %{address: "192.0.2.9/24"})
+
+    # These rows use the producers' identity grammars. Details supply an
+    # independent expectation after copying, not the importer's key parser.
+    cases = [
+      {Topology.TopologyFinding, "topology", "desired_vlan_drift", "drift:#{vlan.id}",
+       %{"id" => vlan.id}, fn d -> "drift:#{d["id"]}" end},
+      {Topology.TopologyFinding, "topology", "asymmetric_neighbor",
+       Enum.sort([ports["eth0"].id, ports["eth1"].id]) |> Enum.join(":"),
+       %{"a" => ports["eth0"].id, "b" => ports["eth1"].id},
+       fn d -> Enum.sort([d["a"], d["b"]]) |> Enum.join(":") end},
+      {Topology.TopologyFinding, "topology", "neighbor_mismatch",
+       "#{ports["eth0"].id}:#{ports["eth1"].id}",
+       %{"a" => ports["eth0"].id, "b" => ports["eth1"].id}, fn d -> "#{d["a"]}:#{d["b"]}" end},
+      {Renga.IPAM.AddressFinding, "address", "stale_managed_assignment", ip.id, %{"id" => ip.id},
+       & &1["id"]},
+      {Renga.IPAM.AddressFinding, "address", "outside_prefix", "vrf:#{vrf.id}:2001:db8::9",
+       %{"id" => vrf.id}, fn d -> "vrf:#{d["id"]}:2001:db8::9" end}
+    ]
+
+    for {schema, domain, kind, key, details, _expected} <- cases do
+      Repo.insert!(
+        struct!(schema,
+          organization_id: context.source.id,
+          interface_id: ports["eth0"].id,
+          kind: kind,
+          resolution_key: key,
+          message: "Copy identity",
+          details: details,
+          last_observed_at: Renga.Time.utc_now_ms()
+        )
+      )
+
+      Repo.insert!(%Renga.Findings.Workflow{
+        organization_id: context.source.id,
+        resource_id: device.id,
+        domain: domain,
+        subject_id: ports["eth0"].id,
+        kind: kind,
+        resolution_key: key,
+        snoozed_until: DateTime.add(Renga.Time.utc_now_ms(), 7, :day)
+      })
+    end
+
+    report_neighbors(scope, device, %{"eth1" => [{"unknown-copy-neighbor", "port-1"}]})
+
+    {findings, _} =
+      Renga.Findings.list_findings(scope, domain: "topology", kind: "ambiguous_remote_identity")
+
+    [neighbor] = findings
+
+    assert {:ok, _} =
+             Renga.Findings.snooze(
+               scope,
+               neighbor,
+               DateTime.add(Renga.Time.utc_now_ms(), 7, :day)
+             )
+
+    path =
+      context
+      |> export([])
+      |> rewrite(context, "interface_neighbor_evidence", fn records ->
+        Enum.map(records, fn record ->
+          record
+          |> Map.update!("source_id", &String.upcase/1)
+          |> Map.update!("local_interface_id", &String.upcase/1)
+        end)
+      end)
+
+    target = target()
+    assert {:ok, _} = import_archive(path, target, copy: true)
+
+    for {schema, domain, kind, old_key, _details, expected} <- cases do
+      finding = Repo.get_by!(schema, organization_id: target.id, kind: kind)
+      assert finding.resolution_key != old_key
+      assert finding.resolution_key == expected.(finding.details)
+
+      workflow =
+        Repo.get_by!(Renga.Findings.Workflow,
+          organization_id: target.id,
+          domain: domain,
+          kind: kind
+        )
+
+      assert workflow.resolution_key == finding.resolution_key
+      assert workflow.snoozed_until
+    end
+
+    copied_scope = Renga.Accounts.scope_for(target)
+
+    {[copied_neighbor], 1} =
+      Renga.Findings.list_findings(copied_scope,
+        domain: "topology",
+        kind: "ambiguous_remote_identity",
+        state: "snoozed"
+      )
+
+    assert copied_neighbor.resolution_key != neighbor.resolution_key
+    evidence = Repo.get_by!(Topology.InterfaceNeighborEvidence, organization_id: target.id)
+
+    assert copied_neighbor.resolution_key ==
+             Topology.NeighborReconciler.evidence_identity_key(evidence)
+  end
+
+  # A copy swaps the interfaces of these types when new IDs turn their
+  # order; a new constraint like theirs needs the same.
+  test "a copy knows every constraint that orders two IDs" do
+    %{rows: rows} =
+      Repo.query!("""
+      SELECT conrelid::regclass::text, pg_get_constraintdef(oid) FROM pg_constraint
+      WHERE contype = 'c' AND connamespace = current_schema()::regnamespace
+        AND pg_get_constraintdef(oid) ~ '_id [<>] '
+      ORDER BY 1
+      """)
+
+    assert rows ==
+             for(
+               table <- ~w(cable_assertions cable_plans cables current_interface_adjacencies),
+               do: [table, "CHECK ((interface_a_id < interface_b_id))"]
+             )
+  end
+
+  defp record_count(archive, type),
+    do: archive.manifest["files"][Archive.record_file(type)]["records"]
+
+  # Every string in a record, map keys included, however deep.
+  defp strings(value) when is_binary(value), do: [value]
+  defp strings(values) when is_list(values), do: Enum.flat_map(values, &strings/1)
+
+  defp strings(map) when is_map(map),
+    do: Enum.flat_map(map, fn {key, value} -> strings(key) ++ strings(value) end)
+
+  defp strings(_value), do: []
+
   test "only an empty organization takes an import", context do
     path = export_and_remove(context)
     target = target()
