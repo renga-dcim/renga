@@ -11,6 +11,7 @@ defmodule Renga.Transfers.ImportLockingTest do
   alias Renga.Accounts.Organization
   alias Renga.Accounts.OrganizationMembership
   alias Renga.Inventory
+  alias Renga.Inventory.ResourceStore
   alias Renga.Repo
   alias Renga.Teams.Team
   alias Renga.Transfers.Export
@@ -157,6 +158,42 @@ defmodule Renga.Transfers.ImportLockingTest do
 
       assert {:ok, _resource} = Task.await(writer)
       assert {:error, :not_empty} = Task.await(importer)
+    end)
+  end
+
+  test "the revisions an import takes keep only its own organization waiting", %{
+    tmp_dir: tmp
+  } do
+    with_organizations(tmp, fn _path, target, _owner ->
+      other = organization("other")
+      parent = self()
+
+      # As the import does, under the target's revision lock.
+      holder =
+        write(fn ->
+          Repo.transaction(fn ->
+            ResourceStore.allocate_revisions!(target.id, 10_000)
+            send(parent, :allocated)
+            receive do: (:done -> :ok)
+          end)
+        end)
+
+      try do
+        assert_receive :allocated, 10_000
+        create = &Inventory.create_resource(Accounts.scope_for(&1), %{kind: "server", name: "x"})
+        elsewhere = write(fn -> create.(other) end)
+        here = write(fn -> create.(target) end)
+
+        assert {:ok, {:ok, _resource}} = Task.yield(elsewhere, 5_000)
+        assert Task.yield(here, 300) == nil
+
+        send(holder.pid, :done)
+        assert {:ok, :ok} = Task.await(holder)
+        assert {:ok, _resource} = Task.await(here)
+      after
+        send(holder.pid, :done)
+        Repo.delete!(other)
+      end
     end)
   end
 
