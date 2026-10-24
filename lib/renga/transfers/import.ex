@@ -8,7 +8,10 @@ defmodule Renga.Transfers.Import do
   transaction, holding the organization's row and its revision lock,
   rechecks that the organization is empty and that no archive ID exists
   anywhere in the deployment, and writes every record type in dependency
-  order. The import lands whole or the organization stays as it was.
+  order. The import lands whole or the organization stays as it was. Every
+  other write to the organization waits for it: inserts check a foreign key
+  that ends at the locked organization row, and the few rows an empty
+  organization holds are locked as well. Broadcasts happen after commit.
 
   Records keep their IDs and timestamps, with these exceptions:
 
@@ -153,6 +156,7 @@ defmodule Renga.Transfers.Import do
     ])
 
     organization = lock_organization!(state.organization_id)
+    lock_existing!(state)
     Keyword.get(state.opts, :authorize, fn -> :ok end).()
     ensure_empty!(state)
     ensure_no_collisions!(state)
@@ -175,6 +179,18 @@ defmodule Renga.Transfers.Import do
     |> where([organization], organization.id == ^organization_id)
     |> lock("FOR UPDATE")
     |> Repo.one!()
+  end
+
+  # Every insert into an organization-owned table checks a foreign key that
+  # ends at the organization's row, which the import holds FOR UPDATE, so
+  # those inserts wait for it. The rows an empty organization may already
+  # hold are locked too, so nothing changes them while the import runs.
+  defp lock_existing!(state) do
+    for table <- @allowed_before do
+      Repo.query!("SELECT 1 FROM #{table} WHERE organization_id = $1 FOR UPDATE", [
+        Ecto.UUID.dump!(state.organization_id)
+      ])
+    end
   end
 
   ## Preconditions
