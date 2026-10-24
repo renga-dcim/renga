@@ -155,16 +155,13 @@ defmodule RengaWeb.ConnCase do
   the redirect's `{path, flash}` like `Phoenix.LiveViewTest.assert_redirect/1`.
 
   `assert_redirect/1` alone gives the view ExUnit's `assert_receive_timeout`
-  (100 ms) to handle the message, which a busy CI runner can exceed. The
-  view exits once it has redirected, so wait for that instead.
+  (100 ms) to handle the message, which a busy CI runner can exceed. Allow
+  both the view and test proxy time to deliver the redirect, but still fail
+  within five seconds when no redirect arrives.
   """
   def send_and_assert_redirect(view, message) do
-    ref = Process.monitor(view.pid)
     send(view.pid, message)
-
-    receive do
-      {:DOWN, ^ref, :process, _pid, _reason} -> Phoenix.LiveViewTest.assert_redirect(view)
-    end
+    Phoenix.LiveViewTest.assert_redirect(view, 5_000)
   end
 
   defp maybe_set_token_authenticated_at(_token, nil), do: nil
