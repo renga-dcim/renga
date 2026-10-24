@@ -211,6 +211,15 @@ defmodule Renga.Release.CLI do
               "Settings held for an owner to confirm: #{Renga.JSON.encode!(imported.held_settings)}"
             )
 
+        # An imported requirement applies at once, to the owner too.
+        if Renga.SecuritySettings.require_mfa?(organization.id),
+          do:
+            IO.puts(
+              "#{organization.slug} requires multi-factor authentication: #{owner.email} and " <>
+                "everyone invited back need a passkey, an authenticator code, or an identity " <>
+                "provider that enforces MFA to open it."
+            )
+
         IO.puts("#{owner.email} can invite people back from Settings → Members.")
 
         0
