@@ -51,6 +51,7 @@ defmodule Renga.Transfers.Import do
   alias Renga.Jobs
   alias Renga.Repo
   alias Renga.SecuritySettings
+  alias Renga.Topology.NeighborReconciler
   alias Renga.Transfers.Archive
   alias Renga.Transfers.OrganizationImport
   alias Renga.Transfers.RecordTypes
@@ -444,6 +445,27 @@ defmodule Renga.Transfers.Import do
       |> Stream.each(&:ets.insert(state.map, {{:copy, uuid(&1["id"])}, Ecto.UUID.generate()}))
       |> Stream.run()
     end
+
+    # Neighbor identities hash source/interface IDs with external endpoint
+    # names. Rebuild through the producer rather than trying to edit a digest.
+    for record <- Archive.records(state.archive, "interface_neighbor_evidence") do
+      evidence =
+        Map.new(
+          ~w(source_id local_interface_id protocol remote_chassis_id_kind remote_chassis_id_normalized remote_port_id_kind remote_port_id_normalized)a,
+          &{&1, record[Atom.to_string(&1)]}
+        )
+
+      copy = %{
+        evidence
+        | source_id: copied(state, evidence.source_id),
+          local_interface_id: copied(state, evidence.local_interface_id)
+      }
+
+      :ets.insert(state.map, {
+        {:neighbor_key, NeighborReconciler.evidence_identity_key(evidence)},
+        NeighborReconciler.evidence_identity_key(copy)
+      })
+    end
   end
 
   # The archive's records of `type`; in a copy, with every ID they hold,
@@ -456,7 +478,12 @@ defmodule Renga.Transfers.Import do
 
     state.archive
     |> Archive.records(type)
-    |> Stream.map(&(&1 |> copy_record(state, columns) |> canonical(type)))
+    |> Stream.map(
+      &(&1
+        |> copy_record(state, columns)
+        |> copy_finding_key(state, type)
+        |> canonical(type))
+    )
   end
 
   defp copy_record(record, state, columns) do
@@ -466,6 +493,110 @@ defmodule Renga.Transfers.Import do
         _column -> {field, value}
       end
     end)
+  end
+
+  # Finding identities are domain references encoded in text, not free text.
+  # Keep their grammar (including directional versus canonical endpoint pairs)
+  # so reconciliation still finds the copied workflow.
+  defp copy_finding_key(%{"resolution_key" => key, "kind" => kind} = record, state, type) do
+    domain =
+      case type do
+        "finding_workflows" -> record["domain"]
+        "component_findings" -> "component"
+        "topology_findings" -> "topology"
+        "address_findings" -> "address"
+        "power_findings" -> "power"
+        _other -> nil
+      end
+
+    Map.put(record, "resolution_key", copy_resolution_key(state, domain, kind, key))
+  end
+
+  defp copy_finding_key(record, _state, _type), do: record
+
+  defp copy_resolution_key(state, "component", _kind, key) do
+    case String.split(key, ":") do
+      ["assignment", assignment, type, id] when type in ~w(template exception) ->
+        "assignment:#{copied(state, assignment)}:#{type}:#{copied(state, id)}"
+
+      [type, id] when type in ~w(evidence actual) ->
+        "#{type}:#{copied(state, id)}"
+
+      ["module", source, digest] ->
+        "module:#{copied(state, source)}:#{digest}"
+
+      _other ->
+        key
+    end
+  end
+
+  defp copy_resolution_key(state, "topology", kind, key)
+       when kind in ~w(ambiguous_remote_identity expired_adjacency) do
+    case :ets.lookup(state.map, {:neighbor_key, key}) do
+      [{_key, copy}] -> copy
+      [] -> key
+    end
+  end
+
+  defp copy_resolution_key(state, "topology", kind, key) do
+    case String.split(key, ":") do
+      [prefix, "power", port, target] when prefix in ~w(plan cable) ->
+        "#{prefix}:power:#{copied(state, port)}:#{copied(state, target)}"
+
+      ["power", port, target] ->
+        "power:#{copied(state, port)}:#{copied(state, target)}"
+
+      [prefix, a, b] when prefix in ~w(plan cable) ->
+        "#{prefix}:#{copied_pair(state, a, b)}"
+
+      [a, b] when kind in ~w(asymmetric_neighbor cable_endpoint_conflict) ->
+        copied_pair(state, a, b)
+
+      [a, b] when kind == "neighbor_mismatch" ->
+        "#{copied(state, a)}:#{copied(state, b)}"
+
+      [prefix, id] when prefix in ~w(evidence drift) ->
+        "#{prefix}:#{copied(state, id)}"
+
+      _other ->
+        copy_key_prefix(state, key)
+    end
+  end
+
+  defp copy_resolution_key(state, "address", _kind, "vrf:" <> rest = key) do
+    case String.split(rest, ":", parts: 2) do
+      [id, address] -> "vrf:#{copied(state, id)}:#{address}"
+      _other -> key
+    end
+  end
+
+  defp copy_resolution_key(state, "power", "suggested_connection", key) do
+    case String.split(key, ":") do
+      [port, outlet] -> "#{copied(state, port)}:#{copied(state, outlet)}"
+      _other -> key
+    end
+  end
+
+  defp copy_resolution_key(state, "power", kind, key)
+       when kind in ~w(path_incomplete unexpected_draw),
+       do: copied(state, key)
+
+  defp copy_resolution_key(state, domain, _kind, key) when domain in ~w(address collector),
+    do: copy_key_prefix(state, key)
+
+  defp copy_resolution_key(_state, _domain, _kind, key), do: key
+
+  defp copied_pair(state, a, b),
+    do: [copied(state, a), copied(state, b)] |> Enum.sort() |> Enum.join(":")
+
+  defp copy_key_prefix(state, key) do
+    case String.split(key, ":", parts: 2) do
+      [id, rest] ->
+        "#{copied(state, id)}:#{rest}"
+
+      [id] ->
+        copied(state, id)
+    end
   end
 
   # These keep a link's two interfaces in ID order, which new IDs can turn.
