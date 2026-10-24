@@ -208,7 +208,8 @@ defmodule Renga.Release.CLI do
         if imported.held_settings != %{},
           do:
             IO.puts(
-              "Settings held for an owner to confirm: #{Renga.JSON.encode!(imported.held_settings)}"
+              "Settings held for an owner to confirm in Settings → Import: " <>
+                Renga.JSON.encode!(imported.held_settings)
             )
 
         # An imported requirement applies at once, to the owner too.

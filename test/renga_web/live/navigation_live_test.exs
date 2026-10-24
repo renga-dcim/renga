@@ -106,6 +106,7 @@ defmodule RengaWeb.NavigationLiveTest do
              "/settings/queries",
              "/settings/limits",
              "/settings/export",
+             "/settings/import",
              "/organizations",
              "/settings/appearance",
              "/users/settings"

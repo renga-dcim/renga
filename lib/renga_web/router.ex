@@ -263,6 +263,7 @@ defmodule RengaWeb.Router do
       live "/settings/queries", QuerySettingsLive, :index
       live "/settings/security", SecurityLive, :index
       live "/settings/export", ExportLive, :index
+      live "/settings/import", ImportLive, :index
     end
 
     get "/settings/export/:id/download", ExportController, :download

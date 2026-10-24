@@ -171,6 +171,9 @@ defmodule RengaWeb.Navigation do
         section(:export, "Export", ~p"/settings/export", "hero-arrow-down-tray",
           keywords: ~w(backup download archive move migrate data)
         ),
+        section(:import, "Import", ~p"/settings/import", "hero-arrow-up-tray",
+          keywords: ~w(restore move migrate archive held settings confirm)
+        ),
         section(:organizations, "Organizations", ~p"/organizations", "hero-building-office",
           keywords: ~w(switch workspace)
         ),
