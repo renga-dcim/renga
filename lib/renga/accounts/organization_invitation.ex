@@ -38,6 +38,8 @@ defmodule Renga.Accounts.OrganizationInvitation do
     belongs_to :accepted_by_user, User
     belongs_to :revoked_by_user, User
     belongs_to :invited_by_operator_token, Renga.Operators.OperatorToken
+    # Set when the invitation brings back an imported person (RFD 20).
+    belongs_to :imported_principal, Renga.Transfers.ImportedPrincipal
 
     timestamps()
   end
