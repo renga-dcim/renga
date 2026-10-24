@@ -416,6 +416,64 @@ defmodule RengaWeb.MemberLiveTest do
     end
   end
 
+  describe "imported people" do
+    @describetag :tmp_dir
+
+    # The source had Ada, an active admin, and Bo, a disabled member; it is
+    # exported, removed, and imported into a target with its own owner.
+    setup %{tmp_dir: tmp_dir} do
+      source = organization_fixture()
+      {_conn, source_owner} = member(source, "owner")
+      {_conn, ada} = member(source, "admin")
+      {_conn, bo} = member(source, "member")
+      {:ok, _bo} = Members.disable_member(source_owner, bo.membership_id)
+
+      path = Path.join(tmp_dir, "source.tar.zst")
+      {:ok, _summary} = Renga.Transfers.Export.write(source, path, parts: [])
+      Renga.Repo.delete!(source)
+
+      target = organization_fixture()
+      {target_conn, target_owner} = member(target, "owner")
+
+      {:ok, _import} =
+        Renga.Transfers.Import.run(target, path,
+          imported_by_user_id: target_owner.user.id,
+          operator: "ops@example.com",
+          tmp_dir: tmp_dir
+        )
+
+      {member_conn, _member} = member(target, "member")
+
+      %{ada: ada, bo: bo, target_conn: target_conn, target_member_conn: member_conn}
+    end
+
+    test "owners invite back the people who were active members", context do
+      {:ok, view, _html} = live(context.target_conn, ~p"/settings/members")
+
+      assert has_element?(view, "#imported-people", context.ada.user.email)
+      refute has_element?(view, "#imported-people", context.bo.user.email)
+
+      principal =
+        Renga.Repo.get_by!(Renga.Transfers.ImportedPrincipal, source_id: context.ada.user.id)
+
+      row = "#imported-#{principal.id}"
+      assert has_element?(view, row, "admin")
+      assert has_element?(view, row, "Not sent")
+
+      view |> element("#{row}-invite") |> render_click()
+
+      assert_received {:email, %{to: [{_, email}], subject: "You're invited" <> _}}
+      assert email == context.ada.user.email
+      assert has_element?(view, row, "Sent")
+      assert has_element?(view, "#{row}-invite", "Send again")
+    end
+
+    test "members do not see imported people", context do
+      {:ok, view, _html} = live(context.target_member_conn, ~p"/settings/members")
+      refute has_element?(view, "#imported-people")
+    end
+  end
+
   defp member(organization, role) do
     user = user_fixture()
     organization_membership_fixture(user, organization, %{role: role})
