@@ -143,6 +143,10 @@ defmodule Renga.Transfers.RoundTripTest do
         path
       )
 
+    {:ok, packed} = Archive.open(path, tmp_dir: tmp)
+    assert packed.manifest["format_version"] == manifest["format_version"]
+    Archive.close(packed)
+
     {path, dir |> Path.join("fixture.json") |> File.read!() |> Jason.decode!()}
   end
 
