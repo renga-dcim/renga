@@ -38,7 +38,9 @@ defmodule Renga.Inventory.ChangeEvent do
              identity_provider_changed organization_domain_changed security_setting_changed
              capability_allowed capability_disallowed
              group_created group_updated group_deleted group_set_created group_set_updated
-             group_set_deleted group_member_added group_member_removed)
+             group_set_deleted group_member_added group_member_removed
+             export_started export_downloaded export_revoked
+             export_expired export_failed exported)
   @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
 
   schema "change_events" do

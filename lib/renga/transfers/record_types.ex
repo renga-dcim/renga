@@ -344,6 +344,7 @@ defmodule Renga.Transfers.RecordTypes do
       "sign-in routing to the organization's identity providers, which are not exported; the destination verifies its domains again",
     "organization_invitations" =>
       "pending invitations carry secrets; access returns through new invitations",
+    "organization_exports" => "the source's own exports and their archives",
     "organization_limits" => "operator policy of the source deployment",
     "scim_connections" =>
       "provisioning through one of the deployment's identity providers, set up at the destination",

@@ -106,7 +106,10 @@ source's `agent_id`, close a cycle and are set once both records exist.
   from, so an import reconciles the same way.
 - `history` adds Activity (`change_events`), `resource_revisions`, `jobs` and
   `job_events`, `cable_change_events`, and `module_installation_events`, and
-  the observations they point at.
+  the observations they point at. An owner's export from Settings holds a
+  query job's parameters, result, and agent reports only when the owner may
+  read them (RFD 12); otherwise `parameters` is `{}`, `result` is `null`, and
+  the reports' `payload` is `{}`. An operator's export holds them all.
 - `raw_observations` adds every other observation still within retention.
 
 ### Excluded

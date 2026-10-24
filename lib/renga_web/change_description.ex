@@ -337,6 +337,17 @@ defmodule RengaWeb.ChangeDescription do
   def describe(%{kind: "scim_grant_removed", metadata: metadata}),
     do: "SCIM removed #{metadata["member"]}'s access"
 
+  # RFD 20 exports of the whole organization.
+  def describe(%{kind: "export_started", metadata: %{"parts" => [_ | _] = parts}}),
+    do: "Started an organization export with #{Enum.map_join(parts, " and ", &part/1)}"
+
+  def describe(%{kind: "export_started"}), do: "Started an organization export"
+  def describe(%{kind: "export_downloaded"}), do: "Downloaded an organization export"
+  def describe(%{kind: "export_revoked"}), do: "Revoked an organization export"
+  def describe(%{kind: "export_expired"}), do: "An organization export expired and was deleted"
+  def describe(%{kind: "export_failed"}), do: "An organization export failed"
+  def describe(%{kind: "exported"}), do: "Exported the organization"
+
   # Job events read as "Inventory collection failed"; the job itself keeps
   # the full history.
   def describe(%{kind: "job_requested", metadata: metadata}),
@@ -454,4 +465,7 @@ defmodule RengaWeb.ChangeDescription do
   defp humanize("allow_sign_up"), do: "sign-up"
   defp humanize("session_lifetime_seconds"), do: "session lifetime"
   defp humanize(field), do: String.replace(field, "_", " ")
+
+  defp part("history"), do: "history"
+  defp part("raw_observations"), do: "all raw observations"
 end

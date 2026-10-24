@@ -26,6 +26,8 @@ defmodule Renga.Application do
         same_machine_sweeper(),
         collector_findings_worker(),
         assignment_expiry_worker(),
+        {Task.Supervisor, name: Renga.Transfers.TaskSupervisor},
+        transfer_expiry_worker(),
         organization_domain_worker(),
         job_sweeper(),
         job_history_purger(),
@@ -87,6 +89,11 @@ defmodule Renga.Application do
   defp organization_domain_worker do
     if Application.get_env(:renga, :organization_domain_worker_enabled, true),
       do: Renga.Accounts.OrganizationDomains.Worker
+  end
+
+  defp transfer_expiry_worker do
+    if Application.get_env(:renga, :transfer_expiry_worker_enabled, true),
+      do: Renga.Transfers.ExpiryWorker
   end
 
   defp assignment_expiry_worker do

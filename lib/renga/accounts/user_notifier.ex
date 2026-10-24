@@ -69,6 +69,29 @@ defmodule Renga.Accounts.UserNotifier do
     """)
   end
 
+  @doc """
+  Tells the person who started an organization export (RFD 20) that its
+  archive is ready to download from organization settings until it expires.
+  """
+  def deliver_export_ready(email, organization_name, expires_at, url) do
+    deliver(email, "Your export of #{organization_name} is ready", """
+
+    ==============================
+
+    Hi #{email},
+
+    The export of #{organization_name} you started is ready. Download it from
+    organization settings:
+
+    #{url}
+
+    It holds all of the organization's data, so keep it safe. It can be
+    downloaded until #{Calendar.strftime(expires_at, "%Y-%m-%d %H:%M UTC")}, when it is deleted.
+
+    ==============================
+    """)
+  end
+
   defp article("owner"), do: "an"
   defp article("admin"), do: "an"
   defp article(_role), do: "a"

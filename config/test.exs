@@ -75,6 +75,8 @@ config :renga, :telemetry_pruner_enabled, false
 # The sandbox has begun each test's transaction before an export could set
 # its isolation level; the export concurrency test runs outside it.
 config :renga, Renga.Transfers.Export, repeatable_read: false
+config :renga, Renga.Transfers, run_exports: :inline
+config :renga, :transfer_expiry_worker_enabled, false
 
 # Tests add an imperative capability to exercise retry classes.
 config :renga, Renga.Jobs.Registry, extra_capabilities: [Renga.Jobs.TestCapabilities.Restart]

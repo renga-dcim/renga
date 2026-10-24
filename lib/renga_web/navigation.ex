@@ -168,6 +168,9 @@ defmodule RengaWeb.Navigation do
         section(:limits, "Limits", ~p"/settings/limits", "hero-scale",
           keywords: ~w(quota usage rate capacity)
         ),
+        section(:export, "Export", ~p"/settings/export", "hero-arrow-down-tray",
+          keywords: ~w(backup download archive move migrate data)
+        ),
         section(:organizations, "Organizations", ~p"/organizations", "hero-building-office",
           keywords: ~w(switch workspace)
         ),
