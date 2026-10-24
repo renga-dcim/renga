@@ -158,6 +158,65 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
     |> evaluate(@fits, &assert(&1 == true))
   end
 
+  test "held import settings fit a phone and confirmation preserves keyboard focus", %{conn: conn} do
+    organization = organization_fixture()
+    owner = user_fixture()
+    organization_membership_fixture(owner, organization, %{role: "owner"})
+    capability = Renga.Jobs.Registry.keys_with_risk(:operate) |> List.first()
+
+    import =
+      Renga.Repo.insert!(%Renga.Transfers.OrganizationImport{
+        organization_id: organization.id,
+        source_organization_id: Ecto.UUID.generate(),
+        source_slug: "acme",
+        source_name: "Acme",
+        format_version: 1,
+        renga_version: "0.1.0",
+        snapshot_at: Renga.Time.utc_now_ms(),
+        records: 1,
+        sha256: String.duplicate("0", 64),
+        held_settings: %{
+          "jobs" => %{"allowed_capabilities" => [capability]},
+          String.duplicate("unknown", 50) => false
+        }
+      })
+
+    dom = "held-#{import.id}-0"
+    dialog = "#confirm-#{dom}"
+
+    conn
+    |> authenticated_conn(owner, organization)
+    |> visit("/settings/import")
+    |> assert_has("body .phx-connected")
+    |> evaluate(@fits, &assert(&1 == true))
+    |> evaluate(@buttons, &assert(tappable(&1)))
+    |> click_button("##{dom}-confirm", "Confirm")
+    |> assert_has("#{dialog} [role=alertdialog]")
+    |> evaluate(
+      "document.querySelector('#{dialog}').contains(document.activeElement)",
+      &assert(&1 == true)
+    )
+    |> press("#{dialog} [role=alertdialog]", "Escape")
+    |> refute_has("#{dialog} [role=alertdialog]")
+    |> assert_has("##{dom}-confirm:focus")
+    |> press(":focus", "Enter")
+    |> assert_has("#{dialog} [role=alertdialog]")
+    |> click_button("#{dialog}-cancel", "Cancel")
+    |> refute_has("#{dialog} [role=alertdialog]")
+    |> assert_has("##{dom}-confirm:focus")
+    |> press(":focus", "Enter")
+    |> assert_has("#{dialog} [role=alertdialog]")
+    |> click_button("#{dialog}-confirm", "Apply setting")
+    |> assert_has("#flash-info", text: "Applied:")
+    |> refute_has("##{dom}-confirm")
+    |> click_button("##{dom}-dismiss", "Dismiss")
+    |> assert_has("#import-none")
+
+    assert capability in Renga.Jobs.Settings.allowed_capabilities(
+             Renga.Repo.reload!(organization)
+           )
+  end
+
   test "member role assignments remain usable by touch and keyboard", %{conn: conn} do
     organization = organization_fixture()
     owner = user_fixture()
