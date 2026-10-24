@@ -192,13 +192,13 @@ defmodule Renga.Transfers.Validation do
   # missing or invalid value is not noted; that field has its own problem.
   defp note_keys(context, type, [primary | others], record, line, columns) do
     for fields <- others, values = values(record, fields), checkable?(fields, values, columns) do
-      :ets.insert(context.keys, {{type, fields, normalize(values)}, line})
+      :ets.insert(context.keys, {{type, fields, normalize(fields, values, columns)}, line})
     end
 
     values = values(record, primary)
 
     with true <- checkable?(primary, values, columns),
-         key = {type, primary, normalize(values)},
+         key = {type, primary, normalize(primary, values, columns)},
          false <- :ets.insert_new(context.keys, {key, line}) do
       [{_key, first}] = :ets.lookup(context.keys, key)
       ["has the same #{key_name(primary)} as line #{first}"]
@@ -212,9 +212,16 @@ defmodule Renga.Transfers.Validation do
   defp key_name(["id"]), do: "ID"
   defp key_name(fields), do: Enum.map_join(fields, " and ", &~s("#{&1}"))
 
-  # UUIDs compare case-insensitively, as PostgreSQL compares them.
-  defp normalize(values),
-    do: Enum.map(values, &if(is_binary(&1), do: String.downcase(&1), else: &1))
+  # UUIDs compare case-insensitively, as PostgreSQL compares them; every
+  # other value compares exactly.
+  defp normalize(fields, values, columns) do
+    Enum.zip_with(fields, values, fn field, value ->
+      case columns[field] do
+        %{type: "uuid"} when is_binary(value) -> String.downcase(value)
+        _column -> value
+      end
+    end)
+  end
 
   defp check_references(context) do
     Enum.reduce_while(context.types, context, fn type, context ->
@@ -245,7 +252,8 @@ defmodule Renga.Transfers.Validation do
         checkable?(reference.fields, values, columns),
         not :ets.member(
           context.keys,
-          {reference.target, reference.target_fields, normalize(values)}
+          {reference.target, reference.target_fields,
+           normalize(reference.fields, values, columns)}
         ) do
       case reference.fields do
         [field] ->
@@ -272,7 +280,10 @@ defmodule Renga.Transfers.Validation do
         names_person?(record, condition),
         value = Map.get(record, field),
         checkable?([field], [value], columns),
-        not :ets.member(context.keys, {"principals", ["id"], normalize([value])}) do
+        not :ets.member(
+          context.keys,
+          {"principals", ["id"], normalize([field], [value], columns)}
+        ) do
       ~s(field "#{field}" refers to principal #{value}, which principals.ndjson does not hold)
     end
   end
