@@ -94,18 +94,37 @@ defmodule Renga.Transfers.Principals do
   organization, so an invitation to it may bring that principal back.
   """
   def invitable?(organization_id, principal_id, email) do
-    ImportedPrincipal
-    |> where([principal], principal.id == ^principal_id)
-    |> where([principal], principal.organization_id == ^organization_id)
-    |> where([principal], is_nil(principal.user_id) and principal.email == ^email)
-    |> Repo.exists?()
+    case Repo.one(
+           from principal in ImportedPrincipal,
+             where:
+               principal.id == ^principal_id and principal.organization_id == ^organization_id,
+             where: is_nil(principal.user_id) and principal.email == ^email
+         ) do
+      %ImportedPrincipal{} = principal ->
+        is_binary(
+          returning_role(
+            principal,
+            held_memberships(organization_id, [principal_id])[principal_id]
+          )
+        )
+
+      nil ->
+        false
+    end
   end
 
   defp returning_role(%ImportedPrincipal{email: email}, _membership) when email in [nil, ""],
     do: nil
 
-  defp returning_role(_principal, %{"metadata" => %{"managed_by" => _directory}}), do: nil
-  defp returning_role(_principal, %{"status" => "active", "role" => role}), do: role
+  defp returning_role(_principal, %{"status" => "active", "role" => role} = record) do
+    case record["metadata"] do
+      nil -> role
+      %{"managed_by" => _directory} -> nil
+      metadata when is_map(metadata) -> role
+      _malformed -> nil
+    end
+  end
+
   defp returning_role(_principal, _membership), do: nil
 
   defp held_memberships(organization_id, principal_ids) do
@@ -125,34 +144,38 @@ defmodule Renga.Transfers.Principals do
   # after it has checked the invitation, the account, and the inviter.
   # Returns the restored membership and what else was restored, by type.
   def restore(%OrganizationInvitation{} = invitation, %User{} = user, now) do
-    case lock_unlinked(invitation) do
-      %ImportedPrincipal{} = principal ->
-        held = held_records(principal)
-        membership = restore_membership!(invitation, user, held, now)
-        links = links(invitation.organization_id, principal, user)
-        ceiling = inviter_ceiling(invitation)
+    with %ImportedPrincipal{} = principal <- lock_unlinked(invitation),
+         role when is_binary(role) <-
+           returning_role(
+             principal,
+             held_memberships(invitation.organization_id, [principal.id])[principal.id]
+           ) do
+      held = held_records(principal)
+      membership = restore_membership!(invitation, user, held, now)
+      links = links(invitation.organization_id, principal, user)
+      ceiling = inviter_ceiling(invitation)
 
-        applied =
-          Enum.filter(held, fn {_id, type, record} ->
-            restore_record?(type, record, membership, ceiling, now)
-          end)
-
-        Enum.each(applied, fn {_id, type, record} ->
-          restore_record!(type, record, invitation.organization_id, user, links)
+      applied =
+        Enum.filter(held, fn {_id, type, record} ->
+          restore_record?(type, record, membership, ceiling, now)
         end)
 
-        consumed = for {id, _type, _record} <- applied, do: id
-        delete_held!([membership_held_id(held) | consumed])
+      Enum.each(applied, fn {_id, type, record} ->
+        restore_record!(type, record, invitation.organization_id, user, links)
+      end)
 
-        principal
-        |> Ecto.Changeset.change(user_id: user.id, linked_at: now)
-        |> Repo.update!()
+      consumed = for {id, _type, _record} <- applied, do: id
+      delete_held!([membership_held_id(held) | consumed])
 
-        fill_attributions!(principal, user)
+      principal
+      |> Ecto.Changeset.change(user_id: user.id, linked_at: now)
+      |> Repo.update!()
 
-        {:ok, membership, applied |> Enum.frequencies_by(&elem(&1, 1))}
+      fill_attributions!(principal, user)
 
-      nil ->
+      {:ok, membership, applied |> Enum.frequencies_by(&elem(&1, 1))}
+    else
+      _ineligible ->
         {:error, :invalid}
     end
   end
