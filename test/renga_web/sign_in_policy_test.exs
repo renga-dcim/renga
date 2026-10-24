@@ -211,8 +211,7 @@ defmodule RengaWeb.SignInPolicyTest do
       Renga.Accounts.LocalSignInOverride
       |> Repo.update_all(set: [expires_at: DateTime.add(Renga.Time.utc_now_ms(), -1, :second)])
 
-      send(lv.pid, :refresh)
-      assert_redirect(lv, ~p"/recovery")
+      assert {"/recovery", _flash} = send_and_assert_redirect(lv, :refresh)
     end
 
     test "the recovery page sends people to log in once recovery ends", %{conn: conn} do
