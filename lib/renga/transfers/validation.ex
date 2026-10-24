@@ -31,6 +31,7 @@ defmodule Renga.Transfers.Validation do
   """
 
   alias Renga.Transfers.Archive
+  alias Renga.Transfers.Converters
   alias Renga.Transfers.RecordTypes
   alias Renga.Transfers.Schema
 
@@ -60,7 +61,8 @@ defmodule Renga.Transfers.Validation do
 
   defp file_problems(archive, types) do
     expected = Enum.map(types, & &1.name) ++ ~w(organization principals)
-    present = Archive.record_types(archive)
+    # A type added since the archive's format version is one it has none of.
+    present = Archive.record_types(archive) ++ Converters.added_types(archive.converters)
 
     missing =
       for type <- Enum.sort(expected -- present),

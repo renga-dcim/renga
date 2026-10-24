@@ -1,0 +1,12 @@
+{
+  "format_version": 1,
+  "organization": {
+    "id": "a83d4794-91c0-42ed-8ed3-d2c5cb70b340",
+    "name": "Acme Operations",
+    "slug": "acme-operations-3011"
+  },
+  "parts": [
+    "history"
+  ],
+  "snapshot_at": "2026-10-24T05:30:24.660000Z"
+}

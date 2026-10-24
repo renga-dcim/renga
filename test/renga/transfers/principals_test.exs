@@ -115,6 +115,41 @@ defmodule Renga.Transfers.PrincipalsTest do
     refute_received {:email, %{subject: "You're invited" <> _}}
   end
 
+  test "managed access cannot return through either invitation creation or acceptance", context do
+    assert {:ok, _invitation} = invite(context, context.ada)
+    token = token_from_email()
+    principal = principal(context, context.ada)
+
+    for metadata <- [
+          %{"managed_by" => "scim"},
+          %{"managed_by" => nil},
+          %{"managed_by" => false},
+          42,
+          "unexpected",
+          [%{}]
+        ] do
+      Repo.query!(
+        """
+        UPDATE imported_held_records SET record = jsonb_set(record, '{metadata}', $2::jsonb)
+        WHERE principal_id = $1 AND record_type = 'organization_memberships'
+        """,
+        [Ecto.UUID.dump!(principal.id), metadata]
+      )
+
+      assert %{role: nil} =
+               Enum.find(
+                 Principals.list_unlinked(context.inviter),
+                 &(&1.principal.id == principal.id)
+               )
+
+      assert {:error, :not_eligible} = invite(context, context.ada)
+      refute Principals.invitable?(context.target.id, principal.id, principal.email)
+      assert {:error, :invalid} = Members.accept_invitation(context.ada.user, token)
+      refute Repo.get(OrganizationMembership, context.ada.membership_id)
+      assert Repo.get!(ImportedPrincipal, principal.id).user_id == nil
+    end
+  end
+
   test "accepting links the person and restores what they had", context do
     assert {:ok, invitation} = invite(context, context.ada)
     assert invitation.role == "admin"

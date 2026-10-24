@@ -468,6 +468,25 @@ defmodule RengaWeb.MemberLiveTest do
       assert has_element?(view, "#{row}-invite", "Send again")
     end
 
+    test "malformed held membership metadata cannot break the members page", context do
+      principal =
+        Renga.Repo.get_by!(Renga.Transfers.ImportedPrincipal, source_id: context.ada.user.id)
+
+      for metadata <- [42, "unexpected", [%{}]] do
+        Renga.Repo.query!(
+          """
+          UPDATE imported_held_records SET record = jsonb_set(record, '{metadata}', $2::jsonb)
+          WHERE principal_id = $1 AND record_type = 'organization_memberships'
+          """,
+          [Ecto.UUID.dump!(principal.id), metadata]
+        )
+
+        {:ok, view, _html} = live(context.target_conn, ~p"/settings/members")
+        assert has_element?(view, "#members")
+        refute has_element?(view, "#imported-#{principal.id}-invite")
+      end
+    end
+
     test "members do not see imported people", context do
       {:ok, view, _html} = live(context.target_member_conn, ~p"/settings/members")
       refute has_element?(view, "#imported-people")

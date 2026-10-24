@@ -33,6 +33,7 @@ defmodule Renga.Transfers.Archive do
   """
 
   alias Renga.Transfers.Archive.Lines
+  alias Renga.Transfers.Converters
 
   @format "renga-organization-export"
   @format_version 1
@@ -52,9 +53,9 @@ defmodule Renga.Transfers.Archive do
 
   @chunk_bytes 64 * 1024
 
-  defstruct [:dir, :manifest]
+  defstruct [:dir, :manifest, converters: []]
 
-  @type t :: %__MODULE__{dir: Path.t(), manifest: map()}
+  @type t :: %__MODULE__{dir: Path.t(), manifest: map(), converters: [module()]}
   @type problem :: %{file: String.t() | nil, line: pos_integer() | nil, message: String.t()}
 
   @doc "The value of the manifest's `format` field."
@@ -101,7 +102,8 @@ defmodule Renga.Transfers.Archive do
              _ = File.rm(tar),
              {:ok, manifest} <- read_manifest(files, limits),
              :ok <- check_files(files, names, manifest, limits) do
-          {:ok, %__MODULE__{dir: files, manifest: manifest}}
+          {:ok, converters} = Converters.chain(manifest["format_version"], @format_version)
+          {:ok, %__MODULE__{dir: files, manifest: manifest, converters: converters}}
         end
       rescue
         exception ->
@@ -135,7 +137,7 @@ defmodule Renga.Transfers.Archive do
   decode as `Decimal`s, as `Renga.JSON` does, so precision survives.
   An archive without the record type streams nothing.
   """
-  def records(%__MODULE__{dir: dir, manifest: %{"files" => files}}, type) do
+  def records(%__MODULE__{dir: dir, manifest: %{"files" => files}} = archive, type) do
     file = record_file(type)
 
     if Map.has_key?(files, file) do
@@ -144,10 +146,17 @@ defmodule Renga.Transfers.Archive do
       |> File.stream!(@chunk_bytes)
       |> Lines.stream(:infinity)
       |> Stream.map(fn {:line, line} -> Renga.JSON.decode!(line) end)
+      |> convert(type, archive.converters)
     else
       []
     end
   end
+
+  # Records of an older format version, as this release's holds them.
+  defp convert(records, _type, []), do: records
+
+  defp convert(records, type, chain),
+    do: Stream.map(records, &Converters.convert(&1, type, chain))
 
   defp private_tmp_dir(opts) do
     base = Keyword.get_lazy(opts, :tmp_dir, &System.tmp_dir!/0)
@@ -444,7 +453,7 @@ defmodule Renga.Transfers.Archive do
           )
         ]
 
-      version < 1 or version < @format_version ->
+      version < 1 or Converters.chain(version, @format_version) == :error ->
         [manifest_problem("has format version #{version}, which this release cannot convert")]
 
       true ->

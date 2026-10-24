@@ -76,7 +76,8 @@ defmodule Renga.Transfers.Archive.Writer do
   working directory.
 
   `attrs` holds `:organization` (with `id`, `slug`, and `name`),
-  `:snapshot_at`, and `:parts`, the optional parts included.
+  `:snapshot_at`, and `:parts`, the optional parts included. A round-trip
+  fixture of an earlier format also gives its `:format_version`.
   """
   def finish(%__MODULE__{} = writer, attrs, path) do
     organization = Map.fetch!(attrs, :organization)
@@ -87,7 +88,7 @@ defmodule Renga.Transfers.Archive.Writer do
 
     manifest = %{
       "format" => Archive.format(),
-      "format_version" => Archive.format_version(),
+      "format_version" => Map.get(attrs, :format_version, Archive.format_version()),
       "renga_version" => renga_version(),
       "organization" => %{
         "id" => organization.id,

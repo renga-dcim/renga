@@ -630,6 +630,24 @@ defmodule Renga.Transfers.ImportTest do
 
   defp strings(_value), do: []
 
+  test "non-object membership metadata imports as ineligible reference data", context do
+    path = export_and_remove(context)
+
+    for metadata <- [42, "unexpected", [%{}]] do
+      rewritten =
+        rewrite(path, context, "organization_memberships", fn records ->
+          Enum.map(records, &Map.put(&1, "metadata", metadata))
+        end)
+
+      target = target()
+      assert {:ok, _} = import_archive(rewritten, target)
+      returning = Renga.Transfers.Principals.list_unlinked(Renga.Accounts.scope_for(target))
+      assert returning != []
+      assert Enum.all?(returning, &is_nil(&1.role))
+      Repo.delete!(target)
+    end
+  end
+
   test "only an empty organization takes an import", context do
     path = export_and_remove(context)
     target = target()

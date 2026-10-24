@@ -1,0 +1,1 @@
+{"id": "6c64ebfa-6045-4e69-9c88-3add48487a25", "type": "created", "job_id": "0230fd28-bdfe-4de6-bf4d-9d06779d73d3", "attempt": 0, "payload": {"capability": "inventory.collect@1"}, "actor_id": "d31bb397-d300-4002-9401-0b6328a5feac", "sequence": 1, "actor_type": "user", "inserted_at": "2026-10-24T05:30:24.894000Z", "report_sequence": null}
