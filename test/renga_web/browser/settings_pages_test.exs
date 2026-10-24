@@ -215,17 +215,29 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
     membership = organization_membership_fixture(member, organization, %{role: "viewer"})
     owner_scope = Renga.Accounts.scope_for_user(owner, organization.id)
 
-    {:ok, _assignment} =
+    {:ok, assignment} =
       Renga.Assignments.assign(owner_scope, membership.id, %{
         "role" => "admin",
-        "valid_until" => DateTime.add(Renga.Time.utc_now_ms(), 2, :second)
+        "valid_until" => DateTime.add(Renga.Time.utc_now_ms(), 1, :hour)
       })
 
-    conn
-    |> authenticated_conn(member, organization)
-    |> visit("/settings/members")
-    |> assert_has("body .phx-connected")
-    |> assert_has("#invite-member")
+    session =
+      conn
+      |> authenticated_conn(member, organization)
+      |> visit("/settings/members")
+      |> assert_has("body .phx-connected")
+      |> assert_has("#invite-member")
+
+    # Shorten the assignment only once the page shows it, so a slow page
+    # load cannot outlast it. The change notice makes the page schedule its
+    # expiry timer for the new deadline.
+    assignment
+    |> Ecto.Changeset.change(valid_until: DateTime.add(Renga.Time.utc_now_ms(), 1, :second))
+    |> Renga.Repo.update!()
+
+    Renga.Inventory.Changes.broadcast({:ok, assignment}, organization.id)
+
+    session
     |> refute_has("#invite-member", timeout: 5_000)
     |> assert_has("#members-read-only")
   end
