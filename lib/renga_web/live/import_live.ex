@@ -81,7 +81,13 @@ defmodule RengaWeb.ImportLive do
       {:ok, imports} ->
         imports =
           for {import, items} <- imports do
-            items = Enum.with_index(items, &Map.put(&1, :dom, "held-#{import.id}-#{&2}"))
+            # A live update must never reuse an open confirmation for another setting.
+            items =
+              Enum.map(items, fn item ->
+                key = :crypto.hash(:sha256, item.key) |> Base.url_encode64(padding: false)
+                Map.put(item, :dom, "held-#{import.id}-#{key}")
+              end)
+
             {import, items}
           end
 

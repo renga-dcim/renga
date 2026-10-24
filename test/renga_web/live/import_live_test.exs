@@ -38,6 +38,15 @@ defmodule RengaWeb.ImportLiveTest do
     })
   end
 
+  defp row_id(view, text) do
+    view
+    |> element("li[id^=held-]", text)
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.attribute("id")
+    |> hd()
+  end
+
   test "an owner confirms one held setting and dismisses another", %{conn: conn} do
     {conn, organization} = member_conn(conn, "owner")
     operate = Jobs.Registry.keys_with_risk(:operate) |> List.first()
@@ -50,19 +59,21 @@ defmodule RengaWeb.ImportLiveTest do
       })
 
     {:ok, view, _html} = live(conn, ~p"/settings/import")
+    capability_row = row_id(view, "Allow #{capability.title()}")
+    unknown_row = row_id(view, "Setting unknown")
 
     assert has_element?(view, "#import-#{import.id}", "From Acme")
-    assert has_element?(view, "#held-#{import.id}-0", "Allow #{capability.title()}")
-    assert has_element?(view, "#held-#{import.id}-1", "This version of Renga cannot apply it.")
-    refute has_element?(view, "#held-#{import.id}-1-confirm")
+    assert has_element?(view, "##{capability_row}", "Allow #{capability.title()}")
+    assert has_element?(view, "##{unknown_row}", "This version of Renga cannot apply it.")
+    refute has_element?(view, "##{unknown_row}-confirm")
 
-    view |> element("#confirm-held-#{import.id}-0-confirm") |> render_click()
+    view |> element("#confirm-#{capability_row}-confirm") |> render_click()
 
     assert render(view) =~ "Applied: Allow #{capability.title()}."
     assert operate in Jobs.Settings.allowed_capabilities(Repo.get!(Organization, organization.id))
-    assert has_element?(view, "#held-#{import.id}-0", "Setting unknown")
+    assert has_element?(view, "##{unknown_row}", "Setting unknown")
 
-    view |> element("#held-#{import.id}-0-dismiss") |> render_click()
+    view |> element("##{unknown_row}-dismiss") |> render_click()
 
     assert has_element?(view, "#import-none")
     assert Repo.get!(OrganizationImport, import.id).held_settings == %{}
@@ -81,13 +92,16 @@ defmodule RengaWeb.ImportLiveTest do
 
       {:ok, view, _html} = live(conn, ~p"/settings/import")
 
-      for index <- 0..2 do
-        assert has_element?(view, "#held-#{import.id}-#{index}")
-        refute has_element?(view, "#held-#{import.id}-#{index}-confirm")
-      end
+      assert view
+             |> render()
+             |> LazyHTML.from_fragment()
+             |> LazyHTML.query("li[id^=held-]")
+             |> Enum.count() == 3
+
+      refute has_element?(view, "li[id^=held-] button[id$=-confirm]")
 
       for _ <- 0..2,
-          do: view |> element("#held-#{import.id}-0-dismiss") |> render_click()
+          do: view |> element("li[id^=held-]:first-child button[id$=-dismiss]") |> render_click()
 
       assert has_element?(view, "#import-none")
       assert Repo.get!(OrganizationImport, import.id).held_settings == %{}
