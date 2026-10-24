@@ -454,6 +454,8 @@ defmodule Renga.Transfers.Import do
           ~w(source_id local_interface_id protocol remote_chassis_id_kind remote_chassis_id_normalized remote_port_id_kind remote_port_id_normalized)a,
           &{&1, record[Atom.to_string(&1)]}
         )
+        |> Map.update!(:source_id, &Ecto.UUID.cast!/1)
+        |> Map.update!(:local_interface_id, &Ecto.UUID.cast!/1)
 
       copy = %{
         evidence

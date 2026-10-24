@@ -554,7 +554,17 @@ defmodule Renga.Transfers.ImportTest do
                DateTime.add(Renga.Time.utc_now_ms(), 7, :day)
              )
 
-    path = export(context)
+    path =
+      context
+      |> export([])
+      |> rewrite(context, "interface_neighbor_evidence", fn records ->
+        Enum.map(records, fn record ->
+          record
+          |> Map.update!("source_id", &String.upcase/1)
+          |> Map.update!("local_interface_id", &String.upcase/1)
+        end)
+      end)
+
     target = target()
     assert {:ok, _} = import_archive(path, target, copy: true)
 
