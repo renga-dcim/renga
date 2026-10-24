@@ -158,6 +158,135 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
     |> evaluate(@fits, &assert(&1 == true))
   end
 
+  test "held import settings fit a phone and confirmation preserves keyboard focus", %{conn: conn} do
+    organization = organization_fixture()
+    owner = user_fixture()
+    organization_membership_fixture(owner, organization, %{role: "owner"})
+    capability = Renga.Jobs.Registry.keys_with_risk(:operate) |> List.first()
+
+    import =
+      Renga.Repo.insert!(%Renga.Transfers.OrganizationImport{
+        organization_id: organization.id,
+        source_organization_id: Ecto.UUID.generate(),
+        source_slug: "acme",
+        source_name: "Acme",
+        format_version: 1,
+        renga_version: "0.1.0",
+        snapshot_at: Renga.Time.utc_now_ms(),
+        records: 1,
+        sha256: String.duplicate("0", 64),
+        held_settings: %{
+          "jobs" => %{"allowed_capabilities" => [capability]},
+          String.duplicate("unknown", 50) => false
+        }
+      })
+
+    row = "#import-#{import.id} li"
+    confirm = "#{row} button[id$=-confirm]"
+    dialog = "div[phx-hook=Overlay][id^=confirm-held-#{import.id}-]"
+
+    conn
+    |> authenticated_conn(owner, organization)
+    |> visit("/settings/import")
+    |> assert_has("body .phx-connected")
+    |> evaluate(@fits, &assert(&1 == true))
+    |> evaluate(@buttons, &assert(tappable(&1)))
+    |> click_button(confirm, "Confirm")
+    |> assert_has("#{dialog} [role=alertdialog]")
+    |> evaluate(
+      "document.querySelector('#{dialog}').contains(document.activeElement)",
+      &assert(&1 == true)
+    )
+    |> press("#{dialog} [role=alertdialog]", "Escape")
+    |> refute_has("#{dialog} [role=alertdialog]")
+    |> assert_has("#{confirm}:focus")
+    |> press(":focus", "Enter")
+    |> assert_has("#{dialog} [role=alertdialog]")
+    |> click_button("#{dialog} button[id$=-cancel]", "Cancel")
+    |> refute_has("#{dialog} [role=alertdialog]")
+    |> assert_has("#{confirm}:focus")
+    |> press(":focus", "Enter")
+    |> assert_has("#{dialog} [role=alertdialog]")
+    |> click_button("#{dialog} button[id$=-confirm]", "Apply setting")
+    |> assert_has("#flash-info", text: "Applied:")
+    |> refute_has(confirm)
+    |> click_button("#{row} button[id$=-dismiss]", "Dismiss")
+    |> assert_has("#import-none")
+
+    assert capability in Renga.Jobs.Settings.allowed_capabilities(
+             Renga.Repo.reload!(organization)
+           )
+  end
+
+  test "live updates cannot retarget an open imported-setting confirmation", %{conn: conn} do
+    organization = organization_fixture()
+    owner = user_fixture()
+    organization_membership_fixture(owner, organization, %{role: "owner"})
+    scope = Renga.Accounts.scope_for_user(owner, organization.id)
+    capability = Renga.Jobs.Registry.keys_with_risk(:operate) |> List.first()
+    {:ok, module} = Renga.Jobs.Registry.fetch(capability)
+
+    import =
+      Renga.Repo.insert!(%Renga.Transfers.OrganizationImport{
+        organization_id: organization.id,
+        source_organization_id: Ecto.UUID.generate(),
+        source_slug: "acme",
+        source_name: "Acme",
+        format_version: 1,
+        renga_version: "0.1.0",
+        snapshot_at: Renga.Time.utc_now_ms(),
+        records: 1,
+        sha256: String.duplicate("0", 64),
+        held_settings: %{
+          "security" => %{"require_mfa" => false},
+          "jobs" => %{"allowed_capabilities" => [capability]}
+        }
+      })
+
+    session =
+      conn
+      |> authenticated_conn(owner, organization)
+      |> visit("/settings/import")
+      |> assert_has("body .phx-connected")
+      |> click_button("li:first-child button[id$=-confirm]", "Confirm")
+      |> assert_has("[role=alertdialog]", text: "Require multi-factor authentication")
+
+    key = Jason.encode!(["security", "require_mfa"])
+    assert {:ok, _} = Renga.Transfers.HeldSettings.dismiss(scope, import.id, key)
+
+    session =
+      session
+      |> refute_has("main li", text: "Require multi-factor authentication")
+      |> refute_has("[role=alertdialog]")
+      |> click_button("main li button[id$=-confirm]", "Confirm")
+      |> assert_has("[role=alertdialog]", text: "Allow #{module.title()}")
+
+    # Another update removes a preceding item, but this dialog must keep its identity.
+    import
+    |> Renga.Repo.reload!()
+    |> Ecto.Changeset.change(
+      held_settings: %{
+        "security" => %{"require_mfa" => false},
+        "jobs" => %{"allowed_capabilities" => [capability]}
+      }
+    )
+    |> Renga.Repo.update!()
+
+    Renga.Inventory.Changes.broadcast({:ok, nil}, organization.id)
+    session = assert_has(session, "main li", text: "Require multi-factor authentication")
+    assert {:ok, _} = Renga.Transfers.HeldSettings.dismiss(scope, import.id, key)
+
+    session
+    |> refute_has("main li", text: "Require multi-factor authentication")
+    |> assert_has("[role=alertdialog]", text: "Allow #{module.title()}")
+    |> click_button("[role=alertdialog] button[id$=-confirm]", "Apply setting")
+    |> assert_has("#import-none")
+
+    assert capability in Renga.Jobs.Settings.allowed_capabilities(
+             Renga.Repo.reload!(organization)
+           )
+  end
+
   test "member role assignments remain usable by touch and keyboard", %{conn: conn} do
     organization = organization_fixture()
     owner = user_fixture()
