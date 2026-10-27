@@ -79,8 +79,108 @@ concurrency. The control additionally observed the expected 100 noisy lease
 rejections. No accepted response reported a failed reconciliation. The
 benchmark does not prove that rejected check-ins preserve fleet liveness:
 agents must retry, and the launch criterion explicitly requires this workload
-not to meet the default limits. The exact contention source is not established
-by these counters and needs database wait/query profiling.
+not to meet the default limits. These initial counters did not establish the
+contention source; the investigation below retains that failed baseline.
+
+### Contention investigation (limits unchanged)
+
+`LOAD_PROFILE=true` records the fifteen SQL shapes with the most aggregate
+query time, including lock waits, plus connection queue time for each phase.
+PostgreSQL activity samples during the failing workload showed organization
+`FOR UPDATE` queues holding up check-in `FOR SHARE` requests. In a repeat of
+the original workload, MAC-set matching used 133,037 ms across 1,660 queries,
+and snapshot-boundary lookup used 22,575 ms across 3,320 queries. The native
+MAC column was cast to text, preventing its index from being used; EXPLAIN
+ANALYZE filtered 12,396 unrelated interfaces. The snapshot query ran a lateral
+probe for every historical source, including unrelated installations.
+
+The MAC predicate now uses native `macaddr` and an explicit tenant predicate.
+The same real-database plan fell from 11.874 ms to 0.329 ms. Snapshot lookup
+now uses resource-local indexed `DISTINCT ON (source_id)`, retaining the same
+observed-time/observation-ID tie break. With these two query changes alone,
+re-enrollment throttles fell from 13,921 to 538, but the strict gate still
+failed. Normal load still rejected one request. This is not a passing result.
+
+Canonical and fixed-system-principal mutations now use `FOR NO KEY UPDATE`,
+while intake and job maintenance use `FOR KEY SHARE`. Human authorization
+keeps its exclusive row lock. The non-partial, non-deferrable unique
+`organizations_status_lock_key (id, status)` is **part of the fence**, not a
+redundant optional index: it makes PostgreSQL treat even a direct status
+UPDATE as a key update that conflicts with intake. The migration must be
+installed before the new code, and must not be removed while it is running.
+Row-before-advisory ordering remains unchanged; old SHARE/UPDATE writers
+still serialize with new canonical writers. Real PostgreSQL concurrency
+tests cover accepted-intake commit versus direct suspension, re-reading a
+suspended status after waiting, and concurrent check-ins during canonical
+work. Deletion also conflicts with KEY SHARE.
+
+With these fences and the two query changes, normal load accepted all 3,050
+requests (p95/p99 9/129 ms), and no re-enrollment check-in was rejected. The
+full phase still rejected 92 observations out of 20,996 requests (p95/p99
+341/1,026 ms); the quiet neighbor accepted 200/200 (100/126 ms). The gate
+remained failed. Its next profile exposed provider-component matching that
+did not push tenant/resource predicates down to historical evidence; these
+predicates now match the existing resource/source index, and stronger serial
+identities no longer execute weaker provider/position searches unnecessarily.
+
+The original fixture nested DIMM serials inside `attributes`, which the
+actual machine payload treats as an opaque extra rather than an identity.
+The fixture now uses the machine API's flat component fields. Run
+`LOAD_COMPONENT_SERIALS=false` to retain the tougher identity-less
+re-enrollment control; passing the corrected fixture alone must not erase the
+earlier failures. All results above used identity-less DIMMs and remain
+preserved here.
+
+After the provider-evidence query correction, the identity-less control
+accepted 20,995 of 20,996 re-enrollment requests (one bulk concurrency throttle,
+84/331 ms p95/p99), and the corrected flat-serial fixture accepted 20,994
+(two bulk concurrency throttles, 78/115 ms). Both normal schedules accepted
+3,050/3,050, and both quiet-neighbor controls accepted 200/200. All check-ins
+were accepted and no reconciliations failed. **Both runs still failed the
+strict launch gate.** The harness now also retains a bounded top-100 slow SQL
+timeline and reports slow/rejected requests, so aggregate improvements cannot
+hide the remaining contention tails. No candidate limit has been raised.
+
+### Ready-organization lease-sweep delay
+
+Run separately from intake load, on the same disposable database:
+
+```sh
+nix develop --command env MIX_ENV=test MIX_TEST_PARTITION=_capacity mix run --no-start scripts/load-lease-sweep.exs
+```
+
+The control creates 100 organizations with 25 real leased jobs each. It holds
+one organization's row `FOR UPDATE` throughout the rotation and saturates the
+entire general-background lane. All leases are made overdue at the same
+instant; the job sweep runs at its real one-second cadence. It measures when
+each quiet organization's first batch starts, and independently checks that
+every quiet lease has left leased/running state. The fixture is removed after
+the run; unrelated capacity fixtures are retained.
+
+With the unchanged 64-connection pool, all 99 quiet organizations were served
+in six rounds. Maximum ready-to-batch delay was **10,217 ms**, total elapsed
+10,612 ms, all 2,475 quiet leases were processed, and the 25 locked noisy
+leases were untouched. Maximum delay plus the 250 ms batch budget was inside
+the tested 30-second handling budget. This establishes the bound for this
+100-ready-organization/25-jobs workload, **not** an unbounded organization or
+backlog count. The separate job reserve kept retention from consuming it.
+
+### Background recheck audit
+
+| Work | Bounded unit and durable progress | Correctness boundary |
+| --- | --- | --- |
+| Assignment expiry | 25 assignments per organization per round | Existing per-row `SKIP LOCKED`; deadlines remain authoritative before audit catches up |
+| Verified-domain recheck | Five domains per organization, oldest attempt first | Attempt recorded before DNS; unavailable DNS retains verification; stale answers cannot undo a newer verification |
+| Invitation delivery | Five deliveries per organization | Existing durable lease and retry preserve delivery recovery after worker timeout |
+| Export expiry/reclamation | Five exports and 25 chunks per export per organization | Expiry first atomically stops downloads; expired/failed/revoked exports with remaining chunks stay ready until reclaimed |
+
+These use the persistent organization cursor. The domain worker checks due
+claims every minute while retaining a 24-hour recheck interval per claim; it
+has a five-second round budget and one-second organization batches because
+DNS is external work. Other batches retain the 250 ms deadline. Existing
+domain re-verification race tests and export expiry/revocation tests pass.
+Archive **creation** remains an unbounded background snapshot/task and is not
+covered by the expiry/reclamation fix.
 
 ## Remaining launch gates
 
@@ -92,10 +192,8 @@ by these counters and needs database wait/query profiling.
   rolled back on a background deadline, which prevents partial publication
   but can repeatedly time out without making progress. It is **not** the
   resumable-generation contract in RFD 21.
-* Establish a maximum ready-organization scheduling delay for job expiry under
-  overload. Persistent round-robin position and independent job-sweep capacity
-  prevent retention from blocking leases, but alone do not establish a maximum
-  delay for an unbounded number of ready organizations.
-* Audit remaining assignment, domain-verification, export, and invitation
-  workers before claiming deployment-wide fair background isolation. Those
-  workers are outside the rotations introduced in this change.
+* The measured lease-sweep delay must be paired with a supported ready-org and
+  backlog envelope; it does not establish a maximum for unbounded load.
+* Bound and fairly admit archive generation before claiming deployment-wide
+  fair background isolation. Its repeatable-read snapshot cannot simply be
+  split into independently committed batches without losing archive consistency.

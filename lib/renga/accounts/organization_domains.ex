@@ -154,11 +154,35 @@ defmodule Renga.Accounts.OrganizationDomains do
   gone unverifies the domain; a DNS failure leaves it verified until the
   next check. For `Renga.Accounts.OrganizationDomains.Worker`.
   """
-  def recheck_verified do
-    OrganizationDomain
-    |> where([d], not is_nil(d.verified_at))
-    |> Repo.all()
-    |> Enum.each(&recheck/1)
+  def recheck_verified(due_before \\ nil) do
+    due = from d in OrganizationDomain, where: not is_nil(d.verified_at)
+
+    due =
+      if due_before,
+        do: where(due, [d], is_nil(d.checked_at) or d.checked_at <= ^due_before),
+        else: due
+
+    ready =
+      from d in due,
+        distinct: d.organization_id,
+        select: %{organization_id: d.organization_id}
+
+    Renga.Background.run(
+      "domain_recheck",
+      ready,
+      fn organization_id ->
+        due
+        |> where([d], d.organization_id == ^organization_id)
+        |> order_by([d], asc_nulls_first: d.checked_at, asc: d.id)
+        |> limit(5)
+        |> Repo.all()
+        |> Enum.each(&recheck/1)
+      end,
+      budget_ms: 5_000,
+      batch_timeout_ms: 1_000
+    )
+
+    :ok
   end
 
   # A DNS answer only speaks for the verification it was asked about. By the
@@ -166,6 +190,10 @@ defmodule Renga.Accounts.OrganizationDomains do
   # and its owner verified it again, so the result applies only while the
   # claim still carries the `verified_at` this sweep read.
   defp recheck(claim) do
+    # Record the attempt before external DNS. A crash or unavailable resolver
+    # must not pin the oldest claim ahead of every other domain forever.
+    Repo.update_all(same_verification(claim), set: [checked_at: Renga.Time.utc_now_ms()])
+
     case check(claim) do
       {:ok, :found} ->
         Repo.update_all(same_verification(claim), set: [checked_at: Renga.Time.utc_now_ms()])

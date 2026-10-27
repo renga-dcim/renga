@@ -27,7 +27,7 @@ defmodule Renga.Accounts.OrganizationDomains.Worker do
       Keyword.get(
         options,
         :interval,
-        Application.get_env(:renga, :organization_domain_check_interval_ms, @day_ms)
+        Application.get_env(:renga, :organization_domain_check_interval_ms, 60_000)
       )
 
     sweep = Keyword.get(options, :sweep, &sweep/0)
@@ -44,7 +44,9 @@ defmodule Renga.Accounts.OrganizationDomains.Worker do
 
   @doc false
   def sweep do
-    OrganizationDomains.recheck_verified()
+    OrganizationDomains.recheck_verified(
+      DateTime.add(Renga.Time.utc_now_ms(), -@day_ms, :millisecond)
+    )
   rescue
     error ->
       Logger.error("Organization domain check failed: #{Exception.message(error)}")

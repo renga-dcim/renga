@@ -311,14 +311,27 @@ defmodule Renga.TransfersTest do
     abandoned =
       Repo.insert!(%OrganizationExport{organization_id: organization.id, status: "running"})
 
+    # More than one reclamation batch: expiration must revoke the complete
+    # archive at once, without having to delete all its bytes in that turn.
+    before = chunk_count(export)
+
+    Repo.query!(
+      """
+      INSERT INTO organization_export_chunks(export_id, position, data)
+      SELECT $1, position, 'remaining bytes'::bytea FROM generate_series(1000, 1025) position
+      """,
+      [Ecto.UUID.dump!(export.id)]
+    )
+
     later = DateTime.add(export.expires_at, 1, :second)
     assert Transfers.sweep(later) == 2
 
     assert %OrganizationExport{status: "expired"} = Repo.get!(OrganizationExport, export.id)
     assert %OrganizationExport{status: "failed"} = Repo.get!(OrganizationExport, abandoned.id)
-    assert chunk_count(export) == 0
+    assert chunk_count(export) == before + 1
     assert {:error, :not_found} = Transfers.authorize_download(owner, export.id)
     assert Transfers.sweep(later) == 0
+    assert chunk_count(export) == 0
 
     assert Enum.sort(activity(organization)) ==
              Enum.sort([

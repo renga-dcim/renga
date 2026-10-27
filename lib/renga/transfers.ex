@@ -365,23 +365,51 @@ defmodule Renga.Transfers do
 
     due =
       OrganizationExport
+      |> from(as: :export)
       |> where(
         [export],
         (export.status == "ready" and export.expires_at <= ^now) or
-          (export.status == "running" and export.inserted_at <= ^stale_before)
+          (export.status == "running" and export.inserted_at <= ^stale_before) or
+          (export.status in ~w(expired failed revoked) and
+             exists(
+               from chunk in "organization_export_chunks",
+                 where: chunk.export_id == parent_as(:export).id,
+                 select: 1
+             ))
       )
-      |> select([export], {export.organization_id, export.id})
+
+    ready =
+      from export in due,
+        distinct: export.organization_id,
+        select: %{organization_id: export.organization_id}
+
+    Renga.Background.run("export_expiry", ready, fn organization_id ->
+      due
+      |> where([export], export.organization_id == ^organization_id)
+      |> order_by([export], asc: export.id)
+      |> limit(5)
+      |> select([export], export.id)
       |> Repo.all()
+      |> Enum.count(fn export_id ->
+        {:ok, changed?} =
+          Repo.transaction(fn ->
+            lock_organization!(organization_id)
+            export = locked_export(organization_id, export_id)
+            changed? = sweep_one(export, now, stale_before)
 
-    Enum.count(due, fn {organization_id, export_id} ->
-      {:ok, changed?} =
-        Repo.transaction(fn ->
-          lock_organization!(organization_id)
-          organization_id |> locked_export(export_id) |> sweep_one(now, stale_before)
-        end)
+            if export && (changed? or export.status in ~w(expired failed revoked)),
+              do: delete_chunk_batch!(export)
 
-      if changed?, do: Changes.broadcast({:ok, nil}, organization_id)
-      changed?
+            changed?
+          end)
+
+        if changed?, do: Changes.broadcast({:ok, nil}, organization_id)
+        changed?
+      end)
+    end)
+    |> Enum.reduce(0, fn
+      {:ok, count}, total -> total + count
+      _failure, total -> total
     end)
   end
 
@@ -397,7 +425,8 @@ defmodule Renga.Transfers do
   defp sweep_one(_export, _now, _stale_before), do: false
 
   defp expire!(export) do
-    delete_chunks!(export)
+    # Stop downloads atomically; byte reclamation then advances in bounded
+    # batches even when an archive is too large for one worker deadline.
     export |> Ecto.Changeset.change(status: "expired") |> Repo.update!()
     record!(export, nil, "export_expired", %{})
     true
@@ -457,6 +486,17 @@ defmodule Renga.Transfers do
     Repo.query!("DELETE FROM organization_export_chunks WHERE export_id = $1", [
       Ecto.UUID.dump!(export.id)
     ])
+  end
+
+  defp delete_chunk_batch!(export) do
+    Repo.query!(
+      """
+      DELETE FROM organization_export_chunks WHERE export_id = $1 AND position IN
+        (SELECT position FROM organization_export_chunks WHERE export_id = $1
+         ORDER BY position LIMIT 25)
+      """,
+      [Ecto.UUID.dump!(export.id)]
+    )
   end
 
   defp record!(export, actor_user_id, kind, metadata) do

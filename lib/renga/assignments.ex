@@ -26,7 +26,7 @@ defmodule Renga.Assignments do
   alias Renga.Roles.Assignment
   alias Renga.Roles.Role
 
-  @expiry_batch 500
+  @expiry_batch 25
 
   @doc "UI hint for giving and taking away assignments."
   def can_manage?(%Scope{} = scope), do: Authorization.allowed?(scope, "members.manage")
@@ -102,14 +102,29 @@ defmodule Renga.Assignments do
   with `SKIP LOCKED`, so retries and workers on several nodes are safe.
   """
   def sweep_expired(now \\ Renga.Time.utc_now_ms()) do
-    Assignment
-    |> where([assignment], is_nil(assignment.expired_at))
-    |> where([assignment], not is_nil(assignment.valid_until) and assignment.valid_until <= ^now)
-    |> order_by([assignment], asc: assignment.valid_until, asc: assignment.id)
-    |> limit(@expiry_batch)
-    |> select([assignment], {assignment.id, assignment.organization_id})
-    |> Repo.all()
-    |> Enum.count(&expire_one(&1, now))
+    due =
+      from assignment in Assignment,
+        where: is_nil(assignment.expired_at),
+        where: not is_nil(assignment.valid_until) and assignment.valid_until <= ^now
+
+    ready =
+      from assignment in due,
+        distinct: assignment.organization_id,
+        select: %{organization_id: assignment.organization_id}
+
+    Renga.Background.run("assignment_expiry", ready, fn organization_id ->
+      due
+      |> where([assignment], assignment.organization_id == ^organization_id)
+      |> order_by([assignment], asc: assignment.valid_until, asc: assignment.id)
+      |> limit(@expiry_batch)
+      |> select([assignment], {assignment.id, assignment.organization_id})
+      |> Repo.all()
+      |> Enum.count(&expire_one(&1, now))
+    end)
+    |> Enum.reduce(0, fn
+      {:ok, count}, total -> total + count
+      _failure, total -> total
+    end)
   end
 
   @doc false

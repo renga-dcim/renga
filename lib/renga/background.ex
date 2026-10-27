@@ -45,6 +45,12 @@ defmodule Renga.Background do
 
             task =
               Task.Supervisor.async_nolink(Renga.Background.Tasks, fn ->
+                :telemetry.execute(
+                  [:renga, :background, :batch, :start],
+                  %{monotonic_time: System.monotonic_time()},
+                  %{worker: worker, organization_id: organization_id}
+                )
+
                 batch.(organization_id)
               end)
 
