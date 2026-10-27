@@ -29,11 +29,11 @@ defmodule RengaWeb.AgentSocket do
          |> assign(:current_installation_id, installation_id)
          |> assign(:current_intake_api_key, key)}
 
-      :error ->
+      _refused ->
         :error
     end
   end
 
   @impl true
-  def id(_socket), do: nil
+  def id(socket), do: "organization_agents:#{socket.assigns.current_scope.organization_id}"
 end

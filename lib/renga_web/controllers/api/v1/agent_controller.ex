@@ -22,6 +22,7 @@ defmodule RengaWeb.Api.V1.AgentController do
     responses: [
       accepted: {Schemas.CheckInAccepted, description: "Check-in recorded."},
       unauthorized: Schemas.unauthorized_response(),
+      forbidden: {Schemas.Rejected, description: "The organization is suspended."},
       conflict:
         {Schemas.Rejected,
          description: "The installation ID is registered to a different collector source."},
@@ -81,6 +82,12 @@ defmodule RengaWeb.Api.V1.AgentController do
 
   defp put_installation_key(body, key),
     do: Map.put(body, :installation_key, %{fingerprint: key.fingerprint, status: key.status})
+
+  defp check_in_error(conn, {:error, :organization_inactive}) do
+    conn
+    |> put_status(:forbidden)
+    |> json(%{status: "rejected", errors: [%{path: "organization", message: "is suspended"}]})
+  end
 
   defp check_in_error(conn, {:error, :intake_credential_changed}) do
     conn

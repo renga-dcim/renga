@@ -57,6 +57,34 @@ defmodule RengaWeb.Api.V1.AgentControllerTest do
   end
 
   describe "POST /api/v1/agent/checkins" do
+    test "a valid key for a suspended tenant gets 403, not 401, and works after resume", %{
+      conn: conn
+    } do
+      %{organization: organization, token: token} = source_fixture()
+      context = Renga.DeploymentAudit.operator("containment")
+      {:ok, _} = Renga.Operators.OrganizationLifecycle.change(organization.id, "suspend", context)
+
+      assert %{"status" => "rejected", "errors" => [%{"path" => "organization"}]} =
+               conn
+               |> authorize(token)
+               |> post(~p"/api/v1/agent/checkins", %{})
+               |> valid_api_response(403)
+
+      assert %{"errors" => [%{"path" => "authorization"}]} =
+               conn
+               |> authorize("invalid")
+               |> post(~p"/api/v1/agent/checkins", %{})
+               |> valid_api_response(401)
+
+      {:ok, _} = Renga.Operators.OrganizationLifecycle.change(organization.id, "resume", context)
+
+      assert %{"status" => "accepted"} =
+               conn
+               |> authorize(token)
+               |> post(~p"/api/v1/agent/checkins", %{})
+               |> valid_api_response(202)
+    end
+
     test "requires a valid organization intake key", %{conn: conn} do
       conn = post(conn, ~p"/api/v1/agent/checkins", %{})
 

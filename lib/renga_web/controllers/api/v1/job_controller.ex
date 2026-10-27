@@ -319,6 +319,9 @@ defmodule RengaWeb.Api.V1.JobController do
   defp rejection(:agent_disabled),
     do: {:forbidden, "installation_id", "belongs to a disabled agent"}
 
+  defp rejection(:organization_inactive),
+    do: {:forbidden, "organization", "is suspended"}
+
   defp rejection(:intake_credential_changed),
     do: {:unauthorized, "authorization", "is invalid"}
 

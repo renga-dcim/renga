@@ -77,6 +77,9 @@ defmodule RengaWeb.Api.V1.TelemetryController do
   defp rejected(conn, :agent_disabled),
     do: reject(conn, :forbidden, "installation_id", "belongs to a disabled agent")
 
+  defp rejected(conn, :organization_inactive),
+    do: reject(conn, :forbidden, "organization", "is suspended")
+
   defp rejected(conn, :collector_kind_conflict),
     do: reject(conn, :conflict, "collector.kind", "does not match the collector's kind")
 

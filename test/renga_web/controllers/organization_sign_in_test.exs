@@ -70,6 +70,48 @@ defmodule RengaWeb.OrganizationSignInTest do
     user
   end
 
+  test "provider-only existing owners can sign in for deletion recovery, but members and newcomers cannot",
+       context do
+    %{fake: fake, provider: provider, organization: organization} = context
+    owner = build_conn() |> sign_in(fake, provider, claims()) |> session_user()
+    assert owner.email == nil
+    organization_membership_fixture(owner, organization, %{role: "owner"})
+    member_claims = claims(%{"sub" => "ordinary-member"})
+    member = build_conn() |> sign_in(fake, provider, member_claims) |> session_user()
+    organization_membership_fixture(member, organization, %{role: "member"})
+    lifecycle = Renga.Operators.OrganizationLifecycle
+
+    {:ok, pending} =
+      lifecycle.change(
+        organization.id,
+        "schedule_deletion",
+        Renga.DeploymentAudit.operator("test")
+      )
+
+    {:ok, view, _} = live(build_conn(), ~p"/users/log-in?organization=#{organization.slug}")
+    assert has_element?(view, "#provider-#{provider.id}")
+    conn = sign_in(build_conn(), fake, provider, claims())
+    user = session_user(conn)
+    assert user.session_organization_id == organization.id
+    assert Accounts.scope_for_user(user, organization.id).organization_id == nil
+    assert {:ok, _} = lifecycle.owner_scope(user, organization.id)
+    page = get(recycle(conn), ~p"/organizations/deletions")
+
+    assert html_response(page, 200)
+           |> LazyHTML.from_document()
+           |> LazyHTML.query("#deletion-#{organization.id}")
+           |> Enum.count() == 1
+
+    for denied_claims <- [member_claims, claims(%{"sub" => "never-signed-in"})] do
+      denied = sign_in(build_conn(), fake, provider, denied_claims)
+      refute get_session(denied, :user_token)
+    end
+
+    pending |> Ecto.Changeset.change(status: "purging") |> Repo.update!()
+    denied = sign_in(build_conn(), fake, provider, claims())
+    refute get_session(denied, :user_token)
+  end
+
   describe "the organization's sign-in link" do
     test "offers its providers first", %{
       conn: conn,

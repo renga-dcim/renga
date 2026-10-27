@@ -23,13 +23,15 @@ defmodule Renga.Accounts.Organization do
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
-  @statuses ~w(active disabled)
+  @statuses ~w(active disabled deletion_pending purging)
   @timestamps_opts [type: :utc_datetime_usec, autogenerate: {Renga.Time, :utc_now_ms, []}]
 
   schema "organizations" do
     field :name, :string
     field :slug, :string
     field :status, :string, default: "active"
+    field :deletion_scheduled_at, :utc_datetime_usec
+    field :deletion_due_at, :utc_datetime_usec
     field :settings, :map, default: %{}
     field :default_accent, :string, default: "copper"
     field :default_power_factor, :decimal

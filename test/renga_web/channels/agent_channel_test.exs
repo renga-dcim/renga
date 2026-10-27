@@ -132,5 +132,19 @@ defmodule RengaWeb.AgentChannelTest do
       {:ok, _job} = Jobs.create_job(context.scope, context.agent.id, @collect, %{})
       assert_push "jobs_waiting", _payload
     end
+
+    test "does not deliver a queued notification after suspension even without invalidation",
+         context do
+      {:ok, _reply, socket} = join_own(context)
+      Process.monitor(socket.channel_pid)
+
+      # Simulate an unavailable invalidation channel: the delivery guard is
+      # authoritative even before the fallback timer wakes up.
+      context.organization |> Ecto.Changeset.change(status: "disabled") |> Renga.Repo.update!()
+      send(socket.channel_pid, {:jobs_waiting, context.agent.id})
+
+      assert_receive {:DOWN, _ref, :process, _pid, :normal}
+      refute_push "jobs_waiting", _payload
+    end
   end
 end

@@ -35,7 +35,7 @@ defmodule RengaWeb.ExportController do
       |> put_resp_header("cache-control", "no-store")
       |> send_chunked(200)
 
-    case Enum.reduce_while(Transfers.chunks(export), {conn, 0}, &send_chunk/2) do
+    case Enum.reduce_while(Transfers.chunks(scope, export), {conn, 0}, &send_chunk/2) do
       {conn, {:closed, sent}} ->
         Transfers.record_unfinished_download(scope, export, sent)
         conn

@@ -11,6 +11,7 @@ defmodule Renga.DeploymentAudit.Event do
     field :outcome, :string
     field :actor, :string
     field :actor_token_id, :binary_id
+    field :actor_user_id, :binary_id
     field :invocation_id, :string
     field :target_id, :string
     field :organization_id, :binary_id

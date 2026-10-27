@@ -2007,6 +2007,16 @@
             },
             "description": "The intake key or installation header is missing or invalid, or the key changed while the request was in flight."
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "The organization is suspended."
+          },
           "409": {
             "content": {
               "application/json": {
@@ -2445,6 +2455,16 @@
               }
             },
             "description": "The intake key or installation header is missing or invalid, or the key changed while the request was in flight."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "The organization is suspended."
           },
           "409": {
             "content": {

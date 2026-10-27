@@ -63,8 +63,12 @@ defmodule Renga.Transfers.RecordTypesTest do
       assert type.fields -- columns == []
     end
 
+    # Source lifecycle state must not suspend or delete the destination tenant.
     assert Enum.sort(Map.fetch!(context.columns, "organizations")) ==
-             Enum.sort(~w(id status) ++ RecordTypes.organization_fields())
+             Enum.sort(
+               ~w(id status deletion_scheduled_at deletion_due_at) ++
+                 RecordTypes.organization_fields()
+             )
   end
 
   test "no exported field holds a credential" do

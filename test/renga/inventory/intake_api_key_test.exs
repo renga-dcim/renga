@@ -97,7 +97,7 @@ defmodule Renga.Inventory.IntakeApiKeyTest do
     {:ok, {_key, token}} = Inventory.create_intake_api_key(scope, %{name: "Fleet key"})
     {:ok, _organization} = Accounts.update_organization(scope.organization, %{status: "disabled"})
 
-    assert Inventory.authenticate_intake_api_key(token) == :error
+    assert Inventory.authenticate_intake_api_key(token) == {:error, :organization_suspended}
     assert {:error, :forbidden} = Inventory.create_intake_api_key(scope, %{name: "Another key"})
   end
 

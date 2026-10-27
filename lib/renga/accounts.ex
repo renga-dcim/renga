@@ -789,7 +789,7 @@ defmodule Renga.Accounts do
 
       with %{enabled: true} <- current || {:error, :inactive},
            %{active_revision: number} when number == revision.number <- current,
-           true <- organization_active?(current) || {:error, :inactive},
+           true <- organization_sign_in_allowed?(current, result) || {:error, :inactive},
            {:ok, user} <- Renga.Accounts.Identities.resolve(result),
            # An organization provider's session opens only its organization.
            {:ok, value} <- issue.(%{user | session_organization_id: current.organization_id}) do
@@ -803,13 +803,49 @@ defmodule Renga.Accounts do
     end)
   end
 
-  defp organization_active?(%{organization_id: nil}), do: true
+  defp organization_sign_in_allowed?(%{organization_id: nil}, _result), do: true
 
-  defp organization_active?(%{organization_id: organization_id}),
-    do:
-      Repo.exists?(
-        from o in Organization, where: o.id == ^organization_id and o.status == "active"
+  defp organization_sign_in_allowed?(%{organization_id: organization_id, id: provider_id}, result) do
+    # Linking may reconcile SCIM grants under an update lock. Take that lock
+    # up front rather than upgrading concurrent sign-ins' shared locks.
+    status =
+      Repo.one(
+        from o in Organization,
+          where: o.id == ^organization_id,
+          select: o.status,
+          lock: "FOR UPDATE"
       )
+
+    case status do
+      "active" ->
+        true
+
+      "deletion_pending" ->
+        # Recovery authenticates existing owners only, never a new signup or
+        # ordinary member. Session scope and MFA remain the normal provider flow.
+        subject = result.claims["sub"]
+
+        membership =
+          is_binary(subject) &&
+            Repo.one(
+              from m in OrganizationMembership,
+                join: i in Renga.Accounts.UserIdentity,
+                on: i.user_id == m.user_id,
+                where:
+                  m.organization_id == ^organization_id and m.role == "owner" and
+                    m.status == "active",
+                where: i.provider_id == ^provider_id and i.subject == ^subject,
+                select: m
+            )
+
+        membership &&
+          (is_nil(membership.scim_connection_id) or
+             Renga.Scim.Grants.granted_role(organization_id, membership.user_id) == "owner")
+
+      _ ->
+        false
+    end
+  end
 
   ## Linked identities
 

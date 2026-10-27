@@ -72,16 +72,16 @@ defmodule Renga.Accounts.IdentityProviders do
     do: Repo.one(from p in IdentityProvider, where: p.id == ^id and is_nil(p.removed_at))
 
   @doc """
-  The active organization with `slug` and the providers its members can
-  sign in with now, for its sign-in link (`/users/log-in?organization=`),
-  or nil when it has none.
+  The active or pending-deletion organization with `slug` and its usable
+  providers, for its sign-in link (`/users/log-in?organization=`), or nil
+  when it has none. Pending deletion admits only existing owners at completion.
   """
   def organization_sign_in_options(slug) when is_binary(slug) do
     providers =
       IdentityProvider
       |> join(:inner, [provider], organization in assoc(provider, :organization))
       |> where([provider, organization], organization.slug == ^slug)
-      |> where([provider, organization], organization.status == "active")
+      |> where([provider, organization], organization.status in ["active", "deletion_pending"])
       |> where([provider], is_nil(provider.removed_at))
       |> where([provider], provider.enabled and not is_nil(provider.active_revision))
       |> order_by([provider], asc: provider.display_name, asc: provider.id)

@@ -11,6 +11,29 @@ defmodule Renga.Accounts.UserNotifier do
   alias Renga.Mailer
   alias Renga.Accounts.User
 
+  @doc "Notifies an owner of a committed deletion lifecycle change."
+  def deliver_organization_lifecycle(notice) do
+    deadline =
+      if notice.deadline,
+        do: "Deletion deadline: #{notice.deadline} (UTC).",
+        else: "Deletion has been cancelled."
+
+    recovery =
+      if notice.deadline do
+        "Sign in to Renga and open /organizations/deletions to cancel pending deletion " <>
+          "or request and download an export. Ordinary organization access is suspended."
+      else
+        "Organization access has been restored. Cancelled work is not rerun."
+      end
+
+    deliver(notice.recipient, "Organization lifecycle: #{notice.organization_name}", """
+    #{notice.organization_name}: #{notice.operation}
+    #{deadline}
+
+    #{recovery}
+    """)
+  end
+
   # Delivers the email using the application mailer.
   defp deliver(recipient, subject, body) do
     email =

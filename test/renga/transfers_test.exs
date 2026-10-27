@@ -60,7 +60,7 @@ defmodule Renga.TransfersTest do
 
     path = Path.join(tmp, "download.tar.zst")
     assert {:ok, download} = Transfers.authorize_download(owner, export.id)
-    File.write!(path, Enum.to_list(Transfers.chunks(download)))
+    File.write!(path, Enum.to_list(Transfers.chunks(owner, download)))
 
     assert File.stat!(path).size == export.bytes
 
@@ -84,6 +84,67 @@ defmodule Renga.TransfersTest do
 
     assert [%OrganizationExport{id: id}] = elem(Transfers.list_exports(owner), 1)
     assert id == export.id
+  end
+
+  test "streaming stops at suspension or purge but permits the pending owner recovery window",
+       context do
+    export = start!(context.owner)
+    lifecycle = Renga.Operators.OrganizationLifecycle
+    actor = Renga.DeploymentAudit.operator("stream-containment")
+    assert Enum.to_list(Transfers.chunks(context.owner, export)) != []
+
+    {:ok, _} = lifecycle.change(context.organization.id, "suspend", actor)
+    assert Enum.to_list(Transfers.chunks(context.owner, export)) == []
+
+    {:ok, organization} = lifecycle.change(context.organization.id, "schedule_deletion", actor)
+    assert Enum.to_list(Transfers.chunks(context.owner, export)) != []
+    organization |> Ecto.Changeset.change(status: "purging") |> Repo.update!()
+    assert Enum.to_list(Transfers.chunks(context.owner, export)) == []
+    assert chunk_count(export) > 0
+  end
+
+  test "between-chunk deletion and owner revocation stop unauthorized delivery", context do
+    member = member_scope(context.organization, "member")
+
+    {:ok, role} =
+      Roles.create_role(context.owner, %{
+        "name" => "Export delegate",
+        "permissions" => ["organization.export"]
+      })
+
+    {:ok, _} = Assignments.assign(context.owner, member.membership_id, %{"role" => role.id})
+    member = Accounts.scope_for_user(member.user, context.organization.id)
+    export = start!(context.owner)
+    {:ok, _} = Transfers.authorize_download(member, export.id)
+    # Two deterministic chunks expose the exact mid-delivery boundary.
+    id = Ecto.UUID.dump!(export.id)
+    Repo.query!("DELETE FROM organization_export_chunks WHERE export_id = $1", [id])
+
+    Repo.query!(
+      "INSERT INTO organization_export_chunks (export_id, position, data) VALUES ($1, 0, $2), ($1, 1, $3)",
+      [id, "first", "second"]
+    )
+
+    actor = Renga.DeploymentAudit.operator("stream-boundary")
+    lifecycle = Renga.Operators.OrganizationLifecycle
+
+    assert ["first"] ==
+             Enum.map(Transfers.chunks(member, export), fn chunk ->
+               {:ok, _} = lifecycle.change(context.organization.id, "schedule_deletion", actor)
+               chunk
+             end)
+
+    assert ["first"] ==
+             Enum.map(Transfers.chunks(context.owner, export), fn chunk ->
+               Repo.update_all(
+                 from(m in OrganizationMembership, where: m.id == ^context.owner.membership_id),
+                 set: [role: "member"]
+               )
+
+               chunk
+             end)
+
+    assert chunk_count(export) == 2
   end
 
   describe "query payloads (RFD 12)" do
@@ -130,7 +191,7 @@ defmodule Renga.TransfersTest do
     defp archived_job(scope, export, tmp, job) do
       path = Path.join(tmp, "#{export.id}.tar.zst")
       assert {:ok, download} = Transfers.authorize_download(scope, export.id)
-      File.write!(path, Enum.to_list(Transfers.chunks(download)))
+      File.write!(path, Enum.to_list(Transfers.chunks(scope, download)))
       assert {:ok, archive} = Archive.open(path, tmp_dir: tmp)
       on_exit(fn -> Archive.close(archive) end)
 

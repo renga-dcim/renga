@@ -176,11 +176,11 @@ defmodule Renga.Inventory do
     IntakeApiKey
     |> join(:inner, [key], organization in assoc(key, :organization))
     |> where([key], key.token_hash == ^token_hash and key.status == "active")
-    |> where([_key, organization], organization.status == "active")
     |> preload([_key, organization], organization: organization)
     |> Repo.one()
     |> case do
-      %IntakeApiKey{} = key -> {:ok, key}
+      %IntakeApiKey{organization: %{status: "active"}} = key -> {:ok, key}
+      %IntakeApiKey{} -> {:error, :organization_suspended}
       nil -> :error
     end
   end

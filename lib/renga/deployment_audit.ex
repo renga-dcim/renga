@@ -116,6 +116,7 @@ defmodule Renga.DeploymentAudit do
       outcome: outcome,
       actor: label(actor),
       actor_token_id: actor_token_id(actor),
+      actor_user_id: actor_user_id(actor),
       invocation_id: invocation_id,
       target_id: details[:target_id],
       organization_id: organization && organization.id,
@@ -127,9 +128,14 @@ defmodule Renga.DeploymentAudit do
 
   defp label({:operator, name}) when is_binary(name), do: "operator: #{name}"
   defp label({:token, %OperatorToken{name: name}}), do: "token: #{name}"
+  defp label({:user, user}), do: "user: #{user.email || user.id}"
 
   defp actor_token_id({:token, %OperatorToken{id: id}}), do: id
   defp actor_token_id({:operator, _name}), do: nil
+  defp actor_token_id({:user, _user}), do: nil
+
+  defp actor_user_id({:user, user}), do: user.id
+  defp actor_user_id(_actor), do: nil
 
   defp reason_code(%Ecto.Changeset{}), do: "invalid"
   defp reason_code(reason) when is_atom(reason), do: Atom.to_string(reason)
