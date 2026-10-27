@@ -343,6 +343,18 @@ defmodule Renga.Transfers.RecordTypes do
   @imported_bookkeeping "import bookkeeping; carrying it into another export is future work"
 
   @excluded_tables %{
+    "neighbor_generation_heads" => "deployment-local topology publication and evidence versions",
+    "neighbor_generations" =>
+      "resumable topology work; archives read only the published generation",
+    "neighbor_generation_rows" => "private staging; never export an unfinished generation",
+    "interface_neighbor_evidence_neighbor_storage" =>
+      "physical storage behind exported current evidence view",
+    "interface_neighbor_matches_neighbor_storage" =>
+      "physical storage behind exported current match view",
+    "current_interface_adjacencies_neighbor_storage" =>
+      "physical storage behind exported current adjacency view",
+    "topology_findings_neighbor_storage" =>
+      "physical storage behind exported current finding view",
     "agent_leases" => "runtime state; agents take new leases at the destination",
     "cable_endpoint_terminations" => "maintained by a trigger when a cable is inserted",
     "current_interface_adjacency_endpoints" =>

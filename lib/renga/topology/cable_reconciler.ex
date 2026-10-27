@@ -509,6 +509,29 @@ defmodule Renga.Topology.CableReconciler do
     end
   end
 
+  @doc false
+  def expiry_findings(organization_id, interface_id, as_of) do
+    # Time changes neighbor disagreement, never confirmed cable ownership.
+    cables =
+      Repo.all(
+        from c in Cable,
+          where: c.organization_id == ^organization_id and c.cable_kind == "data",
+          where: c.interface_a_id == ^interface_id or c.interface_b_id == ^interface_id
+      )
+
+    index =
+      CurrentInterfaceAdjacency
+      |> where([a], a.organization_id == ^organization_id)
+      |> where([a], a.interface_a_id == ^interface_id or a.interface_b_id == ^interface_id)
+      |> Repo.all()
+      |> Enum.flat_map(fn a ->
+        [{a.interface_a_id, a.interface_b_id}, {a.interface_b_id, a.interface_a_id}]
+      end)
+      |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+
+    Enum.flat_map(cables, &endpoint_mismatch_finding(&1, index, interface_id, as_of))
+  end
+
   defp cable_mismatch_findings(cable, adjacency_by_endpoint, now) do
     [cable.interface_a_id, cable.interface_b_id]
     |> Enum.flat_map(&endpoint_mismatch_finding(cable, adjacency_by_endpoint, &1, now))

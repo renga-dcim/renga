@@ -287,8 +287,10 @@ defmodule Renga.TopologyTest do
     assert Repo.reload!(evidence).stale_at == nil
     assert [_adjacency] = Topology.list_current_interface_adjacencies(scope)
 
-    assert [{:ok, []}] =
-             NeighborExpiryWorker.sweep(~U[2099-09-10 13:00:31Z])
+    Enum.reduce_while(1..30, nil, fn _, _ ->
+      NeighborExpiryWorker.sweep(~U[2099-09-10 13:00:31Z])
+      if Repo.reload!(evidence).stale_at, do: {:halt, nil}, else: {:cont, nil}
+    end)
 
     assert Repo.reload!(evidence).stale_reason == "expired"
     assert Topology.list_current_interface_adjacencies(scope) == []

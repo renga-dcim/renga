@@ -258,14 +258,98 @@ The production runtime configuration test was then extended to verify the
 measured 64-connection default and an explicit 16-connection override;
 all eleven runtime-configuration tests passed.
 
+### Resumable neighbor expiry
+
+Expiry now captures a durable input version and server `as_of`. Independent
+transactions stage matches, globally ordered adjacency selection, and every
+endpoint's neighbor/cable-disagreement findings. A final version check under
+the organization row fence and topology advisory lock publishes one pointer;
+unfinished scans cannot remove links or resolve findings. Confirmed cables
+and time-independent cable findings are not retracted merely because LLDP
+expires. Relevant input mutations invalidate drafts, including old writers
+through database triggers. Unrelated source registration and presence updates
+do not invalidate topology or contend with builds.
+
+The scheduler allows a 150 ms organization turn (within its 250 ms outer
+deadline), committing small units independently: ten matches/candidates, one
+endpoint's findings, or 25 compaction rows. Each statement has a 200 ms
+timeout. A timed-out last unit does not erase prior progress. Published
+overlays remain authoritative through resumable compaction; obsolete staging
+is reclaimed 100 rows per later batch. A legacy writer materializes a published
+overlay before its own mutation, preserving the old relation names, physical
+foreign keys, and archive semantics. That compatibility operation is not the
+background compaction path and is not claimed to be constant time.
+
+Run the real-connection generation control separately from all other load:
+
+```sh
+nix develop --command env MIX_ENV=test MIX_TEST_PARTITION=_capacity2 mix run --no-start scripts/load-neighbor-generation.exs
+```
+
+It creates 3,000 interfaces and 1,500 links, half due to expire, with a fresh
+caller process for every committed batch. It checks unchanged visibility
+before publication, exactly 750 remaining links afterward, and unchanged
+visibility throughout compaction. A quiet organization's independent expiry
+is interleaved while the large generation remains unfinished. This is a
+3,000-interface sparse-graph control, not an unbounded neighbor-degree or
+continuous-input convergence guarantee; a relevant concurrent write correctly
+invalidates the draft instead of publishing stale output.
+
+Preserved failed evidence: the first 3,000-interface run timed out in an
+endpoint-neighborhood join through derived views
+(`tmp/neighbor-generation-3000-timeout.log`, with its plan in
+`tmp/neighbor-generation-slow-plan.log`). Using the staged candidate graph
+removed that join. Typed, indexed endpoint/evidence expressions then reduced
+total generation wall time from 247,020 ms to 83,250 ms, and compaction from
+51,925 ms to 12,730 ms. The quiet organization completed in 151 ms. These
+generation totals span thousands of transactions, **not** a single atomic
+publication or organization-lock hold. The checked-in control separately
+reports batch, final publication, and conservative organization-fence timings.
+
+Instrumented rerun (same 3,000-interface fixture):
+
+| Measurement | Time |
+| --- | ---: |
+| Whole generation, across committed batches | 91,593 ms |
+| Whole published compaction, across committed batches | 13,837 ms |
+| Maximum batch wall time / transaction time | 119.417 / 119.376 ms |
+| Maximum organization-fence upper bound | 118.496 ms |
+| Final publication wall time / transaction time | 6.859 / 6.815 ms |
+| Final publication organization-fence upper bound | 5.506 ms |
+| Quiet organization's whole generation | 187 ms |
+
+Query telemetry brackets BEGIN/COMMIT and the organization-fence SELECT.
+Fence timing deliberately starts before that query, so it includes any
+connection/lock wait and conservatively bounds actual row-lock hold time;
+it is not presented as a server-side lock-duration sample. The control had
+zero partial publications. The long generation total is never one lock hold.
+
+Five regression tests cover restart/fixed time, renewal immediately before
+publication, SQL timeout during staging and compaction, history retention,
+and old-writer cutover. The combined topology/archive/intake suites passed
+230 tests (one excluded) after the indexed-view change.
+
+The subsequent full `MIX_ENV=test mix precommit` passed **3,129**
+(one doctest and 3,128 tests), one excluded. The lease control passed again
+with 99 quiet organizations served in five rounds, maximum ready delay
+8,500 ms, all 2,475 quiet leases processed, and all 25 noisy leases untouched.
+The export control cancelled in 536 ms, published no partial chunks, and
+passed both reserve isolation and forced-owner-death cancellation.
+
 ## Remaining launch gates
 
-* Implement neighbor-expiry staging at a fixed evidence watermark, including
-  adjacency and neighbor/cable findings, with resumable batches and atomic
-  version-checked publication. The current whole-organization transaction is
-  rolled back on a background deadline, which prevents partial publication
-  but can repeatedly time out without making progress. It is **not** the
-  resumable-generation contract in RFD 21.
+* A subsequent integrated fleet run rejected one normal check-in and seven
+  re-enrollment requests (one check-in, six observations); the quiet control
+  accepted 200/200, with zero failed reconciliations. Preserve
+  `tmp/capacity-neighbor-fleet.log`; this run did **not** pass the strict gate.
+  A trigger-on/off/on probe had warm medians of 80/80 ms and did not establish
+  the trigger as the cause. The isolated rerun passed normal 3,050/3,050 and
+  quiet 200/200 but rejected 18 re-enrollment requests (one check-in and 17
+  observations, 87/387 ms p95/p99), also with zero failed reconciliations.
+  `tmp/capacity-neighbor-isolated-fleet.log` retains that failure. Sequential
+  native-table versus generation-view probes did not establish a view
+  regression (warm medians 95 vs 83 ms); canonical-lock tails remain under
+  investigation. No defaults have been raised to mask them.
 * The measured lease-sweep delay must be paired with a supported ready-org and
   backlog envelope; it does not establish a maximum for unbounded load.
 * Smaller pool overrides have not passed this fleet gate. The production
