@@ -24,7 +24,7 @@ defmodule Renga.Telemetry do
   # An agent drops a queued telemetry batch after a day, so a replay ID kept
   # for a week outlives every redelivery of its batch.
   @replay_retention_seconds 7 * 86_400
-  @prune_batch 10_000
+  @prune_batch 1_000
 
   @doc """
   Accepts a validated batch (see `Renga.Telemetry.Payload.validate/1`) from
@@ -83,29 +83,42 @@ defmodule Renga.Telemetry do
     adapter = Store.adapter!()
 
     %{
-      batches: prune_batches(DateTime.add(now, -@replay_retention_seconds, :second), 0),
+      batches: prune_batches(DateTime.add(now, -@replay_retention_seconds, :second)),
       history: if(function_exported?(adapter, :prune, 1), do: adapter.prune(now), else: 0)
     }
   end
 
-  defp prune_batches(before, total) do
+  defp prune_batches(before) do
+    ready =
+      from batch in Batch,
+        where: batch.received_at < ^before,
+        distinct: batch.organization_id,
+        select: %{organization_id: batch.organization_id}
+
+    Renga.Background.run("telemetry_replay", ready, &prune_batch(&1, before))
+    |> Enum.reduce(0, fn
+      {:ok, count}, total -> total + count
+      _, total -> total
+    end)
+  end
+
+  defp prune_batch(organization_id, before) do
     {:ok, deleted} =
-      Repo.with_statement_timeout(Repo.background_statement_timeout_ms(), fn query_options ->
+      Repo.with_statement_timeout(200, fn query_options ->
         %{num_rows: deleted} =
           Repo.query!(
             """
             DELETE FROM telemetry_batches
-            WHERE id IN (SELECT id FROM telemetry_batches WHERE received_at < $1 LIMIT $2)
+            WHERE id IN (SELECT id FROM telemetry_batches
+              WHERE organization_id = $1 AND received_at < $2 LIMIT $3)
             """,
-            [DateTime.to_naive(before), @prune_batch],
+            [Ecto.UUID.dump!(organization_id), DateTime.to_naive(before), @prune_batch],
             query_options
           )
 
         deleted
       end)
 
-    if deleted == @prune_batch,
-      do: prune_batches(before, total + deleted),
-      else: total + deleted
+    deleted
   end
 end

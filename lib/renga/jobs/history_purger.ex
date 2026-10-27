@@ -3,10 +3,9 @@ defmodule Renga.Jobs.HistoryPurger do
   Periodically purges job history past each organization's retention with
   `Renga.Jobs.purge_history/0`.
 
-  It runs apart from `Renga.Jobs.Sweeper` because a purge batch may run for
-  up to the background statement timeout (RFD 21), and lease and deadline
-  sweeps must not wait behind it. The next purge is scheduled only after the
-  last one finishes, so each node runs at most one at a time.
+  It runs apart from `Renga.Jobs.Sweeper` in the general background lane:
+  lease and deadline sweeps have their own reserve and never wait behind
+  retention. Each rotation performs one bounded batch per organization.
   """
 
   use GenServer
@@ -26,7 +25,7 @@ defmodule Renga.Jobs.HistoryPurger do
       Keyword.get(
         options,
         :interval,
-        Application.get_env(:renga, :job_purge_interval_ms, :timer.hours(1))
+        Application.get_env(:renga, :job_purge_interval_ms, 5_000)
       )
 
     purge = Keyword.get(options, :purge, &purge/0)

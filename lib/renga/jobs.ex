@@ -1175,7 +1175,7 @@ defmodule Renga.Jobs do
 
   ## Sweeping
 
-  @sweep_batch 500
+  @sweep_batch 25
 
   @doc """
   Moves jobs on whose time has run out, as the system: jobs whose lease
@@ -1187,14 +1187,34 @@ defmodule Renga.Jobs do
   jobs each part moved.
   """
   def sweep(now \\ Renga.Time.utc_now_ms()) do
+    Job
+    |> where([job], is_nil(job.imported_at))
+    |> where(
+      [job],
+      (job.state in ^Job.leased_states() and job.lease_expires_at <= ^now) or
+        (job.state == "queued" and job.not_after <= ^now)
+    )
+    |> distinct([job], job.organization_id)
+    |> order_by([job], job.organization_id)
+    |> select([job], job.organization_id)
+    |> then(&Renga.Background.run("job_sweep", &1, fn id -> sweep_organization(id, now) end))
+    |> Enum.reduce(%{lapsed: 0, expired: 0}, fn
+      {:ok, result}, counts -> Map.merge(counts, result, fn _key, a, b -> a + b end)
+      _failed, counts -> counts
+    end)
+  end
+
+  defp sweep_organization(organization_id, now) do
     lapsed =
       Job
+      |> where([job], job.organization_id == ^organization_id)
       |> where([job], job.state in ^Job.leased_states() and job.lease_expires_at <= ^now)
       |> sweep_ids()
       |> Enum.count(&sweep_one(&1, now, :lease))
 
     expired =
       Job
+      |> where([job], job.organization_id == ^organization_id)
       |> where([job], job.state == "queued" and job.not_after <= ^now)
       |> sweep_ids()
       |> Enum.count(&sweep_one(&1, now, :deadline))
@@ -1372,37 +1392,59 @@ defmodule Renga.Jobs do
   Deletes finished jobs older than their organization's retention period
   (90 days unless an owner changed it), with their events. Jobs still open or
   `uncertain` are never purged. Deletes at most #{@purge_batch} jobs per
-  call and returns how many it deleted.
+  organization in a fair, time-bounded rotation and returns how many it deleted.
 
   The event trigger allows these deletes only because the job row goes
   first; nothing else can remove history.
   """
   def purge_history(now \\ Renga.Time.utc_now_ms()) do
-    # The purge query spans every organization, so it runs with the
-    # background statement timeout rather than the request baseline (RFD 21).
+    Job
+    |> where([job], not is_nil(job.finished_at))
+    |> distinct([job], job.organization_id)
+    |> order_by([job], job.organization_id)
+    |> select([job], job.organization_id)
+    |> then(
+      &Renga.Background.run("job_history", &1, fn id -> purge_organization_history(id, now) end)
+    )
+    |> Enum.reduce(0, fn
+      {:ok, count}, total -> total + count
+      _failed, total -> total
+    end)
+  end
+
+  defp purge_organization_history(organization_id, now) do
     {:ok, %{num_rows: deleted}} =
-      Repo.with_statement_timeout(Repo.background_statement_timeout_ms(), fn query_options ->
-        Repo.query!(
-          """
-          DELETE FROM jobs
-          WHERE id IN (
-            SELECT job.id
-            FROM jobs AS job
-            JOIN organizations AS organization ON organization.id = job.organization_id
-            WHERE job.finished_at IS NOT NULL
-              AND job.finished_at < $1::timestamp - make_interval(days => GREATEST(1,
-                CASE
-                  WHEN jsonb_typeof(organization.settings -> 'jobs' -> 'retention_days') = 'number'
-                  THEN floor((organization.settings -> 'jobs' ->> 'retention_days')::numeric)::integer
-                  ELSE $2::integer
-                END))
-            LIMIT $3
+      Repo.with_statement_timeout(
+        min(Repo.background_statement_timeout_ms(), 200),
+        fn query_options ->
+          Repo.query!(
+            """
+            DELETE FROM jobs
+            WHERE id IN (
+              SELECT job.id
+              FROM jobs AS job
+              JOIN organizations AS organization ON organization.id = job.organization_id
+              WHERE job.finished_at IS NOT NULL
+                AND job.organization_id = $4
+                AND job.finished_at < $1::timestamp - make_interval(days => GREATEST(1,
+                  CASE
+                    WHEN jsonb_typeof(organization.settings -> 'jobs' -> 'retention_days') = 'number'
+                    THEN floor((organization.settings -> 'jobs' ->> 'retention_days')::numeric)::integer
+                    ELSE $2::integer
+                  END))
+              LIMIT $3
+            )
+            """,
+            [
+              DateTime.to_naive(now),
+              Settings.default_retention_days(),
+              @purge_batch,
+              Ecto.UUID.dump!(organization_id)
+            ],
+            query_options
           )
-          """,
-          [DateTime.to_naive(now), Settings.default_retention_days(), @purge_batch],
-          query_options
-        )
-      end)
+        end
+      )
 
     deleted
   end

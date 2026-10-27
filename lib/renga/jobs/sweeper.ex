@@ -26,7 +26,7 @@ defmodule Renga.Jobs.Sweeper do
       Keyword.get(
         options,
         :interval,
-        Application.get_env(:renga, :job_sweep_interval_ms, 15_000)
+        Application.get_env(:renga, :job_sweep_interval_ms, 1_000)
       )
 
     sweep = Keyword.get(options, :sweep, &sweep/0)

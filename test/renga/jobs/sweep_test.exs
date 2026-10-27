@@ -222,6 +222,17 @@ defmodule Renga.Jobs.SweepTest do
     end
   end
 
+  test "one organization's expired backlog cannot fill another's batch", context do
+    noisy = for _ <- 1..27, do: queue(context, @collect)
+    %{organization: quiet_org} = job_organization_fixture()
+    quiet_agent = agent_fixture(quiet_org)
+    {:ok, quiet} = Jobs.create_system_job(quiet_org.id, quiet_agent.id, @collect, %{})
+
+    Jobs.sweep(DateTime.add(Renga.Time.utc_now_ms(), 2 * 86_400))
+    assert Repo.reload!(quiet).state == "expired"
+    assert Enum.count(noisy, &(Repo.reload!(&1).state == "expired")) == 25
+  end
+
   test "the worker sweeps on its interval" do
     parent = self()
 

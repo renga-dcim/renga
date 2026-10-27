@@ -26,7 +26,7 @@ defmodule Renga.Telemetry.Pruner do
       Keyword.get(
         options,
         :interval,
-        Application.get_env(:renga, :telemetry_prune_interval_ms, :timer.hours(1))
+        Application.get_env(:renga, :telemetry_prune_interval_ms, 5_000)
       )
 
     prune = Keyword.get(options, :prune, &prune/0)

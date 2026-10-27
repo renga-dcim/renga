@@ -8,7 +8,6 @@ defmodule Renga.Topology.NeighborExpiryWorker do
 
   alias Renga.Accounts.Organization
   alias Renga.Accounts.Scope
-  alias Renga.Repo
   alias Renga.Topology
   alias Renga.Topology.InterfaceNeighborEvidence
 
@@ -53,10 +52,15 @@ defmodule Renga.Topology.NeighborExpiryWorker do
     |> distinct([evidence, _organization], evidence.organization_id)
     |> order_by([evidence, _organization], asc: evidence.organization_id)
     |> select([evidence, _organization], evidence.organization_id)
-    |> Repo.all()
-    |> Enum.map(fn organization_id ->
-      scope = %Scope{organization_id: organization_id, roles: ["topology_reconciler"]}
-      expire_tenant(expire, scope, as_of)
+    |> then(
+      &Renga.Background.run("neighbor_expiry", &1, fn organization_id ->
+        scope = %Scope{organization_id: organization_id, roles: ["topology_reconciler"]}
+        expire_tenant(expire, scope, as_of)
+      end)
+    )
+    |> Enum.map(fn
+      {:ok, result} -> result
+      failed -> failed
     end)
   end
 
