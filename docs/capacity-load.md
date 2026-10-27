@@ -1,11 +1,11 @@
 # Intake capacity validation (RFD 21)
 
-**Fleet intake gate: PASSED at 64 connections. Overall launch gate: OPEN.**
-After correcting measured query and canonical-lock contention, the strict
-normal, full re-enrollment, and quiet-neighbor phases pass without raising
-intake limits. The earlier failing measurements remain below. Resumable
-neighbor generations are still required before claiming deployment-wide
-background isolation.
+**Overall launch gate: OPEN; latest integrated fleet gate has regressions.**
+An earlier 64-connection checkpoint passed normal, full re-enrollment, and
+quiet-neighbor phases without raising intake limits. Subsequent integrated
+runs rejected some re-enrollment requests; the retained failures and current
+investigation appear below. Fixed-watermark resumable neighbor generation is
+implemented and tested, but does not by itself close the fleet gate.
 
 ## Reproduce
 
@@ -336,6 +336,108 @@ with 99 quiet organizations served in five rounds, maximum ready delay
 The export control cancelled in 536 ms, published no partial chunks, and
 passed both reserve isolation and forced-owner-death cancellation.
 
+### Further retained-data diagnosis
+
+The following are **failed strict runs**, not replacement acceptance criteria.
+Every row passed normal traffic (3,050/3,050), the quiet-neighbor control
+(200/200), and reconciliation correctness (zero failures). Limits did not
+change. Retained fixture history grows between runs, and observation overhead
+differs, so these rows are not a controlled causal comparison of optimizations.
+
+| Retained log in `tmp/` | Re-enrollment accepted / 20,996 | Rejected check-ins / observations |
+| --- | ---: | ---: |
+| `capacity-canonical-hold-fleet.log` | 20,961 | 25 / 10 |
+| `capacity-database-sampled-fleet.log` | 20,987 | 3 / 6 |
+| `capacity-antijoin-fleet.log` | 20,995 | 0 / 1 |
+| `capacity-antijoin-control-fleet.log` | 20,986 | 5 / 5 |
+| `capacity-loaded-claims-fleet.log` | 20,987 | 5 / 4 |
+| `capacity-batched-fleet.log` | 20,975 | 7 / 14 |
+
+Query-only profiling measured a 755.447 ms post-acquisition canonical interval,
+718.861 ms in SQL, including a 248.130 ms component-match INSERT. A later
+database-sampled run caught an unblocked `DataFileRead` during historical
+component-finding lookup (120.741 ms, within a 559.589 ms holder). Testing the
+nullable join key rather than the matched row ID gives PostgreSQL an index-only
+anti join. Counterbalanced plans in `capacity-catalog-antijoin-plans.log` show
+zero match heap fetches and 1,555 versus 2,046 shared buffer hits; warm execution
+times overlap, so no universal timing speedup is claimed.
+
+The in-VM sampler itself had a 321 ms gap during one stall. The independent
+`scripts/profile-capacity.sql` observer therefore runs outside the BEAM and
+records active statements, idle blockers and wait events every 50 ms, with
+cumulative IO/WAL/checkpointer counters about once per second. It refuses
+non-capacity databases. `LOAD_DATABASE_PROFILE=true` enables and checks IO/WAL
+timing on test connections only; it changes no production settings. Run the
+observer alongside the load in another shell, writing live diagnostics outside
+the workspace, then retain them after completion:
+
+Observer shell:
+
+```sh
+timeout 390s nix develop --command psql -X -h "$PWD/tmp/postgres-socket" -U postgres -d renga_test_capacity2 -f scripts/profile-capacity.sql > /tmp/capacity-db-profile.jsonl
+```
+
+Load shell, while the observer is running:
+
+```sh
+nix develop --command env MIX_ENV=test MIX_TEST_PARTITION=_capacity2 LOAD_REUSE=true LOAD_DATABASE_PROFILE=true mix run --no-start scripts/load-capacity.exs
+```
+
+Without in-process profiling, a failing second still had 587 ms organization
+waiters, root holders idle in transaction waiting for the application, CPU 98%
+busy and 0% IO wait. Surrounding three-second cumulative deltas were 58.856 ms
+of relation reads and 106.649 ms of WAL fsync, with no full WAL buffers. Storage
+alone does not explain that queue. Separate per-process samples captured
+control-plane and background Git CPU competing during a later 690 ms queue.
+The orb has workload CPU weight 50 versus control-plane weight 1,000, and a
+3 GiB workload memory ceiling. These observations identify executor contention
+but do **not** establish it as the sole cause; a controlled CPU-reservation
+comparison is needed before drawing that conclusion. Runtime policy has not
+been changed to manufacture a passing result.
+
+Scoped claim inputs now avoid twelve source/observation rereads per
+six-identifier inventory, with unchanged history locks, link validation and
+transaction boundaries (235 regressions passed). Immutable component evidence
+is inserted in validated batches of at most 100 rows, retaining ordered
+canonical matching and first-evidence semantics. All 263 inventory, claim
+concurrency and catalog checks passed, including a 128-DIMM duplicate/retry
+case. Neither change is claimed to close the strict gate.
+
+### Latest combined verification and executor constraint
+
+After these changes, the combined topology, archive, background and intake
+suites passed **284 tests**, one excluded
+(`tmp/capacity-latest-combined-controls.log`). Compilation with warnings as
+errors and formatting checks passed. Two subsequent full precommit attempts
+were killed with exit 137; the retry used two BEAM schedulers. The workload
+cgroup recorded OOM kills and reached its 3 GiB ceiling. These attempts do
+**not** establish a pass. A further full run with serial ExUnit execution
+completed: **3,130 passed** (one doctest, 3,129 tests), one excluded, in 486.7
+seconds (`tmp/capacity-latest-precommit-serial.log`). The command was
+`nix develop --command sh -c 'ERL_FLAGS="+S 2:2" MIX_ENV=test mix precommit --max-cases 1'`.
+No assertions were skipped or limits changed. This establishes latest full
+correctness under the serial test envelope, not a passing fleet load gate or
+a successful parallel full-suite run within the same memory ceiling.
+
+The latest lease control initially stopped once all first batches had started,
+leaving 48 quiet leases after bounded batches timed out. That failure remains
+in `tmp/capacity-latest-lease-control.log`. The harness now waits for actual
+completion within the same 30-second budget, and uses UUID organization slugs
+to avoid cross-VM fixture collisions in a retained database. The corrected
+control passed in six rounds: maximum first-batch delay **10,119 ms**, all
+2,475 quiet leases moved by **10,531 ms**, and all 25 locked noisy leases
+remained untouched (`tmp/capacity-latest-lease-completion-uuid-control.log`).
+The generation reserve/owner-death export control passed again, cancellation
+**533 ms**, with no partial chunks or scratch files
+(`tmp/capacity-latest-export-control.log`).
+
+The next diagnostic comparison requires a resource-isolated workload or an
+explicitly approved temporary equal-weight CPU experiment, restoring the
+original weight afterwards. No executor policy or admission limit has been
+changed. CPU competition is observed, but its contribution to strict fleet
+rejections remains unquantified; a passing isolated run would still need to
+be reported with its resource envelope rather than erase these failed runs.
+
 ## Remaining launch gates
 
 * A subsequent integrated fleet run rejected one normal check-in and seven
@@ -350,6 +452,16 @@ passed both reserve isolation and forced-owner-death cancellation.
   native-table versus generation-view probes did not establish a view
   regression (warm medians 95 vs 83 ms); canonical-lock tails remain under
   investigation. No defaults have been raised to mask them.
+  Loading immutable component evidence once per observation and skipping
+  impossible existing-match reads for newly inserted evidence removes 23
+  SELECTs from each fresh twelve-component inventory. All 93 reconciler and
+  component-match regressions pass. That change alone did **not** close the
+  gate: `tmp/capacity-component-prefetch-fleet.log` records normal 3,050/3,050,
+  re-enrollment 20,984/20,996 (five check-ins and seven observations rejected,
+  67/88 ms p95/p99), and quiet 200/200, with zero failed reconciliations.
+  The profiled canonical-lock waits reached 701 ms. The harness now separates
+  post-acquisition canonical-fence time from waiting-query time and retains
+  the five slowest SQL shapes per long transaction, without logging parameters.
 * The measured lease-sweep delay must be paired with a supported ready-org and
   backlog envelope; it does not establish a maximum for unbounded load.
 * Smaller pool overrides have not passed this fleet gate. The production

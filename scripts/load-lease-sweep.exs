@@ -36,7 +36,7 @@ defmodule Renga.LeaseSweepLoad do
 
     organizations =
       for _ <- 1..@organizations do
-        organization = organization_fixture()
+        organization = organization_fixture(%{slug: "lease-load-#{Ecto.UUID.generate()}"})
         agent = agent_fixture(organization, ["inventory.collect@1"])
 
         for _ <- 1..@jobs_per_organization do
@@ -154,12 +154,22 @@ defmodule Renga.LeaseSweepLoad do
   defp rotate_until_served(quiet, started, rounds) do
     Jobs.sweep()
 
+    # A bounded batch may make partial progress before its timeout. Starting
+    # every organization's first batch is not proof that all leases moved.
+    complete? =
+      Enum.all?(quiet, &:ets.member(__MODULE__, &1)) and
+        not Repo.exists?(
+          from(job in Job,
+            where: job.organization_id in ^quiet and job.state in ["leased", "running"]
+          )
+        )
+
     cond do
-      Enum.all?(quiet, &:ets.member(__MODULE__, &1)) ->
+      complete? ->
         rounds + 1
 
       System.monotonic_time(:millisecond) - started >= @handling_budget_ms ->
-        raise("not all ready organizations received a batch inside the handling budget")
+        raise("not all ready organizations completed lease handling inside the budget")
 
       true ->
         # Same cadence as Jobs.Sweeper: one second after the rotation ends.

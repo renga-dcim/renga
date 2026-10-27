@@ -23,12 +23,27 @@ defmodule Renga.CapacityLoad do
         )
 
     pool = String.to_integer(System.get_env("LOAD_POOL_SIZE", "64"))
+    database_profile? = System.get_env("LOAD_DATABASE_PROFILE") == "true"
+
+    parameters =
+      if database_profile?,
+        do:
+          Keyword.merge(repo_config[:parameters] || [],
+            track_io_timing: "on",
+            track_wal_io_timing: "on"
+          ),
+        else: repo_config[:parameters]
+
     # Sandbox auto-checkout pins a connection to each process for its entire
     # lifetime. A multi-minute run needs the production checkout semantics.
     Application.put_env(
       :renga,
       Repo,
-      Keyword.merge(repo_config, pool_size: pool, pool: DBConnection.ConnectionPool)
+      Keyword.merge(repo_config,
+        pool_size: pool,
+        pool: DBConnection.ConnectionPool,
+        parameters: parameters
+      )
     )
 
     Application.put_env(:renga, :intake_contact_worker_enabled, true)
@@ -41,6 +56,12 @@ defmodule Renga.CapacityLoad do
 
     Mix.Task.run("app.start")
     Logger.configure(level: :error)
+
+    if database_profile? do
+      %{rows: [["on"]]} = Repo.query!("SHOW track_io_timing")
+      %{rows: [["on"]]} = Repo.query!("SHOW track_wal_io_timing")
+    end
+
     :ets.new(__MODULE__, [:named_table, :public])
     :ets.new(:capacity_queries, [:named_table, :public])
     :ets.new(:capacity_slow_queries, [:named_table, :public, :ordered_set])
@@ -295,6 +316,8 @@ defmodule Renga.CapacityLoad do
   end
 
   def record_query(_event, measurements, %{query: query}, _config) do
+    record_canonical_hold(query, measurements)
+
     :ets.update_counter(
       :capacity_queries,
       query,
@@ -320,6 +343,62 @@ defmodule Renga.CapacityLoad do
 
       if :ets.info(:capacity_slow_queries, :size) > 100,
         do: :ets.delete(:capacity_slow_queries, :ets.first(:capacity_slow_queries))
+    end
+  end
+
+  # Query timings alone conflate waiting writers with the transaction holding
+  # the fence. Track the post-acquisition interval in the checkout's caller;
+  # retain only five SQL shapes and never log tenant payloads or parameters.
+  defp record_canonical_hold(query, measurements) do
+    now = System.monotonic_time(:microsecond)
+    elapsed = System.convert_time_unit(measurements[:query_time] || 0, :native, :microsecond)
+
+    cond do
+      query in ["begin", "rollback"] ->
+        Process.delete(:capacity_canonical_hold)
+
+      query == "commit" ->
+        case Process.delete(:capacity_canonical_hold) do
+          {started, sql_us, slowest} when now - started >= 100_000 ->
+            IO.puts(
+              Jason.encode!(%{
+                finished_at_ms: System.system_time(:millisecond),
+                canonical_hold_ms: (now - started) / 1_000,
+                sql_ms: (sql_us + elapsed) / 1_000,
+                slowest: slowest
+              })
+            )
+
+          _ ->
+            :ok
+        end
+
+      String.contains?(query, "FOR NO KEY UPDATE") and
+          String.contains?(query, "FROM \"organizations\"") ->
+        # Reentrant acquisitions must not reset the outer transaction clock.
+        unless Process.get(:capacity_canonical_hold),
+          do: Process.put(:capacity_canonical_hold, {now, 0, []})
+
+      true ->
+        case Process.get(:capacity_canonical_hold) do
+          {started, sql_us, slowest} ->
+            slowest =
+              [
+                %{
+                  query: query,
+                  query_ms: elapsed / 1_000,
+                  finished_at_ms: System.system_time(:millisecond)
+                }
+                | slowest
+              ]
+              |> Enum.sort_by(& &1.query_ms, :desc)
+              |> Enum.take(5)
+
+            Process.put(:capacity_canonical_hold, {started, sql_us + elapsed, slowest})
+
+          nil ->
+            :ok
+        end
     end
   end
 
