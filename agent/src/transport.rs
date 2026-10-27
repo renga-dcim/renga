@@ -18,14 +18,15 @@ use reqwest::{
 };
 use serde::{de::DeserializeOwned, Serialize};
 use std::{
+    collections::HashMap,
     fmt,
     io::Read,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tracing::warn;
 
@@ -59,6 +60,7 @@ pub struct TransportError {
     message: String,
     kind: FailureKind,
     status: Option<StatusCode>,
+    retry_not_before: Option<Instant>,
     moved: bool,
     /// A `409` naming `collector.kind`: the payload's collector kind differs from the stream
     /// the server already has under that collector ID.
@@ -71,6 +73,7 @@ impl TransportError {
             message,
             kind,
             status: None,
+            retry_not_before: None,
             moved: false,
             collector_kind_conflict: false,
         }
@@ -185,6 +188,7 @@ pub struct HttpClient {
     cancellation: Cancellation,
     /// Raised by any clone that hears `410 moved`, so the daemon resolves the home again.
     moved: Arc<AtomicBool>,
+    retry_not_before: Arc<Mutex<HashMap<&'static str, Instant>>>,
 }
 
 impl HttpClient {
@@ -246,6 +250,7 @@ impl HttpClient {
             notices,
             cancellation,
             moved: Arc::default(),
+            retry_not_before: Arc::default(),
         })
     }
 
@@ -269,6 +274,7 @@ impl HttpClient {
             cancellation: _,
             // How a client reports a move, not what it sends.
             moved: _,
+            retry_not_before: _,
         } = other;
         let public_key =
             |key: &Option<Arc<InstallationKey>>| key.as_ref().map(|key| key.public_key());
@@ -301,6 +307,7 @@ impl HttpClient {
     pub fn sharing_moved_signal(mut self, previous: &HttpClient) -> Self {
         if self.settings.home == previous.settings.home {
             self.moved = Arc::clone(&previous.moved);
+            self.retry_not_before = Arc::clone(&previous.retry_not_before);
         }
         self
     }
@@ -368,7 +375,16 @@ impl HttpClient {
             signature: URL_SAFE_NO_PAD
                 .encode(key.sign(&offer.message(self.settings.installation_id))),
         };
-        self.post_json(url, &claim)
+        let budget = (offer.expires_at - chrono::Utc::now())
+            .to_std()
+            .unwrap_or_default();
+        let body = self.post_reading_with_budget(url, &claim, budget)?;
+        serde_json::from_slice(&body).map_err(|error| {
+            TransportError::new(
+                format!("cannot parse server response: {error}"),
+                FailureKind::Permanent,
+            )
+        })
     }
 
     /// Posts one numbered report on a leased job. Retries resend the same
@@ -383,6 +399,29 @@ impl HttpClient {
             &format!("/api/v1/agent/jobs/{job_id}/events"),
         )?;
         self.post_json(url, report)
+    }
+
+    pub fn post_job_report_before(
+        &self,
+        job_id: uuid::Uuid,
+        report: &JobReport<'_>,
+        deadline: Instant,
+    ) -> Result<ReportAck, TransportError> {
+        let url = endpoint_url(
+            &self.settings.home,
+            &format!("/api/v1/agent/jobs/{job_id}/events"),
+        )?;
+        let body = self.post_reading_with_budget(
+            url,
+            report,
+            deadline.saturating_duration_since(Instant::now()),
+        )?;
+        serde_json::from_slice(&body).map_err(|error| {
+            TransportError::new(
+                format!("cannot parse server response: {error}"),
+                FailureKind::Permanent,
+            )
+        })
     }
     pub fn post_observation(&self, value: &Observation) -> Result<(), TransportError> {
         self.post_encoded_observation(&encode_observation(value)?)
@@ -439,20 +478,23 @@ impl HttpClient {
         body: &[u8],
         cancelled: impl Fn() -> bool,
     ) -> Result<(), TransportError> {
+        let timeout = self.settings.request_timeout.min(DELIVERY_BUDGET);
         self.noting_moved(retry(
             self.settings.max_retry_attempts,
-            self.settings.request_timeout,
+            timeout,
             || {
+                self.check_retry_deadline(url)?;
                 let response = self
                     .client
                     .post(url.clone())
+                    .timeout(timeout)
                     .header(AUTHORIZATION, self.authorization.clone())
                     .header(INSTALLATION_ID_HEADER, self.installation_id.clone())
                     .header(reqwest::header::CONTENT_TYPE, "application/json")
                     .body(body.to_vec())
                     .send()
                     .map_err(request_error)?;
-                response_result(response)
+                self.remember_retry_deadline(url, response_result(response))
             },
             thread::sleep,
             cancelled,
@@ -474,23 +516,96 @@ impl HttpClient {
 
     /// Posts JSON and returns the successful response's body.
     fn post_reading<T: Serialize>(&self, url: Url, value: &T) -> Result<Vec<u8>, TransportError> {
-        self.noting_moved(retry(
+        self.post_reading_with_budget(url, value, DELIVERY_BUDGET)
+    }
+
+    fn post_reading_with_budget<T: Serialize>(
+        &self,
+        url: Url,
+        value: &T,
+        budget: Duration,
+    ) -> Result<Vec<u8>, TransportError> {
+        let budget = budget.min(DELIVERY_BUDGET);
+        let timeout = self.settings.request_timeout.min(budget);
+        self.noting_moved(retry_with_budget(
             self.settings.max_retry_attempts,
-            self.settings.request_timeout,
+            timeout,
+            budget,
             || {
+                if budget.is_zero() {
+                    return Err(TransportError::new(
+                        "job lease delivery budget expired".into(),
+                        FailureKind::Transient,
+                    ));
+                }
+                self.check_retry_deadline(&url)?;
                 let response = self
                     .client
                     .post(url.clone())
+                    .timeout(timeout)
                     .header(AUTHORIZATION, self.authorization.clone())
                     .header(INSTALLATION_ID_HEADER, self.installation_id.clone())
                     .json(value)
                     .send()
                     .map_err(request_error)?;
-                response_body(response)
+                self.remember_retry_deadline(&url, response_body(response))
             },
             thread::sleep,
             || self.cancellation.cancelled(),
         ))
+    }
+
+    // Six fixed classes, never one entry per job UUID. Bulk throttling must
+    // not suppress the independent check-in and report reserve.
+    fn retry_class(url: &Url) -> &'static str {
+        match url.path() {
+            OBSERVATION_PATH => "observations",
+            TELEMETRY_PATH => "telemetry",
+            CHECKIN_PATH => "checkins",
+            JOB_LEASE_PATH => "leases",
+            path if path.ends_with("/claims") => "claims",
+            _ => "reports",
+        }
+    }
+
+    fn check_retry_deadline(&self, url: &Url) -> Result<(), TransportError> {
+        let deadlines = self
+            .retry_not_before
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(&deadline) = deadlines.get(Self::retry_class(url)) {
+            if deadline > Instant::now() {
+                return Err(TransportError {
+                    retry_not_before: Some(deadline),
+                    ..TransportError::new(
+                        "server requested retry later".into(),
+                        FailureKind::Transient,
+                    )
+                    .with_status(StatusCode::TOO_MANY_REQUESTS)
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn remember_retry_deadline<T>(
+        &self,
+        url: &Url,
+        result: Result<T, TransportError>,
+    ) -> Result<T, TransportError> {
+        if let Err(error) = &result {
+            if let Some(deadline) = error.retry_not_before {
+                let mut deadlines = self
+                    .retry_not_before
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                deadlines
+                    .entry(Self::retry_class(url))
+                    .and_modify(|existing| *existing = (*existing).max(deadline))
+                    .or_insert(deadline);
+            }
+        }
+        result
     }
 }
 
@@ -694,8 +809,14 @@ fn read_bounded(reader: &mut impl Read, limit: u64) -> Result<Vec<u8>, Transport
 }
 
 fn status_error(status: StatusCode, response: &mut Response) -> TransportError {
+    let retry_not_before = response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(retry_after);
     let excerpt = bounded_error_excerpt(response);
     TransportError {
+        retry_not_before,
         moved: moved(status, &excerpt),
         collector_kind_conflict: status == StatusCode::CONFLICT
             && rejects_path(&excerpt, "collector.kind"),
@@ -705,6 +826,18 @@ fn status_error(status: StatusCode, response: &mut Response) -> TransportError {
         )
         .with_status(status)
     }
+}
+
+fn retry_after(value: &str) -> Option<Instant> {
+    let delay = if let Ok(seconds) = value.parse::<u64>() {
+        Duration::from_secs(seconds)
+    } else {
+        let date = chrono::DateTime::parse_from_rfc2822(value).ok()?;
+        (date.with_timezone(&chrono::Utc) - chrono::Utc::now())
+            .to_std()
+            .unwrap_or_default()
+    };
+    Instant::now().checked_add(delay)
 }
 
 /// `410 moved` names an organization that now lives on another deployment (RFD 23). Any other
@@ -756,6 +889,24 @@ fn bounded_error_excerpt(reader: &mut impl Read) -> String {
 fn retry<T>(
     attempts: u32,
     request_timeout: Duration,
+    operation: impl FnMut() -> Result<T, TransportError>,
+    sleep: impl FnMut(Duration),
+    cancelled: impl Fn() -> bool,
+) -> Result<T, TransportError> {
+    retry_with_budget(
+        attempts,
+        request_timeout,
+        DELIVERY_BUDGET,
+        operation,
+        sleep,
+        cancelled,
+    )
+}
+
+fn retry_with_budget<T>(
+    attempts: u32,
+    request_timeout: Duration,
+    budget: Duration,
     mut operation: impl FnMut() -> Result<T, TransportError>,
     mut sleep: impl FnMut(Duration),
     cancelled: impl Fn() -> bool,
@@ -773,13 +924,19 @@ fn retry<T>(
                 return Err(error)
             }
             Err(error) => {
+                let delay = delay.max(
+                    error
+                        .retry_not_before
+                        .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+                        .unwrap_or_default(),
+                );
                 // Do not start an attempt whose configured timeout cannot fit inside the fixed
                 // delivery budget; check-in interval plus this budget must remain below lease TTL.
                 if started
                     .elapsed()
                     .saturating_add(delay)
                     .saturating_add(request_timeout)
-                    > DELIVERY_BUDGET
+                    > budget
                 {
                     return Err(error);
                 }
@@ -792,9 +949,16 @@ fn retry<T>(
                     sleep(slice);
                     remaining -= slice;
                 }
-                delay = (delay * 2).min(Duration::from_secs(8));
+                // Sleeping can overshoot under load; the earlier check is
+                // not permission to start a request after its budget.
+                if started.elapsed().saturating_add(request_timeout) > budget {
+                    return Err(error);
+                }
+                // Retry-After is a floor, not the exponential backoff state.
+                // The next response may supply a different deadline.
             }
         }
+        delay = (delay * 2).min(Duration::from_secs(8));
     }
     unreachable!("configuration guarantees at least one attempt")
 }
@@ -963,12 +1127,23 @@ mod tests {
     fn answer_each(
         responses: Vec<(u16, &'static str)>,
     ) -> (String, thread::JoinHandle<Vec<String>>) {
+        answer_each_with_headers(
+            responses
+                .into_iter()
+                .map(|(status, body)| (status, "", body))
+                .collect(),
+        )
+    }
+
+    fn answer_each_with_headers(
+        responses: Vec<(u16, &'static str, &'static str)>,
+    ) -> (String, thread::JoinHandle<Vec<String>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
         let server = thread::spawn(move || {
             responses
                 .into_iter()
-                .map(|(status, body)| {
+                .map(|(status, headers, body)| {
                     let (mut stream, _) = listener.accept().unwrap();
                     let mut request = Vec::new();
                     let mut buffer = [0; 4096];
@@ -992,7 +1167,7 @@ mod tests {
                     }
                     write!(
                         stream,
-                        "HTTP/1.1 {status} Status\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        "HTTP/1.1 {status} Status\r\n{headers}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                         body.len()
                     )
                     .unwrap();
@@ -1008,6 +1183,86 @@ mod tests {
         config.allow_insecure_http = true;
         config.request_timeout = Duration::from_secs(5);
         HttpClient::new(&config, Cancellation::default()).unwrap()
+    }
+
+    #[test]
+    fn long_retry_after_returns_without_sleeping_and_survives_a_later_delivery_pass() {
+        let (origin, server) =
+            answer_each_with_headers(vec![(429, "Retry-After: 60\r\n", "{}"), (202, "", "{}")]);
+        let mut config = config(&origin, "token");
+        config.allow_insecure_http = true;
+        config.request_timeout = Duration::from_secs(5);
+        config.max_retry_attempts = 3;
+        let client = HttpClient::new(&config, Cancellation::default()).unwrap();
+        let started = Instant::now();
+        let first = client.post_encoded_observation(b"{}").unwrap_err();
+        assert_eq!(first.status(), Some(StatusCode::TOO_MANY_REQUESTS));
+        assert_eq!(first.kind(), FailureKind::Transient);
+        // A new pass and another clone must not ignore the previous response.
+        let later = client.clone().post_encoded_observation(b"{}").unwrap_err();
+        assert_eq!(later.status(), Some(StatusCode::TOO_MANY_REQUESTS));
+        assert!(started.elapsed() < Duration::from_secs(1));
+
+        // Bulk backpressure must not block independent lease maintenance.
+        client.post_checkin(&CheckIn::new(vec![], None)).unwrap();
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].starts_with("POST /api/v1/observations "));
+        assert!(requests[1].starts_with("POST /api/v1/agent/checkins "));
+    }
+
+    #[test]
+    fn short_retry_after_is_a_not_before_deadline() {
+        let (origin, server) =
+            answer_each_with_headers(vec![(429, "Retry-After: 1\r\n", "{}"), (202, "", "{}")]);
+        let mut config = config(&origin, "token");
+        config.allow_insecure_http = true;
+        config.request_timeout = Duration::from_secs(1);
+        config.max_retry_attempts = 2;
+        let started = Instant::now();
+        HttpClient::new(&config, Cancellation::default())
+            .unwrap()
+            .post_encoded_observation(b"{}")
+            .unwrap();
+        assert!(started.elapsed() >= Duration::from_secs(1));
+        assert_eq!(server.join().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn report_retry_cannot_sleep_beyond_the_remaining_lease() {
+        let (origin, server) = answer_each_with_headers(vec![(429, "Retry-After: 2\r\n", "{}")]);
+        let mut config = config(&origin, "token");
+        config.allow_insecure_http = true;
+        config.request_timeout = Duration::from_millis(100);
+        config.max_retry_attempts = 3;
+        let client = HttpClient::new(&config, Cancellation::default()).unwrap();
+        let payload = json!({});
+        let report = JobReport {
+            lease_token: "t",
+            sequence: 1,
+            kind: crate::payload::ReportType::Succeeded,
+            payload: &payload,
+        };
+        let started = Instant::now();
+        let error = client
+            .post_job_report_before(
+                uuid::Uuid::nil(),
+                &report,
+                started + Duration::from_millis(500),
+            )
+            .unwrap_err();
+        assert_eq!(error.status(), Some(StatusCode::TOO_MANY_REQUESTS));
+        assert!(started.elapsed() < Duration::from_millis(500));
+        assert_eq!(server.join().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn retry_after_accepts_http_dates_and_ignores_invalid_values() {
+        let date = (chrono::Utc::now() + chrono::Duration::seconds(60)).to_rfc2822();
+        let delay = retry_after(&date).unwrap().duration_since(Instant::now());
+        assert!(delay > Duration::from_secs(58) && delay <= Duration::from_secs(60));
+        assert!(retry_after("not a date").is_none());
+        assert!(retry_after("-1").is_none());
     }
 
     #[test]
@@ -1126,7 +1381,9 @@ mod tests {
     #[test]
     fn claims_privileged_offers_with_the_installation_key() {
         const OFFER: &str = r#"{"job_id":"67e55044-10b1-426f-9247-bb680e5fe0c8","capability":"service.restart@1","lease_token":"t","nonce":"n","resource_id":"1f0e9b2a-3c4d-4e5f-8a9b-0c1d2e3f4a5b","binding_version":2,"expires_at":"2026-10-14T12:00:00Z"}"#;
-        let lease = format!(r#"{{"jobs":[],"offers":[{OFFER}]}}"#).leak();
+        let mut offer: serde_json::Value = serde_json::from_str(OFFER).unwrap();
+        offer["expires_at"] = json!(chrono::Utc::now() + chrono::Duration::minutes(1));
+        let lease = format!(r#"{{"jobs":[],"offers":[{offer}]}}"#).leak();
         let (origin, server) = answer_each(vec![
             (200, lease),
             (
@@ -1165,10 +1422,11 @@ mod tests {
 
     #[test]
     fn skips_offers_it_cannot_claim() {
+        let expires_at = (chrono::Utc::now() + chrono::Duration::minutes(1)).to_rfc3339();
         let (origin, server) = answer_each(vec![
             (
                 200,
-                r#"{"jobs":[],"offers":[{"job_id":"67e55044-10b1-426f-9247-bb680e5fe0c8","capability":"service.restart@1","lease_token":"t","nonce":"n","resource_id":"1f0e9b2a-3c4d-4e5f-8a9b-0c1d2e3f4a5b","binding_version":2,"expires_at":"2026-10-14T12:00:00Z"}]}"#,
+                format!(r#"{{"jobs":[],"offers":[{{"job_id":"67e55044-10b1-426f-9247-bb680e5fe0c8","capability":"service.restart@1","lease_token":"t","nonce":"n","resource_id":"1f0e9b2a-3c4d-4e5f-8a9b-0c1d2e3f4a5b","binding_version":2,"expires_at":"{expires_at}"}}]}}"#).leak(),
             ),
             (
                 409,
