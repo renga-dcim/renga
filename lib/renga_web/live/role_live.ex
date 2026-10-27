@@ -185,7 +185,7 @@ defmodule RengaWeb.RoleLive do
       <.settings_page
         id="roles"
         title="Roles"
-        description="A role is a named set of permissions. Members hold a built-in role; custom roles add combinations of your own."
+        description="Roles grant permissions across the whole organization, not individual resources, sites, teams, or groups. Members hold a built-in role; custom roles add permissions."
       >
         <:actions>
           <.button

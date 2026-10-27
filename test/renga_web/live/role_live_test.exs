@@ -19,6 +19,7 @@ defmodule RengaWeb.RoleLiveTest do
   test "admins define, edit, and delete a custom role", context do
     {:ok, view, _html} = live(context.admin_conn, ~p"/settings/roles")
 
+    assert has_element?(view, "#roles", "Roles grant permissions across the whole organization")
     assert has_element?(view, "#built-in-role-viewer", "inventory.read")
     # Owner-only and reserved permissions are not offered to an admin.
     refute has_element?(view, "#role-permission-organization\\.export")

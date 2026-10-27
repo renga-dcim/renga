@@ -18,9 +18,18 @@ defmodule RengaWeb.QueryFanOutComponent do
   alias Renga.Jobs
   alias Renga.Jobs.Capability
   alias Renga.Jobs.Query
+  alias RengaWeb.UserAuth
 
   @impl true
   def mount(socket) do
+    # Component-targeted events do not run the parent LiveView's hooks.
+    socket =
+      attach_hook(socket, :authenticated_access, :handle_event, fn _event, _params, socket ->
+        with {:cont, socket} <- UserAuth.refresh_session(socket) do
+          UserAuth.refresh_organization_access(socket)
+        end
+      end)
+
     {:ok, assign(socket, choice: nil, form: parameters_form(%{}), error: nil, reach: nil)}
   end
 

@@ -599,10 +599,7 @@ defmodule RengaWeb.UserAuth do
 
     case socket.assigns.current_scope do
       %Scope{organization_id: organization_id} when is_binary(organization_id) ->
-        {:cont,
-         socket
-         |> Phoenix.Component.assign(:organization_access_required?, true)
-         |> attach_organization_guard()}
+        {:cont, attach_organization_guard(socket)}
 
       # The organization requires MFA and this session has not shown a
       # second factor yet: ask for one in place (RFD 19).
@@ -640,8 +637,10 @@ defmodule RengaWeb.UserAuth do
   # next request observes current membership, permissions, and MFA policy.
   @doc false
   def refresh_organization_access(
-        %{assigns: %{organization_access_required?: true, current_scope: current_scope}} = socket
-      ) do
+        %{assigns: %{current_scope: %Scope{organization_id: organization_id} = current_scope}} =
+          socket
+      )
+      when is_binary(organization_id) do
     scope = Accounts.scope_for_user(current_scope.user, current_scope.organization_id)
 
     case scope do
@@ -671,7 +670,63 @@ defmodule RengaWeb.UserAuth do
 
       Accounts.scope_for_user(user, session[to_string(@current_organization_key)])
     end)
+    |> attach_session_guard(session["user_token"])
     |> end_at_session_deadline(session["user_token"])
+  end
+
+  # Timers and disconnect broadcasts only wake the socket up. Re-read the
+  # token before every callback so queued events, async results and pushes
+  # cannot use expired or revoked authentication, even on account-only pages.
+  defp attach_session_guard(socket, token) when is_binary(token) do
+    if Phoenix.LiveView.connected?(socket) && socket.assigns[:current_scope] &&
+         socket.assigns.current_scope.user &&
+         not Map.has_key?(socket.assigns, :authenticated_session_token) do
+      Process.send_after(self(), :revalidate_session_access, 5_000)
+
+      socket
+      |> Phoenix.Component.assign(:authenticated_session_token, token)
+      |> Phoenix.LiveView.attach_hook(:authenticated_session, :handle_event, fn
+        _event, _params, socket -> refresh_session(socket)
+      end)
+      |> Phoenix.LiveView.attach_hook(:authenticated_session, :handle_params, fn
+        _params, _uri, socket -> refresh_session(socket)
+      end)
+      |> Phoenix.LiveView.attach_hook(:authenticated_session, :handle_info, &session_info/2)
+      |> Phoenix.LiveView.attach_hook(:authenticated_session, :handle_async, fn
+        _name, _result, socket -> refresh_session(socket)
+      end)
+    else
+      socket
+    end
+  end
+
+  defp attach_session_guard(socket, _token), do: socket
+
+  defp session_info(:revalidate_session_access, socket) do
+    with {:cont, socket} <- refresh_session(socket),
+         {:cont, socket} <- refresh_organization_access(socket) do
+      # A missed broadcast (including an operator command on another
+      # node) must not leave an idle page displaying revoked access.
+      Process.send_after(self(), :revalidate_session_access, 5_000)
+      {:halt, socket}
+    end
+  end
+
+  defp session_info(_message, socket), do: refresh_session(socket)
+
+  @doc false
+  def refresh_session(socket) do
+    case Accounts.get_user_by_session_token(socket.assigns.authenticated_session_token) do
+      {user, _inserted_at} ->
+        scope = %{socket.assigns.current_scope | user: user}
+        {:cont, Phoenix.Component.assign(socket, :current_scope, scope)}
+
+      nil ->
+        {:halt,
+         socket
+         |> Phoenix.LiveView.put_flash(:error, "Your session ended. Please log in again.")
+         |> Phoenix.LiveView.redirect(to: ~p"/users/log-in")}
+    end
   end
 
   # A connected LiveView outlives the request that checked its session, so
