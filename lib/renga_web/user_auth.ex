@@ -691,19 +691,7 @@ defmodule RengaWeb.UserAuth do
       |> Phoenix.LiveView.attach_hook(:authenticated_session, :handle_params, fn
         _params, _uri, socket -> refresh_session(socket)
       end)
-      |> Phoenix.LiveView.attach_hook(:authenticated_session, :handle_info, fn
-        :revalidate_session_access, socket ->
-          with {:cont, socket} <- refresh_session(socket),
-               {:cont, socket} <- refresh_organization_access(socket) do
-            # A missed broadcast (including an operator command on another
-            # node) must not leave an idle page displaying revoked access.
-            Process.send_after(self(), :revalidate_session_access, 5_000)
-            {:halt, socket}
-          end
-
-        _message, socket ->
-          refresh_session(socket)
-      end)
+      |> Phoenix.LiveView.attach_hook(:authenticated_session, :handle_info, &session_info/2)
       |> Phoenix.LiveView.attach_hook(:authenticated_session, :handle_async, fn
         _name, _result, socket -> refresh_session(socket)
       end)
@@ -713,6 +701,18 @@ defmodule RengaWeb.UserAuth do
   end
 
   defp attach_session_guard(socket, _token), do: socket
+
+  defp session_info(:revalidate_session_access, socket) do
+    with {:cont, socket} <- refresh_session(socket),
+         {:cont, socket} <- refresh_organization_access(socket) do
+      # A missed broadcast (including an operator command on another
+      # node) must not leave an idle page displaying revoked access.
+      Process.send_after(self(), :revalidate_session_access, 5_000)
+      {:halt, socket}
+    end
+  end
+
+  defp session_info(_message, socket), do: refresh_session(socket)
 
   @doc false
   def refresh_session(socket) do
