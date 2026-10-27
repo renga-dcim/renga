@@ -821,31 +821,34 @@ defmodule Renga.Accounts do
         true
 
       "deletion_pending" ->
-        # Recovery authenticates existing owners only, never a new signup or
-        # ordinary member. Session scope and MFA remain the normal provider flow.
-        subject = result.claims["sub"]
-
-        membership =
-          is_binary(subject) &&
-            Repo.one(
-              from m in OrganizationMembership,
-                join: i in Renga.Accounts.UserIdentity,
-                on: i.user_id == m.user_id,
-                where:
-                  m.organization_id == ^organization_id and m.role == "owner" and
-                    m.status == "active",
-                where: i.provider_id == ^provider_id and i.subject == ^subject,
-                select: m
-            )
-
-        membership &&
-          (is_nil(membership.scim_connection_id) or
-             Renga.Scim.Grants.granted_role(organization_id, membership.user_id) == "owner")
+        recovery_sign_in_allowed?(organization_id, provider_id, result.claims["sub"])
 
       _ ->
         false
     end
   end
+
+  # Recovery authenticates existing owners only, never a new signup or
+  # ordinary member. Session scope and MFA remain the normal provider flow.
+  defp recovery_sign_in_allowed?(organization_id, provider_id, subject) when is_binary(subject) do
+    membership =
+      Repo.one(
+        from m in OrganizationMembership,
+          join: i in Renga.Accounts.UserIdentity,
+          on: i.user_id == m.user_id,
+          where:
+            m.organization_id == ^organization_id and m.role == "owner" and
+              m.status == "active",
+          where: i.provider_id == ^provider_id and i.subject == ^subject,
+          select: m
+      )
+
+    membership &&
+      (is_nil(membership.scim_connection_id) or
+         Renga.Scim.Grants.granted_role(organization_id, membership.user_id) == "owner")
+  end
+
+  defp recovery_sign_in_allowed?(_organization_id, _provider_id, _subject), do: false
 
   ## Linked identities
 

@@ -36,35 +36,11 @@ defmodule Renga.Operators.OrganizationLifecycle do
   end
 
   defp do_change(id, action, context, user) do
-    run =
-      fn ->
-        DeploymentAudit.mutate(context, "organization.#{action}", fn ->
-          with {:ok, organization} <- lock(id),
-               :ok <- if(is_nil(user), do: :ok, else: owner_check(user, organization)),
-               {:ok, attrs} <- transition(organization, action) do
-            changed = Map.keys(attrs)
-            if attrs[:status] == "active", do: reconcile_sources!(organization.id)
-            updated = organization |> Ecto.Changeset.change(attrs) |> Repo.update!()
-
-            if changed != [] do
-              if updated.status != "active", do: Renga.Jobs.suspend_organization!(updated.id)
-              activity!(updated, action, context)
-              # Delivered at commit to every application VM, including when
-              # this mutation runs in the repository-only release command VM.
-              Repo.query!("SELECT pg_notify('renga_organization_lifecycle', $1)", [id])
-
-              if action in ~w(schedule_deletion cancel_deletion) or
-                   (action == "resume" and organization.status == "deletion_pending"),
-                 do: enqueue_notices!(updated, action)
-            end
-
-            {:ok, {updated, changed != []},
-             %{organization: updated, target_id: id, changed: changed}}
-          else
-            {:error, reason} -> {:error, reason, %{target_id: id}}
-          end
-        end)
-      end
+    run = fn ->
+      DeploymentAudit.mutate(context, "organization.#{action}", fn ->
+        apply_change(id, action, context, user)
+      end)
+    end
 
     result = if Process.whereis(Renga.PubSub), do: Renga.Scim.Grants.announcing(run), else: run.()
 
@@ -79,6 +55,33 @@ defmodule Renga.Operators.OrganizationLifecycle do
       error ->
         error
     end
+  end
+
+  defp apply_change(id, action, context, user) do
+    with {:ok, organization} <- lock(id),
+         :ok <- if(is_nil(user), do: :ok, else: owner_check(user, organization)),
+         {:ok, attrs} <- transition(organization, action) do
+      changed = Map.keys(attrs)
+      if attrs[:status] == "active", do: reconcile_sources!(organization.id)
+      updated = organization |> Ecto.Changeset.change(attrs) |> Repo.update!()
+      if changed != [], do: record_change!(organization, updated, action, context)
+
+      {:ok, {updated, changed != []}, %{organization: updated, target_id: id, changed: changed}}
+    else
+      {:error, reason} -> {:error, reason, %{target_id: id}}
+    end
+  end
+
+  defp record_change!(organization, updated, action, context) do
+    if updated.status != "active", do: Renga.Jobs.suspend_organization!(updated.id)
+    activity!(updated, action, context)
+    # Delivered at commit to every application VM, including when
+    # this mutation runs in the repository-only release command VM.
+    Repo.query!("SELECT pg_notify('renga_organization_lifecycle', $1)", [updated.id])
+
+    if action in ~w(schedule_deletion cancel_deletion) or
+         (action == "resume" and organization.status == "deletion_pending"),
+       do: enqueue_notices!(updated, action)
   end
 
   @doc false
@@ -243,61 +246,74 @@ defmodule Renga.Operators.OrganizationLifecycle do
 
     with {:ok, _organization} <-
            DeploymentAudit.mutate(context, "organization.begin_purge", fn ->
-             with {:ok, organization} <- lock(id),
-                  true <-
-                    organization.status == "purging" or
-                      (organization.status == "deletion_pending" and
-                         DateTime.compare(organization.deletion_due_at, now) != :gt) do
-               updated =
-                 organization |> Ecto.Changeset.change(status: "purging") |> Repo.update!()
-
-               {:ok, updated, %{organization: updated, target_id: id, changed: [:status]}}
-             else
-               _ -> {:error, :not_due, %{target_id: id}}
-             end
+             begin_purge(id, now)
            end) do
       DeploymentAudit.mutate(context, "organization.purge", fn ->
-        # Provider changes/sign-ins lock providers before organizations. Keep
-        # that order while retiring credentials; provider scope tombstones stay.
-        result =
-          Renga.Accounts.IdentityProviders.locked(nil, fn ->
-            providers =
-              Repo.all(
-                from p in Renga.Accounts.IdentityProvider,
-                  where: p.organization_id == ^id,
-                  order_by: p.id,
-                  lock: "FOR UPDATE"
-              )
-
-            with {:ok, %Organization{status: "purging"} = organization} <- lock(id) do
-              for provider <- providers, is_nil(provider.removed_at) do
-                {:ok, _} =
-                  Renga.Accounts.IdentityProviders.remove(
-                    provider,
-                    {:operator, "organization lifecycle worker"}
-                  )
-              end
-
-              # Tenant foreign keys cascade, including archive chunks. Users,
-              # provider identity tombstones and deployment attribution survive.
-              Repo.delete!(organization)
-              {:ok, organization}
-            else
-              _ -> {:error, :not_found}
-            end
-          end)
-
-        case result do
-          {:ok, organization} ->
-            {:ok, organization,
-             %{organization: organization, target_id: id, changed: [:organization]}}
-
-          {:error, reason} ->
-            {:error, reason, %{target_id: id}}
-        end
+        purge(id)
       end)
     end
   end
+
+  defp begin_purge(id, now) do
+    with {:ok, organization} <- lock(id),
+         true <-
+           organization.status == "purging" or
+             (organization.status == "deletion_pending" and
+                DateTime.compare(organization.deletion_due_at, now) != :gt) do
+      updated = organization |> Ecto.Changeset.change(status: "purging") |> Repo.update!()
+
+      {:ok, updated, %{organization: updated, target_id: id, changed: [:status]}}
+    else
+      _ -> {:error, :not_due, %{target_id: id}}
+    end
+  end
+
+  defp purge(id) do
+    result = Renga.Accounts.IdentityProviders.locked(nil, fn -> purge_locked(id) end)
+
+    case result do
+      {:ok, organization} ->
+        {:ok, organization,
+         %{organization: organization, target_id: id, changed: [:organization]}}
+
+      {:error, reason} ->
+        {:error, reason, %{target_id: id}}
+    end
+  end
+
+  defp purge_locked(id) do
+    # Provider changes/sign-ins lock providers before organizations. Keep
+    # that order while retiring credentials; provider scope tombstones stay.
+    providers =
+      Repo.all(
+        from p in Renga.Accounts.IdentityProvider,
+          where: p.organization_id == ^id,
+          order_by: p.id,
+          lock: "FOR UPDATE"
+      )
+
+    case lock(id) do
+      {:ok, %Organization{status: "purging"} = organization} ->
+        Enum.each(providers, &retire_provider!/1)
+        # Tenant foreign keys cascade, including archive chunks. Users,
+        # provider identity tombstones and deployment attribution survive.
+        Repo.delete!(organization)
+        {:ok, organization}
+
+      _ ->
+        {:error, :not_found}
+    end
+  end
+
+  defp retire_provider!(%{removed_at: nil} = provider) do
+    {:ok, _} =
+      Renga.Accounts.IdentityProviders.remove(
+        provider,
+        {:operator, "organization lifecycle worker"}
+      )
+  end
+
+  defp retire_provider!(_provider), do: :ok
 
   defp activity!(organization, action, context) do
     %ChangeEvent{organization_id: organization.id, actor_user_id: user_id(context.actor)}
@@ -334,7 +350,13 @@ defmodule Renga.Operators.OrganizationLifecycle do
       )
       |> Accounts.put_organization_emails(organization.id)
 
-    for user <- users, email = user.email || user.organization_email, is_binary(email) do
+    Enum.each(users, fn user -> enqueue_notice!(organization, action, user) end)
+  end
+
+  defp enqueue_notice!(organization, action, user) do
+    email = user.email || user.organization_email
+
+    if is_binary(email) do
       Repo.insert_all("organization_lifecycle_notices", [
         %{
           id: Ecto.UUID.dump!(Ecto.UUID.generate()),
@@ -360,18 +382,20 @@ defmodule Renga.Operators.OrganizationLifecycle do
             select: map(n, [:id, :recipient, :organization_name, :operation, :deadline])
         )
 
-      Enum.each(notices, fn notice ->
-        case Renga.Accounts.UserNotifier.deliver_organization_lifecycle(notice) do
-          {:ok, _} ->
-            Repo.update_all(
-              from(n in "organization_lifecycle_notices", where: n.id == ^notice.id),
-              set: [delivered_at: Renga.Time.utc_now_ms()]
-            )
-
-          {:error, _} ->
-            :ok
-        end
-      end)
+      Enum.each(notices, &deliver_notice/1)
     end)
+  end
+
+  defp deliver_notice(notice) do
+    case Renga.Accounts.UserNotifier.deliver_organization_lifecycle(notice) do
+      {:ok, _} ->
+        Repo.update_all(
+          from(n in "organization_lifecycle_notices", where: n.id == ^notice.id),
+          set: [delivered_at: Renga.Time.utc_now_ms()]
+        )
+
+      {:error, _} ->
+        :ok
+    end
   end
 end

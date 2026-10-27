@@ -195,12 +195,7 @@ defmodule Renga.Release.CLI do
              context
            ) do
         {:ok, updated} ->
-          IO.puts("#{updated.slug}: #{updated.status}")
-
-          if updated.deletion_due_at,
-            do: IO.puts("Deletion due: #{DateTime.to_iso8601(updated.deletion_due_at)}")
-
-          0
+          print_lifecycle(updated)
 
         {:error, reason} ->
           error("Organization lifecycle change refused: #{reason}")
@@ -209,6 +204,15 @@ defmodule Renga.Release.CLI do
   end
 
   def run(_argv), do: error(@usage)
+
+  defp print_lifecycle(organization) do
+    IO.puts("#{organization.slug}: #{organization.status}")
+
+    if organization.deletion_due_at,
+      do: IO.puts("Deletion due: #{DateTime.to_iso8601(organization.deletion_due_at)}")
+
+    0
+  end
 
   defp import_owner(_organization, nil),
     do: error("--owner EMAIL is required: the organization's owner, who invites everyone back")

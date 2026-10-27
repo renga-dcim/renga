@@ -46,12 +46,14 @@ defmodule RengaWeb.DeletionController do
   end
 
   def download(conn, %{"id" => id, "export_id" => export_id}) do
-    with {:ok, scope} <- OrganizationLifecycle.owner_scope(conn.assigns.current_scope.user, id) do
-      conn
-      |> assign(:current_scope, scope)
-      |> RengaWeb.ExportController.download(%{"id" => export_id})
-    else
-      _ -> conn |> put_status(:forbidden) |> text("Recovery access is no longer available.")
+    case OrganizationLifecycle.owner_scope(conn.assigns.current_scope.user, id) do
+      {:ok, scope} ->
+        conn
+        |> assign(:current_scope, scope)
+        |> RengaWeb.ExportController.download(%{"id" => export_id})
+
+      _ ->
+        conn |> put_status(:forbidden) |> text("Recovery access is no longer available.")
     end
   end
 
