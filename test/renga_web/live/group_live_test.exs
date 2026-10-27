@@ -28,6 +28,12 @@ defmodule RengaWeb.GroupLiveTest do
     test "admins define sets and groups, and delete them", context do
       {:ok, view, _html} = live(context.admin_conn, ~p"/settings/groups")
 
+      assert has_element?(
+               view,
+               "#groups",
+               "Groups organize inventory; they do not restrict access"
+             )
+
       assert has_element?(view, "#group-list-empty")
 
       view

@@ -231,7 +231,7 @@ defmodule RengaWeb.GroupLive do
       <.settings_page
         id="groups"
         title="Groups"
-        description="Named sets of resources that cut across sites and teams, such as an environment or a customer. Only people change who is in a group."
+        description="Named sets of resources, such as an environment or a customer. Groups organize inventory; they do not restrict access. Roles grant access across the whole organization."
       >
         <:actions>
           <.button
