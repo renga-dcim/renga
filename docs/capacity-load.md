@@ -24,8 +24,9 @@ and calls the real Phoenix Endpoint with JSON bodies and authenticated intake
 keys. PostgreSQL, payload validation, admission, acceptance, reconciliation,
 and contact flushing are real. HTTP sockets/TLS, external collectors and the
 other periodic workers are not exercised. Do not run the regression suite or
-another fleet load concurrently. Allow at least 64 application connections
-plus PostgreSQL's administrative reserve and any other running services.
+another fleet load concurrently. Allow the selected pool's application
+connections (64 by default), plus PostgreSQL's administrative reserve and
+any other running services.
 
 ## Workload and acceptance criterion
 
@@ -55,9 +56,12 @@ half a lane (at least one slot). The two authentication lanes each have
 and general background rotation use separate execution capacity.
 Per-organization overrides cannot remove the hard half-lane isolation cap.
 These are bounded execution lanes, not physically separate PostgreSQL pools.
-After the strict gate passed without a limit increase, the production pool
-default was aligned with its measured 64-connection budget. Smaller explicit
-overrides have less isolation headroom; this run does not validate them.
+After an earlier strict checkpoint passed without a limit increase, the
+production pool default was aligned with that 64-connection budget. Subsequent
+failures mean this remains an experimental default, not a validated launch
+requirement or evidence that PostgreSQL needs 64 active queries per node.
+Smaller-pool validation below also changes the derived admission caps; it is
+not an isolated measurement of database connection demand.
 
 ## Recorded results
 
@@ -438,6 +442,139 @@ changed. CPU competition is observed, but its contribution to strict fleet
 rejections remains unquantified; a passing isolated run would still need to
 be reported with its resource envelope rather than erase these failed runs.
 
+### Smaller-pool validation without changing synchronous admission
+
+The owner requested smaller pools before changing executor policy. The same
+3,000-host retained fixture ran sequentially with 16 and 32 connections,
+without query profiling, limit overrides, or executor-policy changes. The
+initial runs used lazy `mix run` code loading; current commands include the
+release-style bootstrap correction described below:
+
+```sh
+nix develop --command env MIX_ENV=test MIX_TEST_PARTITION=_capacity2 LOAD_REUSE=true LOAD_POOL_SIZE=16 mix run --no-start scripts/load-capacity.exs
+nix develop --command env MIX_ENV=test MIX_TEST_PARTITION=_capacity2 LOAD_REUSE=true LOAD_POOL_SIZE=32 mix run --no-start scripts/load-capacity.exs
+```
+
+| Pool per node | Normal accepted / 3,050 | Re-enrollment accepted / 20,996 | Quiet accepted / 200 | Re-enrollment p95 / p99 |
+| --- | ---: | ---: | ---: | ---: |
+| 16 | 3,044 | 20,985 | 200 | 65 / 80 ms |
+| 32 | 3,044 | 20,979 | 200 | 62 / 76 ms |
+
+Both commands exited 1 and both had zero failed reconciliations. All six
+normal rejections in each run were check-ins. Re-enrollment rejected four
+check-ins/seven observations at 16, and fourteen check-ins/three observations
+at 32. Raw logs are `tmp/capacity-small-pool-{16,32}-fleet.log`. All eleven
+re-enrollment rejections at 16 were attributed to organization concurrency;
+at 32, nine maintenance and three bulk rejections were attributed, with five
+not classified by the original admission telemetry. Three of each run's
+normal rejections were likewise unclassified. Retained history grows between
+runs, and ambient CPU contention varies: these are strict validation
+failures, not a controlled finding that either pool is faster or requires
+more PostgreSQL compute.
+
+A separate 16-connection diagnostic run adds rejection-stage classification
+and independent 50 ms PostgreSQL activity snapshots. It retained six normal
+and eighteen re-enrollment rejections, accepted all 200 quiet requests, and
+had zero failed reconciliations. The normal rejections were three credential
+lookup-capacity failures and three organization maintenance-concurrency
+failures, clustered within 61 ms. Re-enrollment had two credential-capacity
+failures and sixteen organization-concurrency failures (nine maintenance,
+seven bulk). This identifies the gates, not why their holders were delayed.
+
+The snapshots recorded at most three active database backends, including
+autovacuum, and at most two idle-in-transaction backends. Adjacent snapshots
+around the normal rejection cluster showed zero to two active statements;
+several later rejections coincided with `ClientRead` holders and transaction
+lock waits. These observations do not demonstrate PostgreSQL connection
+exhaustion, but sampling can miss short bursts and does not measure whether
+an application still has an idle connection checked out. The observer now
+counts client connections separately and includes backend type in activity.
+The retained diagnostic files are
+`tmp/capacity-small-pool-16-profiled-fleet.log` and
+`tmp/capacity-small-pool-16-db-profile.jsonl`.
+
+Admission still spans synchronous acceptance and reconciliation. Every
+accepted check-in still renews its lease in its own transaction; only
+authenticated-contact timestamps are coalesced off the request path. Neither
+16 nor 32 is yet validated as a launch default, and the earlier 64-connection
+failures remain relevant. No runtime default or admission fraction changed.
+
+#### Verified code-loading mismatch and corrected validation
+
+The next diagnostic run snapshots the active permit holders' stacks when an
+ordinary request is rejected. During the normal-phase failures those holders
+were in `:code_server.call/1` / `:code.ensure_loaded/1`, including
+`AgentController.accepted/4` calling `Jobs.jobs_waiting?/2` and Ecto queryable
+loading. That run retained three normal rejections, thirty-two re-enrollment
+rejections, quiet 200/200, and zero failed reconciliations. Its raw witnesses
+are `tmp/capacity-small-pool-16-holder-{fleet.log,db-profile.jsonl}`.
+
+The Dockerfile builds `mix release`. `mix help release` documents the default
+`RELEASE_MODE=embedded`, which preloads modules before serving traffic;
+`mix run` instead lazily loads code. The fixture now explicitly preloads the
+started runtime applications' modules, excluding the Mix/Hex build tools,
+before starting workload traffic. It makes no synthetic warm-up requests,
+changes no production code or admission limits, and reports
+`application_modules_preloaded: true`. An initial attempt also included build
+tools and aborted on Hex archive modules absent from the code path; those
+setup errors are retained in
+`tmp/capacity-release-preload-build-tools-error-{16,32}.log`.
+
+With that bootstrap correction, fresh processes reran the same strict
+16/32-connection matrix without query profiling:
+
+| Pool per node | Normal accepted / 3,050 | Re-enrollment accepted / 20,996 | Quiet accepted / 200 | Re-enrollment p95 / p99 |
+| --- | ---: | ---: | ---: | ---: |
+| 16 | 3,050 | 20,995 | 200 | 61 / 72 ms |
+| 32 | 3,050 | 20,978 | 200 | 58 / 67 ms |
+
+Normal-phase throttles disappeared in both runs, supporting the verified
+code-loading diagnosis. Both still exited 1 because re-enrollment did not
+pass. At 16, one check-in hit maintenance organization concurrency; all
+observations succeeded. At 32, sixteen check-ins and two observations were
+rejected: eight credential-lookup capacity failures, six maintenance and two
+bulk organization-concurrency failures, and two post-authentication lookup
+capacity failures (ten post-authentication rejections versus eight explicit
+domain-admission rejections). Both had zero failed reconciliations, and all
+100 noisy new-lease requests were correctly backpressured. Logs are
+`tmp/capacity-release-loaded-pool-{16,32}-fleet.log`.
+
+These are still validation failures, not permission to select the better
+looking run or a finding that 16 connections outperform 32. The raw failures
+remain alongside the correction. Neither budget is yet a validated launch
+default, and a lower minimum PostgreSQL instance size has not been measured.
+
+#### Post-preload checkout and holder diagnostic
+
+Ordinary rejection snapshots now include DBConnection's ready-connection and
+checkout-queue metrics, with no SQL or per-query handler required. Intentional
+lease-control rejections are excluded. A separate 16-connection run with the
+independent PostgreSQL and OS observers accepted normal 3,047/3,050,
+re-enrollment 20,939/20,996, and quiet 200/200, with zero failed
+reconciliations. All 60 rejected ordinary requests had **11–15 connections
+ready and zero checkout waiters** in the post-rejection snapshot. No captured
+permit-holder stack was waiting on the code server. These failures therefore
+cannot be described as observed connection-pool exhaustion.
+
+Snapshots within 75 ms of those rejections include organization transaction
+lock waiters, root holders waiting for the application (`ClientRead`), and
+unblocked `DataFileRead` waits. The historical unmatched-component-evidence
+query was caught in `DataFileRead` at 149.608 ms statement age, within a
+477.671 ms transaction; the longest sampled organization transaction-lock
+wait was 123.312 ms. The OS observer reached 3,221,209,088 bytes against the
+3,221,225,472-byte workload ceiling. Memory-limit events increased from
+327,063 to 327,273, without another OOM kill during this diagnostic. These are
+mixed I/O, application-progress, and resource-pressure witnesses, not proof
+that CPU priority alone explains every tail. The observers add overhead, so
+this is diagnostic evidence, not a replacement for the unprofiled matrix.
+
+Retained files are `tmp/capacity-release-pool16-ready-fleet.log`,
+`tmp/capacity-release-pool16-ready-db-profile.jsonl`, and
+`tmp/capacity-release-pool16-ready-os-profile.jsonl`. The subsequent full
+serial precommit attempt also terminated with exit 137 before a result
+(`tmp/capacity-smaller-pools-precommit.log`); it does not supersede the
+earlier completed 3,130-check serial pass.
+
 ## Remaining launch gates
 
 * A subsequent integrated fleet run rejected one normal check-in and seven
@@ -464,7 +601,8 @@ be reported with its resource envelope rather than erase these failed runs.
   the five slowest SQL shapes per long transaction, without logging parameters.
 * The measured lease-sweep delay must be paired with a supported ready-org and
   backlog envelope; it does not establish a maximum for unbounded load.
-* Smaller pool overrides have not passed this fleet gate. The production
-  default now matches the measured 64-connection per-node profile; operators
-  must budget all replicas against PostgreSQL's connection limit. These
-  results do not establish a safe small-pool default.
+* Neither the smaller-pool profiles nor 64 connections have a consistently
+  passing integrated fleet gate. The 64-connection default remains
+  experimental, not an established minimum. Operators must budget all
+  replicas against PostgreSQL's connection limit. These results do not yet
+  establish a safe smaller-pool default or a database instance-size floor.

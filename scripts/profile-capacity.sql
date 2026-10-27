@@ -17,8 +17,14 @@ WITH cadence AS MATERIALIZED (
 )
 SELECT jsonb_build_object(
   'sample_at', clock_timestamp(),
+  'connections', (SELECT jsonb_build_object(
+    'total', count(*), 'active', count(*) FILTER (WHERE state='active'),
+    'idle_in_transaction', count(*) FILTER (WHERE state='idle in transaction'))
+    FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid()
+      AND backend_type='client backend'),
   'activity', COALESCE((SELECT jsonb_agg(jsonb_build_object(
-    'pid', pid, 'state', state, 'wait_type', wait_event_type, 'wait_event', wait_event,
+    'pid', pid, 'backend_type', backend_type, 'state', state,
+    'wait_type', wait_event_type, 'wait_event', wait_event,
     'query_age_ms', extract(epoch FROM clock_timestamp()-query_start)*1000,
     'transaction_age_ms', extract(epoch FROM clock_timestamp()-xact_start)*1000,
     'blockers', pg_blocking_pids(pid), 'query', left(query, 600)))

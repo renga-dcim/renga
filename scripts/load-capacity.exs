@@ -55,6 +55,19 @@ defmodule Renga.CapacityLoad do
     )
 
     Mix.Task.run("app.start")
+
+    # Releases default to embedded code loading. Lazy mix-run loading made
+    # first requests hold admission while waiting on the VM's code server.
+    # Match release boot semantics without sending artificial warm-up traffic.
+    # Mix and Hex are build tools, not applications shipped in the release.
+    :ok =
+      Application.started_applications()
+      |> Enum.reject(fn {application, _description, _version} -> application in [:mix, :hex] end)
+      |> Enum.flat_map(fn {application, _description, _version} ->
+        Application.spec(application, :modules)
+      end)
+      |> :code.ensure_modules_loaded()
+
     Logger.configure(level: :error)
 
     if database_profile? do
@@ -185,6 +198,7 @@ defmodule Renga.CapacityLoad do
     result = %{
       hosts: @hosts,
       pool_size: pool,
+      application_modules_preloaded: true,
       baseline_seconds: @baseline_seconds,
       enrollment_seconds: @enrollment_seconds,
       phases: [seed, baseline, enrollment, neighbor]
@@ -279,6 +293,8 @@ defmodule Renga.CapacityLoad do
       statuses: Enum.frequencies_by(values, & &1.status),
       rejected_routes:
         values |> Enum.filter(&(&1.status == 429)) |> Enum.frequencies_by(& &1.path),
+      rejected_stages:
+        values |> Enum.filter(&(&1.status == 429)) |> Enum.frequencies_by(& &1.rejection_stage),
       p95_ms: Enum.at(times, trunc(length(times) * 0.95)),
       p99_ms: Enum.at(times, min(trunc(length(times) * 0.99), length(times) - 1)),
       admission_rejections: Map.new(:ets.tab2list(__MODULE__)),
@@ -469,9 +485,62 @@ defmodule Renga.CapacityLoad do
     response = Jason.decode!(conn.resp_body)
     duration = System.monotonic_time(:millisecond) - started
 
-    if System.get_env("LOAD_PROFILE") == "true" and (duration >= 500 or conn.status == 429) do
+    rejection_stage =
+      case {conn.status, conn.assigns[:current_scope]} do
+        {429, nil} -> :credential_lookup
+        {429, _scope} -> :limits_or_admission
+        _accepted_or_invalid -> nil
+      end
+
+    rejected? = conn.status == 429 and path != "/api/v1/agent/jobs/lease"
+
+    if rejected? or (System.get_env("LOAD_PROFILE") == "true" and duration >= 500) do
+      # Inspect the real permit holders, not the rejected request's stack.
+      # The lease-control rejections are intentional and add no diagnosis.
+      permit_holders =
+        if rejected? do
+          {:monitors, monitors} =
+            Process.info(Process.whereis(Renga.IntakeCapacity), :monitors)
+
+          monitors
+          |> Enum.uniq()
+          |> Enum.flat_map(fn {:process, pid} ->
+            case Process.info(pid, [:status, :current_stacktrace]) do
+              nil ->
+                []
+
+              info ->
+                [
+                  %{
+                    process: inspect(pid),
+                    status: info[:status],
+                    stack: Exception.format_stacktrace(info[:current_stacktrace])
+                  }
+                ]
+            end
+          end)
+        else
+          []
+        end
+
+      pool_metrics =
+        Repo
+        |> Ecto.Adapter.lookup_meta()
+        |> Map.fetch!(:pid)
+        |> DBConnection.get_connection_metrics()
+        |> Enum.map(&Map.take(&1, [:ready_conn_count, :checkout_queue_length]))
+
       IO.puts(
-        Jason.encode!(%{request_at_ms: started, path: path, status: conn.status, ms: duration})
+        Jason.encode!(%{
+          request_at_ms: started,
+          finished_at_ms: System.system_time(:millisecond),
+          path: path,
+          status: conn.status,
+          rejection_stage: rejection_stage,
+          permit_holders: permit_holders,
+          pool_metrics: pool_metrics,
+          ms: duration
+        })
       )
     end
 
@@ -479,6 +548,7 @@ defmodule Renga.CapacityLoad do
       status: conn.status,
       path: path,
       ms: duration,
+      rejection_stage: rejection_stage,
       failed_reconciliation: get_in(response, ["reconciliation", "status"]) == "failed"
     }
   end
