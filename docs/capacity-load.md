@@ -575,6 +575,17 @@ serial precommit attempt also terminated with exit 137 before a result
 (`tmp/capacity-smaller-pools-precommit.log`); it does not supersede the
 earlier completed 3,130-check serial pass.
 
+Check-in registration now join-preloads its existing source and retains it
+on the returned agent for response assembly. This removes two source reads
+from an existing-installation check-in without changing admission, lease
+renewal, or lifecycle fences. All 176 inventory, registration-concurrency,
+installation-key, and agent-controller regressions passed. The subsequent
+unprofiled 16-connection fleet run accepted normal 3,050/3,050, re-enrollment
+20,933/20,996 (48 check-ins and 15 observations rejected), and quiet 200/200,
+with zero failed reconciliations. Its re-enrollment p95/p99 were 61/77 ms.
+This removes verified redundant work but does **not** close the strict gate;
+`tmp/capacity-source-reuse-pool16-fleet.log` retains that failure.
+
 ## Remaining launch gates
 
 * A subsequent integrated fleet run rejected one normal check-in and seven

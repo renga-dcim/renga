@@ -43,8 +43,7 @@ defmodule RengaWeb.Api.V1.AgentController do
              conn.assigns.current_installation_id,
              attrs
            ) do
-      source = Inventory.get_source!(conn.assigns.current_scope, agent.source_id)
-      accepted(conn, source, agent, lease)
+      accepted(conn, agent.source, agent, lease)
     else
       error -> check_in_error(conn, error)
     end

@@ -235,7 +235,9 @@ defmodule Renga.Inventory do
 
     with_intake_installation(scope, intake_api_key, installation_id, attrs, fn agent,
                                                                                lease,
-                                                                               _source ->
+                                                                               source ->
+      # Response assembly reuses the source read under the intake fence.
+      agent = %{agent | source: source}
       {present_installation_key!(agent, installation_key, lease.renewed_at), lease}
     end)
   end
@@ -660,7 +662,8 @@ defmodule Renga.Inventory do
     Agent
     |> where([agent], agent.organization_id == ^organization_id)
     |> where([agent], agent.installation_id == ^installation_id)
-    |> preload(:source)
+    |> join(:inner, [agent], source in assoc(agent, :source))
+    |> preload([_agent, source], source: source)
     |> Repo.one()
     |> case do
       %Agent{} = agent ->
