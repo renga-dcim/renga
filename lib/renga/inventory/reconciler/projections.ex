@@ -137,20 +137,34 @@ defmodule Renga.Inventory.Reconciler.Projections do
     end
   end
 
-  defp persist_component_evidence(scope, source, observation, resource, attrs) do
-    # Reconciliation already loaded these tenant-scoped records. Re-reading
-    # the source, observation payload and resource for every DIMM both holds
-    # the canonical lock longer and repeatedly decodes the same full report.
-    case %ComponentEvidence{
-           organization_id: scope.organization_id,
-           source_id: source.id,
-           observation_id: observation.id,
-           resource_id: resource.id
-         }
-         |> ComponentEvidence.changeset(Map.put(attrs, "observed_at", observation.observed_at))
-         |> Repo.insert() do
-      {:ok, evidence} -> evidence
-    end
+  defp persist_component_evidence(scope, source, observation, resource, components) do
+    now = Renga.Time.utc_now_ms()
+
+    components
+    |> Enum.chunk_every(100)
+    |> Enum.flat_map(fn batch ->
+      rows =
+        Enum.map(batch, fn attrs ->
+          %ComponentEvidence{
+            id: Ecto.UUID.generate(),
+            organization_id: scope.organization_id,
+            source_id: source.id,
+            observation_id: observation.id,
+            resource_id: resource.id,
+            inserted_at: now,
+            updated_at: now
+          }
+          |> ComponentEvidence.changeset(Map.put(attrs, "observed_at", observation.observed_at))
+          |> Ecto.Changeset.apply_action!(:insert)
+          |> Map.take(ComponentEvidence.__schema__(:fields))
+        end)
+
+      # Validate each row as before; foreign keys and uniqueness still apply
+      # atomically in the enclosing canonical transaction. Bound bind counts
+      # for large reports without a round trip for every DIMM.
+      {_count, evidence} = Repo.insert_all(ComponentEvidence, rows, returning: true)
+      evidence
+    end)
   end
 
   defp reported_component_attrs(payload) do
@@ -220,6 +234,15 @@ defmodule Renga.Inventory.Reconciler.Projections do
         |> Map.new(&{{&1.kind, &1.source_local_id}, &1})
       end
 
+    missing =
+      component_attrs
+      |> Enum.uniq_by(&{&1["kind"], &1["source_local_id"]})
+      |> Enum.reject(&Map.has_key?(existing, {&1["kind"], &1["source_local_id"]}))
+
+    inserted =
+      persist_component_evidence(scope, source, observation, resource, missing)
+      |> Map.new(&{{&1.kind, &1.source_local_id}, &1})
+
     Enum.reduce(component_attrs, existing, fn attrs, evidence_by_identity ->
       position_key = position_identity_key(attrs)
       allow_position_match? = not is_nil(position_key) and position_frequencies[position_key] == 1
@@ -228,7 +251,7 @@ defmodule Renga.Inventory.Reconciler.Projections do
 
       evidence =
         existing_evidence ||
-          persist_component_evidence(scope, source, observation, resource, attrs)
+          Map.fetch!(inserted, identity)
 
       if evidence.kind in @canonical_component_kinds do
         reconcile_actual_component(

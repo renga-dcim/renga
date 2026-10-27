@@ -299,6 +299,36 @@ defmodule Renga.Inventory.ReconcilerTest do
     assert Repo.aggregate(ComponentEvidence, :count) == 4
   end
 
+  test "large memory inventories retain every component and first evidence on retry" do
+    context = context()
+
+    parts =
+      for n <- 1..128 do
+        %{
+          "kind" => "memory",
+          "id" => "dimm-#{n}",
+          "slot" => "DIMM#{n}",
+          "serial_number" => "memory-#{n}",
+          "size_bytes" => 34_359_738_368
+        }
+      end
+
+    # A later duplicate cannot rewrite the first immutable assertion, including
+    # when the same report is explicitly retried after all components exist.
+    components = parts ++ [Map.put(hd(parts), "size_bytes", 1)]
+    report = observation(context, "1", %{"machine_id" => "large-memory"}, %{}, [], components)
+    assert {:ok, resource, true} = Inventory.reconcile_observation(context.scope, report.id)
+
+    evidence = Inventory.list_component_evidence(context.scope, resource.id)
+    assert length(evidence) == 128
+    assert Enum.all?(evidence, &(&1.attributes["size_bytes"] == 34_359_738_368))
+    assert length(Catalog.list_actual_components(context.scope, resource.id)) == 128
+
+    assert {:ok, ^resource, false} = Inventory.reconcile_observation(context.scope, report.id)
+    assert Inventory.list_component_evidence(context.scope, resource.id) == evidence
+    assert length(Catalog.list_actual_components(context.scope, resource.id)) == 128
+  end
+
   test "an independently assigned inventory.reconcile role projects real components" do
     context = context()
     user = Renga.AccountsFixtures.user_fixture()
