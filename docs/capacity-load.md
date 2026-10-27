@@ -586,6 +586,28 @@ with zero failed reconciliations. Its re-enrollment p95/p99 were 61/77 ms.
 This removes verified redundant work but does **not** close the strict gate;
 `tmp/capacity-source-reuse-pool16-fleet.log` retains that failure.
 
+The captured historical component-finding query led to a further scoped
+anti-join probe. With 312 historical evidence rows, the existing query made
+312 global match-index searches, using 997 warm buffers in 1.209 ms. Exposing
+the organization/resource predicates guaranteed by the composite evidence FK
+lets PostgreSQL scan just that resource's matches. Predicates alone still
+read match heap rows: the first scoped execution took 90.345 ms, its warm
+repeat 0.373 ms. A transaction-local covering-index probe reduced the warm
+plan to 44 buffers, one match-index search, and 0.223 ms (first execution
+0.372 ms); the probe index was rolled back. This establishes less work, not
+a general latency promise or a cold-cache speedup.
+
+The implementation now supplies those predicates and adds a covering
+organization/resource match index including `component_evidence_id`. It
+preserves all evidence, ambiguity semantics, existing lookup indexes, and
+transaction/lifecycle boundaries. All 269 combined catalog, inventory,
+intake, topology-generation, background, lease-sweep, and export regressions
+passed. Probe plans are retained in
+`tmp/capacity-catalog-scoped-antijoin-plans.log` and
+`tmp/capacity-catalog-covering-antijoin-plans.log`. Production index-build
+duration and deployment remain unverified; the new migration has run only
+against disposable local databases.
+
 ## Remaining launch gates
 
 * A subsequent integrated fleet run rejected one normal check-in and seven
