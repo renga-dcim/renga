@@ -125,7 +125,14 @@ SLUG --actor NAME --job-creation-rate N` overrides a limit for one
 organization (RFD 21) and records the change in its Activity too,
 `limits show` lists them, and `limits clear` returns one to the deployment
 default, which `LIMIT_*` variables such as `LIMIT_JOB_CREATION_RATE` set.
-Owners see their limits and usage under Settings > Limits. `renga-admin
+Owners see their limits and usage under Settings > Limits. Intake has separate
+bulk and maintenance rates, per-installation rates, and pool-relative
+concurrency; overload returns `429` with `Retry-After`. The agent retains the
+retry deadline without extending its delivery or job-lease budget. The
+[capacity load test and recorded results](docs/capacity-load.md) describe the
+candidate defaults and outstanding launch gates: realistic full re-enrollment
+currently meets the limits, so these defaults are **not launch-validated**.
+`renga-admin
 export --organization SLUG --output FILE --actor NAME` writes one
 organization's export archive (RFD 20, [format](docs/export-format.md)) from a
 consistent snapshot; `--history` and `--raw-observations` add the optional
