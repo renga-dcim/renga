@@ -83,6 +83,20 @@
         "additionalProperties": false,
         "description": "An organization as the operator sees it: its identity, status, and members, never its inventory.",
         "properties": {
+          "deletion_due_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "deletion_scheduled_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "id": {
             "format": "uuid",
             "type": "string"
@@ -126,7 +140,9 @@
           "status": {
             "enum": [
               "active",
-              "disabled"
+              "disabled",
+              "deletion_pending",
+              "purging"
             ],
             "type": "string"
           }
@@ -156,6 +172,55 @@
         "required": [
           "name",
           "slug"
+        ],
+        "type": "object"
+      },
+      "OrganizationLifecycleState": {
+        "title": "OrganizationLifecycleState",
+        "additionalProperties": false,
+        "description": "Committed lifecycle state; no tenant inventory or memberships.",
+        "properties": {
+          "deletion_due_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "deletion_scheduled_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "active",
+              "disabled",
+              "deletion_pending",
+              "purging"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "slug",
+          "status",
+          "deletion_scheduled_at",
+          "deletion_due_at"
         ],
         "type": "object"
       },
@@ -470,6 +535,79 @@
         "summary": "Read an organization"
       }
     },
+    "/operator/v1/organizations/{id}/cancel-deletion": {
+      "post": {
+        "tags": [
+          "Organizations"
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrganizationLifecycleState"
+                }
+              }
+            },
+            "description": "Committed state."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorError"
+                }
+              }
+            },
+            "description": "The operator token is missing, unknown, revoked, expired, or used from an address it does not allow."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorError"
+                }
+              }
+            },
+            "description": "Missing organizations:write."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorError"
+                }
+              }
+            },
+            "description": "Not found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorError"
+                }
+              }
+            },
+            "description": "Purge has begun."
+          }
+        },
+        "description": "Safe to retry without a key. Serialized with purge; requires organizations:write.",
+        "operationId": "organization_cancel_deletion",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "summary": "Cancel deletion and restore organization access"
+      }
+    },
     "/operator/v1/organizations/{id}/owner-invitations": {
       "post": {
         "tags": [
@@ -602,6 +740,224 @@
           "required": true
         },
         "summary": "Invite an owner"
+      }
+    },
+    "/operator/v1/organizations/{id}/resume": {
+      "post": {
+        "tags": [
+          "Organizations"
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrganizationLifecycleState"
+                }
+              }
+            },
+            "description": "Committed state; cancelled work is not rerun."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorError"
+                }
+              }
+            },
+            "description": "The operator token is missing, unknown, revoked, expired, or used from an address it does not allow."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorError"
+                }
+              }
+            },
+            "description": "Missing organizations:write."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorError"
+                }
+              }
+            },
+            "description": "Not found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorError"
+                }
+              }
+            },
+            "description": "Purge has begun."
+          }
+        },
+        "operationId": "organization_resume",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "summary": "Resume an organization and cancel pending deletion"
+      }
+    },
+    "/operator/v1/organizations/{id}/schedule-deletion": {
+      "post": {
+        "tags": [
+          "Organizations"
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrganizationLifecycleState"
+                }
+              }
+            },
+            "description": "Pending deletion and its original deadline."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorError"
+                }
+              }
+            },
+            "description": "The operator token is missing, unknown, revoked, expired, or used from an address it does not allow."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorError"
+                }
+              }
+            },
+            "description": "Missing organizations:write."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorError"
+                }
+              }
+            },
+            "description": "Not found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorError"
+                }
+              }
+            },
+            "description": "Purge has begun."
+          }
+        },
+        "description": "Safe to retry without a key: the original deadline is never extended. Requires organizations:write.",
+        "operationId": "organization_schedule_deletion",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "summary": "Suspend and schedule deletion in 30 days"
+      }
+    },
+    "/operator/v1/organizations/{id}/suspend": {
+      "post": {
+        "tags": [
+          "Organizations"
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrganizationLifecycleState"
+                }
+              }
+            },
+            "description": "The committed organization lifecycle state."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorError"
+                }
+              }
+            },
+            "description": "The operator token is missing, unknown, revoked, expired, or used from an address it does not allow."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorError"
+                }
+              }
+            },
+            "description": "Missing organizations:write."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorError"
+                }
+              }
+            },
+            "description": "Organization not found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorError"
+                }
+              }
+            },
+            "description": "Irreversible purge has begun."
+          }
+        },
+        "description": "Requires organizations:write. Target-state operation, safe to retry without an Idempotency-Key. Scheduling retains the original 30-day deadline. Resume cancels pending deletion; cancellation also restores access. Neither reruns work. Purging cannot be cancelled.",
+        "operationId": "organization_suspend",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "summary": "Suspend an organization"
       }
     },
     "/operator/v1/tokens/self": {

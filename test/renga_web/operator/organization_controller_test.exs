@@ -225,6 +225,8 @@ defmodule RengaWeb.Operator.OrganizationControllerTest do
                "name" => organization.name,
                "slug" => organization.slug,
                "status" => "active",
+               "deletion_scheduled_at" => nil,
+               "deletion_due_at" => nil,
                "members" => [
                  %{"email" => "sam@acme.example", "role" => "member"},
                  %{"email" => owner.email, "role" => "owner"},

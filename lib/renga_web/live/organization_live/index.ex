@@ -64,6 +64,13 @@ defmodule RengaWeb.OrganizationLive.Index do
         description="Inventory is kept separate per organization. Open one you belong to, or create one to get started."
         class="max-w-3xl"
       >
+        <.link
+          id="deletion-recovery-link"
+          href={~p"/organizations/deletions"}
+          class="text-sm text-link underline"
+        >
+          Recover an organization pending deletion
+        </.link>
         <.settings_section
           id="your-organizations"
           title="Your organizations"

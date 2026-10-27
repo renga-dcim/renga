@@ -268,6 +268,13 @@ defmodule RengaWeb.Router do
 
     get "/settings/export/:id/download", ExportController, :download
 
+    # Recovery authenticates a person, but deliberately does not require or
+    # select an active tenant. Each operation rechecks the pending tenant's owner.
+    get "/organizations/deletions", DeletionController, :index
+    post "/organizations/deletions/:id/cancel", DeletionController, :cancel
+    post "/organizations/deletions/:id/export", DeletionController, :export
+    get "/organizations/deletions/:id/exports/:export_id", DeletionController, :download
+
     post "/organizations/select", OrganizationSessionController, :create
     post "/organizations/confirm-mfa", OrganizationSessionController, :confirm_mfa
     post "/users/update-password", UserSessionController, :update_password

@@ -19,5 +19,9 @@ defmodule RengaWeb.OperatorRouter do
     post "/organizations", OrganizationController, :create
     get "/organizations/:id", OrganizationController, :show
     post "/organizations/:id/owner-invitations", OrganizationController, :invite_owner
+    post "/organizations/:id/suspend", LifecycleController, :suspend
+    post "/organizations/:id/resume", LifecycleController, :resume
+    post "/organizations/:id/schedule-deletion", LifecycleController, :schedule_deletion
+    post "/organizations/:id/cancel-deletion", LifecycleController, :cancel_deletion
   end
 end

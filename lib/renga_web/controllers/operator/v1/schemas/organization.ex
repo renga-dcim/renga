@@ -12,7 +12,9 @@ defmodule RengaWeb.Operator.V1.Schemas.Organization do
         id: %{type: :string, format: :uuid},
         name: %{type: :string},
         slug: %{type: :string},
-        status: %{type: :string, enum: ["active", "disabled"]},
+        status: %{type: :string, enum: ["active", "disabled", "deletion_pending", "purging"]},
+        deletion_scheduled_at: %{type: [:string, :null], format: :"date-time"},
+        deletion_due_at: %{type: [:string, :null], format: :"date-time"},
         members: %{
           type: :array,
           description: "Active members, by address.",
