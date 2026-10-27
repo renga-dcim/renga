@@ -188,26 +188,32 @@ defmodule Renga.Inventory do
   def authenticate_intake_api_key(_token), do: :error
 
   @doc """
-  Records that an installation made an authenticated API request, whatever
-  becomes of its payload.
+  Writes a bounded, coalesced batch of authenticated installation contacts,
+  using authentication time rather than the time the recorder flushes.
 
   Contact is its own clock (RFD 1, "Collection model"): a collector whose
   reports are all rejected is still reachable, though nothing renews its
   lease. An installation that has not registered yet has no agent to update;
   it records contact when its first accepted request registers it.
   """
-  def record_intake_contact(%IntakeApiKey{organization_id: organization_id}, installation_id) do
-    now = Renga.Time.utc_now_ms()
+  def record_intake_contacts([]), do: :ok
 
-    from(agent in Agent,
-      where: agent.organization_id == ^organization_id,
-      where: agent.installation_id == ^installation_id,
-      # A slower request finishing late never moves the clock backwards.
-      update: [
-        set: [last_contacted_at: fragment("GREATEST(?, ?)", agent.last_contacted_at, ^now)]
-      ]
+  def record_intake_contacts(contacts) do
+    {organizations, installations, times} =
+      Enum.reduce(contacts, {[], [], []}, fn {org, id, at}, {orgs, ids, times} ->
+        {[Ecto.UUID.dump!(org) | orgs], [Ecto.UUID.dump!(id) | ids],
+         [DateTime.to_naive(at) | times]}
+      end)
+
+    Repo.query!(
+      """
+      UPDATE agents AS agent
+      SET last_contacted_at = GREATEST(agent.last_contacted_at, contact.at)
+      FROM unnest($1::uuid[], $2::uuid[], $3::timestamp[]) AS contact(organization_id, installation_id, at)
+      WHERE agent.organization_id = contact.organization_id AND agent.installation_id = contact.installation_id
+      """,
+      [organizations, installations, times]
     )
-    |> Repo.update_all([])
 
     :ok
   end

@@ -23,6 +23,9 @@ defmodule RengaWeb.Api.V1.AgentController do
       accepted: {Schemas.CheckInAccepted, description: "Check-in recorded."},
       unauthorized: Schemas.unauthorized_response(),
       forbidden: {Schemas.Rejected, description: "The organization is suspended."},
+      too_many_requests:
+        {Schemas.Rejected,
+         description: "Capacity exhausted. Retry no earlier than Retry-After seconds."},
       conflict:
         {Schemas.Rejected,
          description: "The installation ID is registered to a different collector source."},

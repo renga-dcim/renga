@@ -19,6 +19,9 @@ defmodule Renga.Application do
       [
         RengaWeb.Telemetry,
         Renga.Repo,
+        Renga.IntakeCapacity,
+        Renga.IntakeContactWorker,
+        {Task.Supervisor, name: Renga.Background.Tasks},
         {DNSCluster, query: Application.get_env(:renga, :dns_cluster_query) || :ignore},
         {Phoenix.PubSub, name: Renga.PubSub},
         lifecycle_listener(),

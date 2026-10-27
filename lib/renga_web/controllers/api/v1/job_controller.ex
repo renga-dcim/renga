@@ -48,6 +48,9 @@ defmodule RengaWeb.Api.V1.JobController do
     responses: [
       ok: {Schemas.JobLease, description: "Leased jobs, possibly none."},
       unauthorized: Schemas.unauthorized_response(),
+      too_many_requests:
+        {Schemas.Rejected,
+         description: "Capacity exhausted. Retry no earlier than Retry-After seconds."},
       forbidden: {Schemas.Rejected, description: "The installation's agent is disabled."},
       conflict: {Schemas.Rejected, description: "The installation has not checked in yet."},
       unprocessable_entity: {Schemas.Rejected, description: "The lease request is invalid."}
@@ -91,6 +94,9 @@ defmodule RengaWeb.Api.V1.JobController do
     responses: [
       ok: {Schemas.LeasedJob, description: "The job, now leased."},
       unauthorized: Schemas.unauthorized_response(),
+      too_many_requests:
+        {Schemas.Rejected,
+         description: "Capacity exhausted. Retry no earlier than Retry-After seconds."},
       forbidden:
         {Schemas.Rejected,
          description:
@@ -142,6 +148,9 @@ defmodule RengaWeb.Api.V1.JobController do
     responses: [
       ok: {Schemas.JobReportAccepted, description: "Report recorded, or replayed."},
       unauthorized: Schemas.unauthorized_response(),
+      too_many_requests:
+        {Schemas.Rejected,
+         description: "Capacity exhausted. Retry no earlier than Retry-After seconds."},
       forbidden: {Schemas.Rejected, description: "The installation's agent is disabled."},
       not_found: {Schemas.Rejected, description: "No such job for this organization."},
       conflict:
