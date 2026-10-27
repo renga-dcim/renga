@@ -141,22 +141,16 @@ defmodule Renga.Inventory.Reconciler.Projections do
     # Reconciliation already loaded these tenant-scoped records. Re-reading
     # the source, observation payload and resource for every DIMM both holds
     # the canonical lock longer and repeatedly decodes the same full report.
-    Repo.get_by(ComponentEvidence,
-      organization_id: scope.organization_id,
-      observation_id: observation.id,
-      kind: attrs["kind"],
-      source_local_id: attrs["source_local_id"]
-    ) ||
-      case %ComponentEvidence{
-             organization_id: scope.organization_id,
-             source_id: source.id,
-             observation_id: observation.id,
-             resource_id: resource.id
-           }
-           |> ComponentEvidence.changeset(Map.put(attrs, "observed_at", observation.observed_at))
-           |> Repo.insert() do
-        {:ok, evidence} -> evidence
-      end
+    case %ComponentEvidence{
+           organization_id: scope.organization_id,
+           source_id: source.id,
+           observation_id: observation.id,
+           resource_id: resource.id
+         }
+         |> ComponentEvidence.changeset(Map.put(attrs, "observed_at", observation.observed_at))
+         |> Repo.insert() do
+      {:ok, evidence} -> evidence
+    end
   end
 
   defp reported_component_attrs(payload) do
@@ -210,15 +204,43 @@ defmodule Renga.Inventory.Reconciler.Projections do
       |> Enum.reject(&is_nil/1)
       |> Enum.frequencies()
 
-    Enum.each(component_attrs, fn attrs ->
+    # One observation owns this immutable evidence set. Load it once, then
+    # include newly inserted entries so duplicate identities and retries keep
+    # the same first-evidence behavior without a lookup per component.
+    existing =
+      if component_attrs == [] do
+        %{}
+      else
+        ComponentEvidence
+        |> where(
+          [e],
+          e.organization_id == ^scope.organization_id and e.observation_id == ^observation.id
+        )
+        |> Repo.all()
+        |> Map.new(&{{&1.kind, &1.source_local_id}, &1})
+      end
+
+    Enum.reduce(component_attrs, existing, fn attrs, evidence_by_identity ->
       position_key = position_identity_key(attrs)
       allow_position_match? = not is_nil(position_key) and position_frequencies[position_key] == 1
+      identity = {attrs["kind"], attrs["source_local_id"]}
+      existing_evidence = evidence_by_identity[identity]
 
-      evidence = persist_component_evidence(scope, source, observation, resource, attrs)
+      evidence =
+        existing_evidence ||
+          persist_component_evidence(scope, source, observation, resource, attrs)
 
       if evidence.kind in @canonical_component_kinds do
-        reconcile_actual_component(scope, evidence, allow_position_match?, current_snapshot?)
+        reconcile_actual_component(
+          scope,
+          evidence,
+          allow_position_match?,
+          current_snapshot?,
+          is_nil(existing_evidence)
+        )
       end
+
+      Map.put(evidence_by_identity, identity, evidence)
     end)
 
     if complete_snapshot? do
@@ -303,11 +325,24 @@ defmodule Renga.Inventory.Reconciler.Projections do
 
   defp components_declared_complete?(_payload), do: false
 
-  defp reconcile_actual_component(scope, evidence, allow_position_match?, current_snapshot?) do
-    case Repo.get_by(ActualComponentEvidenceMatch,
-           organization_id: scope.organization_id,
-           component_evidence_id: evidence.id
-         ) do
+  defp reconcile_actual_component(
+         scope,
+         evidence,
+         allow_position_match?,
+         current_snapshot?,
+         new_evidence?
+       ) do
+    # A just-inserted evidence row cannot already have a match. Retries and
+    # duplicate identities still check the persisted match before reconciling.
+    existing_match =
+      unless new_evidence? do
+        Repo.get_by(ActualComponentEvidenceMatch,
+          organization_id: scope.organization_id,
+          component_evidence_id: evidence.id
+        )
+      end
+
+    case existing_match do
       nil ->
         case match_actual_component(scope.organization_id, evidence, allow_position_match?) do
           {:ok, component, strategy} ->
