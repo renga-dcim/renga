@@ -1134,7 +1134,12 @@ defmodule Renga.Catalog do
     |> join(:left, [evidence], match in ActualComponentEvidenceMatch,
       on: match.component_evidence_id == evidence.id
     )
-    |> where([evidence, match], evidence.kind in ^@canonical_component_kinds and is_nil(match.id))
+    # Test the join key so PostgreSQL can use an index-only anti join rather
+    # than fetching a match heap row for every historical evidence record.
+    |> where(
+      [evidence, match],
+      evidence.kind in ^@canonical_component_kinds and is_nil(match.component_evidence_id)
+    )
     |> Repo.all()
     |> Enum.map(fn evidence ->
       %{
