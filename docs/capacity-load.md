@@ -1,11 +1,11 @@
 # Intake capacity validation (RFD 21)
 
-**Launch gate: NOT PASSED.** The checked-in test demonstrates bounded intake
-and an isolated quiet neighbor, but the candidate defaults reject realistic
-single-organization load. They must not be described as established safe
-launch defaults. Raising a limiter until this test passes is not a substitute
-for measuring database contention and preserving the other organization's
-reserve.
+**Fleet intake gate: PASSED at 64 connections. Overall launch gate: OPEN.**
+After correcting measured query and canonical-lock contention, the strict
+normal, full re-enrollment, and quiet-neighbor phases pass without raising
+intake limits. The earlier failing measurements remain below. Resumable
+neighbor generations are still required before claiming deployment-wide
+background isolation.
 
 ## Reproduce
 
@@ -49,19 +49,21 @@ the ordinary phases makes the command exit nonzero.
 
 The candidate per-node rates are 60,000/minute/organization for each of bulk
 and maintenance, and 600/minute/installation/lane. A domain lane has
-`max((pool_size - 3) / 3, 1)` integer slots; one organization can use at most
+`max((pool_size - 4) / 3, 1)` integer slots; one organization can use at most
 half a lane (at least one slot). The two authentication lanes each have
-`max(pool_size / 8, 1)` slots. The recorder, job sweep and general background
-rotation use separate execution capacity. Per-organization overrides cannot
-remove the hard half-lane isolation cap. These are bounded execution lanes,
-not physically separate PostgreSQL pools. Small pools, including the runtime
-default of ten, have less isolation headroom; this run does not validate them.
+`max(pool_size / 8, 1)` slots. The recorder, job sweep, archive generation,
+and general background rotation use separate execution capacity.
+Per-organization overrides cannot remove the hard half-lane isolation cap.
+These are bounded execution lanes, not physically separate PostgreSQL pools.
+After the strict gate passed without a limit increase, the production pool
+default was aligned with its measured 64-connection budget. Smaller explicit
+overrides have less isolation headroom; this run does not validate them.
 
 ## Recorded results
 
 Run in an Amp Linux x64 orb with local PostgreSQL, a 64-connection application
-pool, candidate defaults unchanged, and no concurrent test suite. The final
-run reused the fully seeded fixture in `renga_test_capacity2`. It exited 1.
+pool, candidate defaults unchanged, and no concurrent test suite. The original
+failing run reused the fully seeded fixture in `renga_test_capacity2`. It exited 1.
 
 | Phase | Requests | Accepted (202) | Throttled (429) | p95 / p99 | Failed reconciliations |
 | --- | ---: | ---: | ---: | --- | ---: |
@@ -70,7 +72,7 @@ run reused the fully seeded fixture in `renga_test_capacity2`. It exited 1.
 | Quiet neighbor under noisy bulk saturation | 200 | 200 | 0 | 121 / 149 ms | 0 |
 
 Initial seeding accepted all 6,000 requests, with p95/p99 257/422 ms and no
-failed reconciliations, in 557,853 ms. The final normal phase took 59,986 ms,
+failed reconciliations, in 557,853 ms. The original normal phase took 59,986 ms,
 re-enrollment 300,952 ms, and the quiet-neighbor control 10,670 ms.
 
 The normal rejection was maintenance organization concurrency. Re-enrollment
@@ -141,6 +143,34 @@ strict launch gate.** The harness now also retains a bounded top-100 slow SQL
 timeline and reports slow/rejected requests, so aggregate improvements cannot
 hide the remaining contention tails. No candidate limit has been raised.
 
+The next tail-profile run still rejected 27 re-enrollment requests (ten
+check-ins and seventeen observations; 80/140 ms p95/p99). Every recorded SQL
+tail of at least 100 ms was an organization `FOR NO KEY UPDATE` wait, rather
+than a different slow query shape. Reconciliation was reloading the same
+tenant-scoped source, resource, and full observation payload for **each DIMM**.
+The internal projection now uses those already-loaded records to construct
+the same component-evidence changeset, preserving the public context's
+tenant-validation contract while removing redundant round trips and payload
+decoding inside the canonical critical section.
+
+### Strict passing run after the critical-section fix
+
+This run was on local commits rebased onto main `510953907d67e99537f32861c9e63d7446f70200`,
+including authorization and lifecycle enforcement. It reused the seeded
+historical fleet, used flat DIMM serial identities, and exited **0**:
+
+| Phase | Requests | Accepted (202) | Throttled (429) | p95 / p99 | Failed reconciliations |
+| --- | ---: | ---: | ---: | --- | ---: |
+| Normal schedule | 3,050 | 3,050 | 0 | 8 / 124 ms | 0 |
+| Full re-enrollment | 20,996 | 20,996 | 0 | 73 / 93 ms | 0 |
+| Quiet neighbor under noisy bulk saturation | 200 | 200 | 0 | 81 / 83 ms | 0 |
+
+Elapsed times were 59,986 ms, 299,990 ms, and 7,348 ms respectively. The
+noisy tenant's separate 100 new-lease attempts were all rejected as intended;
+they are not included in the 200 quiet requests. No candidate limit changed.
+This validates the documented 64-connection/3,000-host profile, not an
+arbitrary pool size, an unbounded tenant population, or network/TLS overhead.
+
 ### Ready-organization lease-sweep delay
 
 Run separately from intake load, on the same disposable database:
@@ -165,6 +195,12 @@ the tested 30-second handling budget. This establishes the bound for this
 100-ready-organization/25-jobs workload, **not** an unbounded organization or
 backlog count. The separate job reserve kept retention from consuming it.
 
+After integrating authorization and lifecycle from main, the same control
+passed again: six rounds, **10,483 ms** maximum ready-to-batch delay,
+10,848 ms total, all 2,475 quiet leases processed and all 25 locked noisy
+leases untouched. The measured maximum plus the batch budget remained below
+30 seconds.
+
 ### Background recheck audit
 
 | Work | Bounded unit and durable progress | Correctness boundary |
@@ -179,13 +215,51 @@ claims every minute while retaining a 24-hour recheck interval per claim; it
 has a five-second round budget and one-second organization batches because
 DNS is external work. Other batches retain the 250 ms deadline. Existing
 domain re-verification race tests and export expiry/revocation tests pass.
-Archive **creation** remains an unbounded background snapshot/task and is not
-covered by the expiry/reclamation fix.
+
+### Archive generation reserve and wall budget
+
+Archive creation now uses the existing running-export row as a durable queue,
+one queued export per organization. A separate one-slot node reserve and
+persistent organization rotation admit one export per turn. A persisted
+60-second claim fails after a crash rather than restarting or publishing an
+old snapshot. The repeatable-read snapshot stays intact, with a 59-second
+generation budget including claim/setup time and cancellation of its child
+task. Storage checks the persisted deadline before and after chunk insertion;
+ready publication remains atomic. The lifecycle export authorization and
+per-chunk download reauthorization remain unchanged.
+
+Run the real-connection cancellation control separately:
+
+```sh
+nix develop --command env MIX_ENV=test MIX_TEST_PARTITION=_capacity mix run --no-start scripts/load-export-capacity.exs
+```
+
+It blocks a real snapshot after reading its first record type. With a 500 ms
+test budget, cancellation completed in **565 ms**: the child was dead, the
+export was failed, and no archive chunks or private scratch files remained.
+The export reserve rejected concurrent generation, while a quiet export
+completed with the general-background lane saturated. This is a cancellation
+and isolation control, not a claim that arbitrary archives finish in 59 seconds.
+
+The final integrated rerun completed ordinary deadline cancellation in
+**536 ms**, again with no partial chunks or deadline-path scratch files. It
+also forcibly killed the generation owner while its snapshot was blocked and
+verified that the linked snapshot child exited within one second. That
+forced-death control verifies cancellation, not crash-safe scratch reclamation;
+the harness removes its interrupted private directory during fixture cleanup.
+
+### Integrated regression verification
+
+After rebasing the capacity work onto the merged authorization/lifecycle
+baseline, `nix develop --command sh -c 'MIX_ENV=test mix precommit'` passed:
+**3,124 passed (one doctest and 3,123 tests), one excluded**. This includes
+the generated API-document checks and the lifecycle/authorization suites.
+The production runtime configuration test was then extended to verify the
+measured 64-connection default and an explicit 16-connection override;
+all eleven runtime-configuration tests passed.
 
 ## Remaining launch gates
 
-* Profile and correct the re-enrollment bottleneck, then rerun every phase at
-  a documented deployment size without weakening the quiet tenant's reserve.
 * Implement neighbor-expiry staging at a fixed evidence watermark, including
   adjacency and neighbor/cable findings, with resumable batches and atomic
   version-checked publication. The current whole-organization transaction is
@@ -194,6 +268,7 @@ covered by the expiry/reclamation fix.
   resumable-generation contract in RFD 21.
 * The measured lease-sweep delay must be paired with a supported ready-org and
   backlog envelope; it does not establish a maximum for unbounded load.
-* Bound and fairly admit archive generation before claiming deployment-wide
-  fair background isolation. Its repeatable-read snapshot cannot simply be
-  split into independently committed batches without losing archive consistency.
+* Smaller pool overrides have not passed this fleet gate. The production
+  default now matches the measured 64-connection per-node profile; operators
+  must budget all replicas against PostgreSQL's connection limit. These
+  results do not establish a safe small-pool default.
