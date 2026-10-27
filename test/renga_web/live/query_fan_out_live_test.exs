@@ -76,6 +76,36 @@ defmodule RengaWeb.QueryFanOutLiveTest do
     assert has_element?(view, "#run-query")
   end
 
+  for invalidation <- [:expired, :revoked] do
+    @invalidation invalidation
+
+    test "#{invalidation} sessions cannot submit a component-targeted query", context do
+      conn = conn_for(context.conn, context.runner, context.organization)
+      {:ok, view, _} = live(conn, ~p"/inventory")
+      view |> element("#run-query") |> render_click()
+
+      token = get_session(conn, :user_token)
+
+      case @invalidation do
+        :expired ->
+          Renga.Repo.get_by!(Accounts.UserToken, token: token, context: "session")
+          |> Ecto.Changeset.change(expires_at: DateTime.add(Renga.Time.utc_now_ms(), -1, :second))
+          |> Renga.Repo.update!()
+
+        :revoked ->
+          Accounts.delete_user_session_token(token)
+      end
+
+      result =
+        view
+        |> form("#query-fan-out-form", capability: @time)
+        |> render_submit()
+
+      assert Jobs.list_jobs(context.runner) == []
+      assert {:error, {:redirect, %{to: "/users/log-in"}}} = result
+    end
+  end
+
   test "runs a query across the filtered list and shows each host's answers", context do
     conn = conn_for(context.conn, context.runner, context.organization)
     {:ok, view, _html} = live(conn, ~p"/inventory?#{[kind: "server"]}")

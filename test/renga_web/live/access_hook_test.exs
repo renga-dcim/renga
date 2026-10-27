@@ -61,6 +61,45 @@ defmodule RengaWeb.AccessHookTest do
     assert flash["error"] =~ "no longer have access"
   end
 
+  for source <- [:connection, :provider, :binding] do
+    @source source
+
+    test "revoking the #{@source} stops connected and HTTP access but not another organization",
+         context do
+      other = organization_fixture()
+      organization_membership_fixture(context.user, other, %{role: "viewer"})
+
+      {:ok, home_view, _} = live(context.conn, ~p"/inventory")
+
+      {:ok, other_view, _} =
+        context.conn
+        |> put_session(:current_organization_id, other.id)
+        |> live(~p"/inventory")
+
+      assert {:ok, _} = revoke_source(context, @source)
+
+      assert_redirect(home_view, ~p"/organizations")
+      assert has_element?(other_view, "#resource-list")
+      assert {:error, {:redirect, %{to: "/organizations"}}} = live(context.conn, ~p"/inventory")
+
+      assert Renga.Accounts.get_user_by_session_token(get_session(context.conn, :user_token))
+    end
+  end
+
+  defp revoke_source(context, :connection),
+    do: Scim.disable_connection(context.owner, context.client.connection.id)
+
+  defp revoke_source(context, :provider) do
+    provider = Renga.Accounts.IdentityProviders.get(context.client.connection.provider_id)
+    Renga.Accounts.IdentityProviders.disable(provider, {:operator, "revocation test"})
+  end
+
+  defp revoke_source(context, :binding) do
+    Users.patch(context.client, context.entry.id, [
+      %{"op" => "replace", "path" => "externalId", "value" => "replacement-subject"}
+    ])
+  end
+
   # The page's scope is read before the hook subscribes; a revocation in
   # between is announced to nobody, so mounting re-reads it.
   test "a scope that went stale before subscribing is refreshed at mount", context do

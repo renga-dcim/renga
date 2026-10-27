@@ -206,6 +206,40 @@ defmodule Renga.Scim.GrantsTest do
 
     patch!(context, entry, [%{"op" => "replace", "path" => "active", "value" => false}])
     assert %{role: "viewer", status: "active"} = membership(context, user)
+
+    # Manual authority wins in both directions: SCIM cannot elevate a manual
+    # viewer or reactivate a manually disabled member, even on a fresh sign-in.
+    assert Renga.Accounts.scope_for_user(user, context.organization.id).roles == ["viewer"]
+    {:ok, _} = Members.disable_member(context.owner, membership(context, user).id)
+    patch!(context, entry, [%{"op" => "replace", "path" => "active", "value" => true}])
+    Linking.link_identity(identity, %{"sub" => "sub-m"})
+
+    assert %{role: "viewer", status: "disabled", scim_connection_id: nil} =
+             membership(context, user)
+
+    assert Renga.Accounts.scope_for_user(user, context.organization.id).organization_id == nil
+  end
+
+  test "supplemental manual assignments cannot keep a revoked SCIM membership alive", context do
+    {entry, user} = linked!(context)
+    managed = membership(context, user)
+
+    {:ok, _} = Renga.Assignments.assign(context.owner, managed.id, %{"role" => "admin"})
+    stale_scope = Renga.Accounts.scope_for_user(user, context.organization.id)
+    assert {:ok, _} = Renga.Teams.create_team(stale_scope, %{name: "Before revocation"})
+
+    patch!(context, entry, [%{"op" => "replace", "path" => "active", "value" => false}])
+
+    assert Renga.Accounts.scope_for_user(user, context.organization.id).organization_id == nil
+    assert Renga.Authorization.held_now(stale_scope, ["inventory.read", "teams.manage"]) == []
+
+    assert {:error, :forbidden} =
+             Renga.Teams.create_team(stale_scope, %{name: "After revocation"})
+
+    # Valid correlation evidence alone cannot undo the directory's decision.
+    identity = Repo.get!(UserIdentity, Repo.reload!(entry).user_identity_id)
+    Linking.link_identity(identity, %{"sub" => entry.external_id})
+    assert access(context, user) == nil
   end
 
   test "disabling the connection or its provider removes grants until re-enabled", context do

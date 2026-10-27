@@ -22,6 +22,7 @@ defmodule RengaWeb.AccessHook do
       when is_binary(organization_id) ->
         if connected?(socket) do
           Grants.subscribe(organization_id, user_id)
+          Phoenix.PubSub.subscribe(Renga.PubSub, "organization_lifecycle:#{organization_id}")
           # A change that committed between reading the scope and
           # subscribing was announced to nobody, so read it again now that
           # later ones will arrive.
@@ -52,6 +53,10 @@ defmodule RengaWeb.AccessHook do
     with_current_access(socket, organization_id, fn socket ->
       {:halt, redirect(socket, to: socket.assigns[:access_path] || ~p"/organizations")}
     end)
+  end
+
+  defp access_changed({:organization_lifecycle_changed, organization_id}, socket) do
+    with_current_access(socket, organization_id, &{:halt, &1})
   end
 
   defp access_changed(_message, socket), do: {:cont, socket}

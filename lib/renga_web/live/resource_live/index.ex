@@ -594,6 +594,7 @@ defmodule RengaWeb.ResourceLive.Index do
           module={RengaWeb.QueryFanOutComponent}
           id="query-fan-out"
           current_scope={@current_scope}
+          authenticated_session_token={assigns[:authenticated_session_token]}
           list_options={InventoryQuery.list_options(@query)}
         />
 
