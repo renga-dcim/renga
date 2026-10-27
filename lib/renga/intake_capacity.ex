@@ -29,11 +29,11 @@ defmodule Renga.IntakeCapacity do
   end
 
   def lane_size(:authentication), do: max(div(pool_size(), 8), 1)
-  # Reserve connections for lease sweeping, other background work, and the
-  # contact recorder before splitting domain capacity. Authentication lanes
+  # Reserve connections for lease sweeping, archive generation, other background
+  # work, and the contact recorder before splitting domain capacity. Authentication lanes
   # and the remaining headroom are outside these domain permits.
   def lane_size(lane) when lane in [:bulk, :maintenance],
-    do: max(div(pool_size() - 3, 3), 1)
+    do: max(div(pool_size() - 4, 3), 1)
 
   def organization_size, do: max(div(lane_size(:bulk), 2), 1)
 

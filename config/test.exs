@@ -86,6 +86,7 @@ config :renga, :telemetry_pruner_enabled, false
 config :renga, Renga.Transfers.Export, repeatable_read: false
 config :renga, Renga.Transfers, run_exports: :inline
 config :renga, :transfer_expiry_worker_enabled, false
+config :renga, :transfer_generation_worker_enabled, false
 
 # Tests add an imperative capability to exercise retry classes.
 config :renga, Renga.Jobs.Registry, extra_capabilities: [Renga.Jobs.TestCapabilities.Restart]

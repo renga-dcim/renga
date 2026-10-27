@@ -1,5 +1,5 @@
 defmodule Renga.TransfersTest do
-  use Renga.DataCase, async: true
+  use Renga.DataCase, async: false
 
   import Renga.JobsFixtures
   import ExUnit.CaptureLog
@@ -300,6 +300,59 @@ defmodule Renga.TransfersTest do
              "unknown export parts"
 
     assert %OrganizationExport{status: "failed"} = Repo.get!(OrganizationExport, export.id)
+    assert activity(organization) == [{"export_failed", nil}]
+  end
+
+  test "generation reserve and persisted rotation keep a failed export from delaying its neighbor",
+       %{organization: organization} do
+    other = Renga.InventoryFixtures.organization_fixture()
+    [noisy, quiet] = Enum.sort_by([organization, other], & &1.id)
+
+    bad =
+      Repo.insert!(%OrganizationExport{
+        organization_id: noisy.id,
+        status: "running",
+        parts: ["invalid"]
+      })
+
+    good = Repo.insert!(%OrganizationExport{organization_id: quiet.id, status: "running"})
+
+    Repo.query!("DELETE FROM background_cursors WHERE worker = 'export_generation'")
+    {:ok, reserve} = Renga.IntakeCapacity.acquire(:export_background, 1)
+    assert Transfers.generate_queued() == []
+    assert Repo.reload!(bad).processing_deadline == nil
+    assert Repo.reload!(good).processing_deadline == nil
+    Renga.IntakeCapacity.release(reserve)
+
+    {:ok, general} = Renga.IntakeCapacity.acquire(:background, 1)
+
+    try do
+      capture_log(fn -> Transfers.generate_queued() end)
+      assert Repo.reload!(bad).status == "failed"
+      assert Repo.reload!(good).status == "running"
+
+      Transfers.generate_queued()
+      assert Repo.reload!(good).status == "ready"
+      assert chunk_count(good) > 0
+    after
+      Renga.IntakeCapacity.release(general)
+    end
+  end
+
+  test "a crashed snapshot claim fails once instead of restarting or publishing", %{
+    organization: organization
+  } do
+    export =
+      Repo.insert!(%OrganizationExport{
+        organization_id: organization.id,
+        status: "running",
+        processing_deadline: DateTime.add(Renga.Time.utc_now_ms(), -1, :second)
+      })
+
+    Transfers.generate_queued()
+    assert Repo.reload!(export).status == "failed"
+    assert chunk_count(export) == 0
+    assert Transfers.generate_queued() == []
     assert activity(organization) == [{"export_failed", nil}]
   end
 

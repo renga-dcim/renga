@@ -11,7 +11,12 @@ defmodule Renga.Background do
   alias Renga.Repo
 
   def run(worker, ready_query, batch, options \\ []) do
-    lane = if worker == "job_sweep", do: :job_background, else: :background
+    lane =
+      case worker do
+        "job_sweep" -> :job_background
+        "export_generation" -> :export_background
+        _other -> :background
+      end
 
     case Renga.IntakeCapacity.acquire(lane, 1) do
       {:ok, permit} ->
@@ -29,8 +34,9 @@ defmodule Renga.Background do
 
   defp rotate(worker, query, batch, deadline, visited, options, results) do
     remaining = deadline - System.monotonic_time(:millisecond)
+    max_batches = Keyword.get(options, :max_batches)
 
-    if remaining <= 0 do
+    if remaining <= 0 or (is_integer(max_batches) and MapSet.size(visited) >= max_batches) do
       Enum.reverse(results)
     else
       case next(worker, query) do

@@ -5,7 +5,8 @@ defmodule Renga.Transfers.OrganizationExport do
   An export is `running` until its archive is stored, then `ready` until it
   expires seven days later or an owner revokes it. A `failed` export never
   produced an archive. Only a `ready`, unexpired export can be downloaded,
-  and its archive's chunks are deleted as soon as it leaves `ready`.
+  and expiry stops downloads atomically before reclaiming chunks in bounded
+  background batches.
   """
 
   use Ecto.Schema
@@ -26,6 +27,8 @@ defmodule Renga.Transfers.OrganizationExport do
     field :finished_at, :utc_datetime_usec
     field :expires_at, :utc_datetime_usec
     field :revoked_at, :utc_datetime_usec
+    field :notification_url, :string
+    field :processing_deadline, :utc_datetime_usec
 
     belongs_to :organization, Renga.Accounts.Organization
     belongs_to :requested_by_user, Renga.Accounts.User
