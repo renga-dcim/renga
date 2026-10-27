@@ -1628,17 +1628,16 @@ defmodule Renga.Inventory do
   Stores one observation-scoped source assertion about identity.
 
   Canonical links are optional because unresolved and conflicting claims must be
-  representable before the reconciler chooses a resource.
+  representable before the reconciler chooses a resource. Reconciliation may
+  reuse its already-loaded, tenant-scoped source and immutable observation;
+  ID callers still resolve both through scoped queries.
   """
   def create_resource_identifier_claim(
         %Scope{organization_id: organization_id} = scope,
-        source_id,
-        observation_id,
+        %Source{organization_id: organization_id, id: source_id} = source,
+        %Observation{organization_id: organization_id, source_id: source_id} = observation,
         attrs
       ) do
-    source = get_source!(scope, source_id)
-    observation = get_source_observation!(scope, source.id, observation_id)
-
     Repo.transaction(fn ->
       kind = get_attr(attrs, :kind)
       normalized_value = ResourceIdentifier.normalize_value(kind, get_attr(attrs, :value))
@@ -1688,6 +1687,12 @@ defmodule Renga.Inventory do
         {:error, changeset} -> Repo.rollback(changeset)
       end
     end)
+  end
+
+  def create_resource_identifier_claim(%Scope{} = scope, source_id, observation_id, attrs) do
+    source = get_source!(scope, source_id)
+    observation = get_source_observation!(scope, source.id, observation_id)
+    create_resource_identifier_claim(scope, source, observation, attrs)
   end
 
   defp lock_and_update_claim_history(

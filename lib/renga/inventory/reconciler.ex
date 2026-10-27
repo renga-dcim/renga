@@ -247,7 +247,7 @@ defmodule Renga.Inventory.Reconciler do
         )
 
       {:error, candidates} ->
-        reconcile_claims(scope, source.id, observation, nil, %{})
+        reconcile_claims(scope, source, observation, nil, %{})
         result = record_ambiguous(scope, observation, attempt, started_at, candidates)
         {:error, result}
     end
@@ -382,7 +382,7 @@ defmodule Renga.Inventory.Reconciler do
       ensure_resource(scope, observation, identifiers, matched_resource)
 
     canonical_identifiers = reconcile_identifiers(scope, resource, identifiers)
-    reconcile_claims(scope, source.id, observation, resource, canonical_identifiers)
+    reconcile_claims(scope, source, observation, resource, canonical_identifiers)
 
     freshness_advanced? =
       current_observation?(scope, resource.id, observation) and
@@ -628,14 +628,14 @@ defmodule Renga.Inventory.Reconciler do
     )
   end
 
-  defp reconcile_claims(scope, source_id, observation, resource, canonical_identifiers) do
+  defp reconcile_claims(scope, source, observation, resource, canonical_identifiers) do
     observation.payload
     |> observation_identifiers()
     |> Enum.each(fn identifier ->
       canonical = Map.get(canonical_identifiers, {identifier.kind, identifier.normalized_value})
 
       {:ok, _claim} =
-        Inventory.create_resource_identifier_claim(scope, source_id, observation.id, %{
+        Inventory.create_resource_identifier_claim(scope, source, observation, %{
           kind: identifier.kind,
           value: identifier.value,
           confidence: confidence(identifier.kind),
