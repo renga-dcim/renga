@@ -392,8 +392,8 @@ struct Reporter<'a, A: JobApi> {
     job_id: Uuid,
     lease_token: String,
     sequence: u64,
-    /// Renga refused a report with a conflict: the lease is gone or the job
-    /// moved on, so nothing more is sent for it.
+    /// Renga withdrew authentication/authorization or the lease moved on,
+    /// so execution stops and nothing more is sent under this authority.
     lost: bool,
 }
 
@@ -422,7 +422,10 @@ impl<'a, A: JobApi> Reporter<'a, A> {
         match self.api.report(self.job_id, &report) {
             Ok(ack) => Some(ack),
             Err(error) => {
-                if error.status() == Some(StatusCode::CONFLICT) {
+                if matches!(
+                    error.status(),
+                    Some(StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::CONFLICT)
+                ) {
                     self.lost = true;
                 }
                 warn!(job_id = %self.job_id, report = ?kind, %error, "job report failed");
@@ -913,6 +916,28 @@ mod tests {
         assert_eq!(api.kinds(), [ReportType::Started, ReportType::Progress]);
         let records = JobRecords::open(&fixture.state).unwrap();
         assert_eq!(records.get(id).unwrap().outcome, None);
+    }
+
+    #[test]
+    fn withdrawn_authority_stops_running_work_without_acknowledging_an_outcome() {
+        for status in [StatusCode::UNAUTHORIZED, StatusCode::FORBIDDEN] {
+            let capability = fake(RetryClass::Imperative, waits_for_cancel());
+            let fixture = Fixture::new(capability.clone());
+            let id = Uuid::new_v4();
+            let api = FakeApi::lease_once(leased(id));
+            api.answer(ok());
+            api.answer(Err(TransportError::new(
+                "authorization withdrawn".into(),
+                FailureKind::Permanent,
+            )
+            .with_status(status)));
+
+            fixture.pass(&api);
+            assert_eq!(*capability.runs.lock().unwrap(), 1);
+            assert_eq!(api.kinds(), [ReportType::Started, ReportType::Progress]);
+            let records = JobRecords::open(&fixture.state).unwrap();
+            assert_eq!(records.get(id).unwrap().outcome, None);
+        }
     }
 
     #[test]

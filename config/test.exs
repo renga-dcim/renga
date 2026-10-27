@@ -73,6 +73,8 @@ config :renga, :collector_findings_worker_enabled, false
 config :renga, :job_sweeper_enabled, false
 config :renga, :assignment_expiry_worker_enabled, false
 config :renga, :invitation_delivery_worker_enabled, false
+config :renga, :organization_lifecycle_worker_enabled, false
+config :renga, :organization_lifecycle_listener_enabled, false
 config :renga, :power_finding_sweeper_enabled, false
 config :renga, :telemetry_pruner_enabled, false
 

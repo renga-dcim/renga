@@ -22,6 +22,7 @@ defmodule Renga.Release.CLI do
                                        [--expires-at ISO8601] [--source CIDR...]
     renga-admin operator-tokens list
     renga-admin operator-tokens revoke ID_OR_NAME --actor NAME
+    renga-admin organizations suspend|resume|schedule-deletion|cancel-deletion --organization SLUG --actor NAME
     renga-admin limits show --organization SLUG
     renga-admin limits set --organization SLUG --actor NAME --LIMIT VALUE [--LIMIT VALUE...]
     renga-admin limits clear --organization SLUG --actor NAME --limit LIMIT
@@ -181,7 +182,37 @@ defmodule Renga.Release.CLI do
     end
   end
 
+  def run(["organizations", action | args])
+      when action in ~w(suspend resume schedule-deletion cancel-deletion) do
+    operation = "organization." <> String.replace(action, "-", "_")
+
+    with {:ok, context, opts, rest, invalid} <- parse_change(args, organization: :string),
+         :ok <- audited(context, operation, no_extra_args(rest, invalid)),
+         {:ok, organization} <- audited_organization(context, operation, opts) do
+      case Renga.Operators.OrganizationLifecycle.change(
+             organization.id,
+             String.replace(action, "-", "_"),
+             context
+           ) do
+        {:ok, updated} ->
+          print_lifecycle(updated)
+
+        {:error, reason} ->
+          error("Organization lifecycle change refused: #{reason}")
+      end
+    end
+  end
+
   def run(_argv), do: error(@usage)
+
+  defp print_lifecycle(organization) do
+    IO.puts("#{organization.slug}: #{organization.status}")
+
+    if organization.deletion_due_at,
+      do: IO.puts("Deletion due: #{DateTime.to_iso8601(organization.deletion_due_at)}")
+
+    0
+  end
 
   defp import_owner(_organization, nil),
     do: error("--owner EMAIL is required: the organization's owner, who invites everyone back")

@@ -21,6 +21,7 @@ defmodule Renga.Application do
         Renga.Repo,
         {DNSCluster, query: Application.get_env(:renga, :dns_cluster_query) || :ignore},
         {Phoenix.PubSub, name: Renga.PubSub},
+        lifecycle_listener(),
         Renga.Accounts.OIDC.Discovery,
         neighbor_expiry_worker(),
         same_machine_sweeper(),
@@ -32,6 +33,7 @@ defmodule Renga.Application do
         job_sweeper(),
         job_history_purger(),
         invitation_delivery_worker(),
+        lifecycle_worker(),
         power_finding_sweeper(),
         telemetry_pruner(),
         RengaWeb.Scim.RateLimit.Table,
@@ -104,5 +106,15 @@ defmodule Renga.Application do
   defp invitation_delivery_worker do
     if Application.get_env(:renga, :invitation_delivery_worker_enabled, true),
       do: Renga.Operators.InvitationDeliveryWorker
+  end
+
+  defp lifecycle_worker do
+    if Application.get_env(:renga, :organization_lifecycle_worker_enabled, true),
+      do: Renga.Operators.LifecycleWorker
+  end
+
+  defp lifecycle_listener do
+    if Application.get_env(:renga, :organization_lifecycle_listener_enabled, true),
+      do: Renga.Operators.LifecycleListener
   end
 end

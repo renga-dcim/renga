@@ -26,6 +26,7 @@ defmodule RengaWeb.Api.V1.ObservationController do
         {Schemas.ObservationAccepted,
          description: "This observation ID was already stored with the same payload."},
       unauthorized: Schemas.unauthorized_response(),
+      forbidden: {Schemas.Rejected, description: "The organization is suspended."},
       conflict:
         {Schemas.Rejected,
          description:
@@ -88,6 +89,12 @@ defmodule RengaWeb.Api.V1.ObservationController do
         source_id: observation.source_id
       }
     })
+  end
+
+  defp observation_error(conn, {:error, :organization_inactive}) do
+    conn
+    |> put_status(:forbidden)
+    |> json(%{status: "rejected", errors: [%{path: "organization", message: "is suspended"}]})
   end
 
   defp observation_error(conn, {:error, :intake_credential_changed}) do

@@ -47,7 +47,7 @@ defmodule Renga.Transfers do
   @doc "The organization's exports, newest first."
   def list_exports(%Scope{} = scope) do
     Repo.transaction(fn ->
-      Authorization.authorize!(scope, "organization.export")
+      authorize_export!(scope)
 
       OrganizationExport
       |> where([export], export.organization_id == ^scope.organization_id)
@@ -80,7 +80,7 @@ defmodule Renga.Transfers do
 
   defp insert_export(scope, parts) do
     Repo.transaction(fn ->
-      Authorization.authorize!(scope, "organization.export")
+      authorize_export!(scope)
 
       %OrganizationExport{
         organization_id: scope.organization_id,
@@ -249,12 +249,12 @@ defmodule Renga.Transfers do
 
   @doc """
   Authorizes downloading export `export_id` now and records the download.
-  Returns the export, whose archive `chunks/1` streams, or
+  Returns the export, whose archive `chunks/2` streams, or
   `{:error, :not_found}` once it is no longer offered.
   """
   def authorize_download(%Scope{} = scope, export_id) do
     Repo.transaction(fn ->
-      Authorization.authorize!(scope, "organization.export")
+      authorize_export!(scope)
 
       with {:ok, export_id} <- Ecto.UUID.cast(export_id),
            %OrganizationExport{} = export <- locked_export(scope.organization_id, export_id),
@@ -293,17 +293,36 @@ defmodule Renga.Transfers do
   @doc """
   Streams a ready export's archive, one stored chunk at a time. A chunk
   deleted mid-stream, by revocation or expiry, ends the stream early.
+  Suspension or the committed purge boundary also stops further delivery.
   """
-  def chunks(%OrganizationExport{id: id}) do
+  def chunks(%Scope{} = scope, %OrganizationExport{id: id}) do
     export_id = Ecto.UUID.dump!(id)
+    organization_id = Ecto.UUID.dump!(scope.organization_id)
 
     Stream.unfold(0, fn position ->
-      case Repo.query!(
-             "SELECT data FROM organization_export_chunks WHERE export_id = $1 AND position = $2",
-             [export_id, position]
-           ) do
-        %{rows: [[data]]} -> {data, position + 1}
-        %{rows: []} -> nil
+      result =
+        Repo.transaction(fn ->
+          # The recovery exception belongs to the current owner, not to the
+          # archive. Recheck before every read, including a mid-stream suspension.
+          authorize_export!(scope)
+
+          Repo.query!(
+            """
+            SELECT c.data FROM organization_export_chunks c
+            JOIN organization_exports e ON e.id = c.export_id
+            JOIN organizations o ON o.id = e.organization_id
+            WHERE c.export_id = $1 AND c.position = $2
+              AND e.organization_id = $4
+              AND o.status IN ('active', 'deletion_pending')
+              AND e.status = 'ready' AND e.expires_at > $3
+            """,
+            [export_id, position, Renga.Time.utc_now_ms(), organization_id]
+          )
+        end)
+
+      case result do
+        {:ok, %{rows: [[data]]}} -> {data, position + 1}
+        _unavailable -> nil
       end
     end)
   end
@@ -314,7 +333,7 @@ defmodule Renga.Transfers do
   """
   def revoke_export(%Scope{} = scope, export_id) do
     Repo.transaction(fn ->
-      Authorization.authorize!(scope, "organization.export")
+      authorize_export!(scope)
 
       with {:ok, export_id} <- Ecto.UUID.cast(export_id),
            %OrganizationExport{status: status} = export when status in ~w(running ready) <-
@@ -410,6 +429,21 @@ defmodule Renga.Transfers do
     Repo.query!("SELECT 1 FROM organizations WHERE id = $1 FOR UPDATE", [
       Ecto.UUID.dump!(organization_id)
     ])
+  end
+
+  # Only this permission has a recovery exception: a pending-deletion owner
+  # may export without regaining inventory, job, or organization UI access.
+  defp authorize_export!(scope) do
+    organization =
+      Repo.one(from o in Organization, where: o.id == ^scope.organization_id, lock: "FOR UPDATE")
+
+    case organization do
+      %Organization{status: "deletion_pending"} ->
+        Renga.Operators.OrganizationLifecycle.authorize_export!(scope)
+
+      _ ->
+        Authorization.authorize!(scope, "organization.export")
+    end
   end
 
   defp locked_export(organization_id, export_id) do

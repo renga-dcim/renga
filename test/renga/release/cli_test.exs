@@ -27,6 +27,23 @@ defmodule Renga.Release.CLITest do
     {status, stdout, stderr}
   end
 
+  test "organization lifecycle commands share retry-safe state and operator audit" do
+    organization = Renga.InventoryFixtures.organization_fixture()
+
+    for action <- ~w(suspend schedule-deletion schedule-deletion cancel-deletion resume) do
+      {0, output, ""} =
+        run(~w(organizations #{action} --organization #{organization.slug} --actor alice))
+
+      assert output =~ organization.slug
+    end
+
+    assert Accounts.get_organization!(organization.id).status == "active"
+    events = Repo.all(from e in Event, where: e.organization_id == ^organization.id)
+    assert length(events) == 5
+    assert Enum.all?(events, &(&1.actor == "operator: alice" and &1.outcome == "succeeded"))
+    assert Enum.all?(events, &is_binary(&1.invocation_id))
+  end
+
   test "creates a token, prints it once, and audits the actor" do
     {0, stdout, ""} =
       run(~w(operator-tokens create --actor alice --name ci --scopes organizations:read,usage:read

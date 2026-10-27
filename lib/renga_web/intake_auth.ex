@@ -23,6 +23,12 @@ defmodule RengaWeb.IntakeAuth do
       |> assign(:current_installation_id, installation_id)
       |> assign(:current_intake_api_key, key)
     else
+      {:error, :organization_suspended} ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{status: "rejected", errors: [%{path: "organization", message: "is suspended"}]})
+        |> halt()
+
       _invalid ->
         conn
         |> put_status(:unauthorized)
@@ -45,6 +51,7 @@ defmodule RengaWeb.IntakeAuth do
       :ok = Inventory.record_intake_contact(key, installation_id)
       {:ok, Accounts.scope_for(organization), installation_id, key}
     else
+      {:error, :organization_suspended} = error -> error
       _invalid -> :error
     end
   end

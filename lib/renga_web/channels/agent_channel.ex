@@ -10,7 +10,7 @@ defmodule RengaWeb.AgentChannel do
 
   A socket outlives the request that authenticated it, so the channel checks
   the key, organization and agent again every five
-  minutes and closes once any of them is revoked or disabled. Until then a
+  seconds and closes once any of them is revoked or disabled. Until then a
   revoked key learns only that something is waiting, never what.
   """
   use RengaWeb, :channel
@@ -19,7 +19,7 @@ defmodule RengaWeb.AgentChannel do
   alias Renga.Jobs
   alias Renga.Jobs.Changes
 
-  @recheck_interval :timer.minutes(5)
+  @recheck_interval :timer.seconds(5)
 
   @impl true
   def join("installation:" <> installation_id, _payload, socket) do
@@ -38,8 +38,14 @@ defmodule RengaWeb.AgentChannel do
 
   @impl true
   def handle_info({:jobs_waiting, agent_id}, %{assigns: %{agent_id: agent_id}} = socket) do
-    push(socket, "jobs_waiting", %{})
-    {:noreply, socket}
+    case current_agent(socket) do
+      {:ok, _agent} ->
+        push(socket, "jobs_waiting", %{})
+        {:noreply, socket}
+
+      {:error, _reason} ->
+        {:stop, :normal, socket}
+    end
   end
 
   def handle_info(:recheck, socket) do

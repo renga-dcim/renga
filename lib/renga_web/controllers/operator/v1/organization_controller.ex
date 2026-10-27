@@ -244,6 +244,8 @@ defmodule RengaWeb.Operator.V1.OrganizationController do
       name: organization.name,
       slug: organization.slug,
       status: organization.status,
+      deletion_scheduled_at: organization.deletion_scheduled_at,
+      deletion_due_at: organization.deletion_due_at,
       members: Enum.map(members, &%{email: &1.email, role: &1.role})
     }
   end

@@ -781,6 +781,37 @@ defmodule Renga.Jobs do
     if job.state in Job.leased_states(), do: job, else: Repo.rollback(:not_cancellable)
   end
 
+  @doc """
+  Contains existing work while the caller holds the organization's update lock.
+  Queued work never started; leased work receives a cancellation request and
+  loses authorization immediately, even if the tenant is resumed before sweep.
+  Lease loss is still resolved by the ordinary sweeper, never as success.
+  """
+  def suspend_organization!(organization_id) do
+    now = Renga.Time.utc_now_ms()
+
+    Job
+    |> where([job], job.organization_id == ^organization_id)
+    |> where([job], job.state == "queued" or job.state in ^Job.leased_states())
+    |> order_by([job], asc: job.id)
+    |> lock("FOR UPDATE")
+    |> Repo.all()
+    |> Enum.each(fn
+      %Job{state: "queued"} = job ->
+        cancel!(job, :system, now)
+
+      job ->
+        apply!(
+          job,
+          %{cancel_requested_at: job.cancel_requested_at || now, lease_expires_at: now},
+          [{"cancel_requested", :system, %{"reason" => "organization_suspended"}}],
+          now
+        )
+    end)
+
+    :ok
+  end
+
   ## Leasing and reporting (agent side)
 
   @doc "The report types an agent may post on a job it holds."
@@ -971,6 +1002,8 @@ defmodule Renga.Jobs do
 
     if valid_report_sequence?(sequence) do
       Repo.transaction(fn ->
+        lock_active_organization!(organization_id)
+
         organization_id
         |> lock_job!(job_id)
         |> report!(agent, token, type, payload, sequence)

@@ -104,7 +104,23 @@ reads the same environment as the server. `renga-admin operator-tokens create
 API (RFD 22) and prints it once; `list` and `revoke ID_OR_NAME --actor NAME`
 manage existing tokens. Every change names its `--actor` and is recorded,
 whether it succeeds or is refused, in the `deployment_audit_events` table with
-an invocation ID, never with a token. `renga-admin limits set --organization
+an invocation ID, never with a token.
+
+`renga-admin organizations suspend|resume|schedule-deletion|cancel-deletion
+--organization SLUG --actor NAME` contains or recovers a tenant using the same
+audited transitions as the operator API's `/operator/v1/organizations/:id/`
+`suspend`, `resume`, `schedule-deletion`, and `cancel-deletion` POST operations.
+These target-state operations can be retried without extending a deletion
+deadline. Suspension blocks tenant access and new agent work, cancels queued
+jobs, and withdraws running leases without claiming execution succeeded.
+Scheduling deletion immediately suspends access and starts a 30-day grace
+period; current owners can export or cancel from `/organizations/deletions`.
+Cancellation restores access; resume also cancels pending deletion. Neither
+reruns cancelled work. Once purge starts, neither operation can undo it. The
+worker retries interrupted purges; shared users and deployment audit attribution
+survive tenant deletion. Owner notifications are durably queued for delivery.
+
+`renga-admin limits set --organization
 SLUG --actor NAME --job-creation-rate N` overrides a limit for one
 organization (RFD 21) and records the change in its Activity too,
 `limits show` lists them, and `limits clear` returns one to the deployment
