@@ -138,19 +138,23 @@ defmodule Renga.Inventory.Reconciler.Projections do
   end
 
   defp persist_component_evidence(scope, source, observation, resource, attrs) do
+    # Reconciliation already loaded these tenant-scoped records. Re-reading
+    # the source, observation payload and resource for every DIMM both holds
+    # the canonical lock longer and repeatedly decodes the same full report.
     Repo.get_by(ComponentEvidence,
       organization_id: scope.organization_id,
       observation_id: observation.id,
       kind: attrs["kind"],
       source_local_id: attrs["source_local_id"]
     ) ||
-      case Inventory.create_component_evidence(
-             scope,
-             source.id,
-             observation.id,
-             resource.id,
-             attrs
-           ) do
+      case %ComponentEvidence{
+             organization_id: scope.organization_id,
+             source_id: source.id,
+             observation_id: observation.id,
+             resource_id: resource.id
+           }
+           |> ComponentEvidence.changeset(Map.put(attrs, "observed_at", observation.observed_at))
+           |> Repo.insert() do
         {:ok, evidence} -> evidence
       end
   end
