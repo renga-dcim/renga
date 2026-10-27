@@ -15,6 +15,112 @@ defmodule Renga.Inventory.IntakeRegistrationConcurrencyTest do
 
   @timeout 5_000
 
+  test "canonical reconciliation does not block check-ins, while old row fences still serialize" do
+    :ok = Sandbox.checkout(Repo, sandbox: false)
+    {organization, scope, key} = intake_fixture("Canonical liveness")
+    parent = self()
+
+    try do
+      Repo.query!("BEGIN")
+      Inventory.lock_organization!(organization.id)
+
+      request =
+        concurrent_request(parent, fn ->
+          Inventory.record_intake_agent_check_in(scope, key, Ecto.UUID.generate())
+        end)
+
+      assert_receive {:ready, pid}, @timeout
+      send(pid, :go)
+      assert {:ok, {%Agent{}, _lease}} = Task.await(request, 1_000)
+      Repo.query!("COMMIT")
+
+      for legacy_lock <- ["FOR SHARE", "FOR UPDATE"] do
+        Repo.query!("BEGIN")
+
+        Repo.query!("SELECT id FROM organizations WHERE id = $1::uuid #{legacy_lock}", [
+          Ecto.UUID.dump!(organization.id)
+        ])
+
+        writer =
+          concurrent_request(parent, fn ->
+            Repo.transaction(fn -> Inventory.lock_organization!(organization.id) end)
+          end)
+
+        assert_receive {:ready, pid}, @timeout
+        send(pid, :go)
+        assert Task.yield(writer, 100) == nil
+        Repo.query!("COMMIT")
+        assert {:ok, :ok} = Task.await(writer, @timeout)
+      end
+    after
+      Repo.query!("ROLLBACK")
+      Repo.delete!(organization)
+      Sandbox.checkin(Repo)
+    end
+  end
+
+  test "a direct status update waits for accepted intake, and committed suspension refuses intake" do
+    :ok = Sandbox.checkout(Repo, sandbox: false)
+    {organization, scope, key} = intake_fixture("Suspension fence")
+    parent = self()
+
+    try do
+      {:ok, suspension} =
+        Repo.transaction(fn ->
+          assert {:ok, {%Agent{}, _lease}} =
+                   Inventory.record_intake_agent_check_in(scope, key, Ecto.UUID.generate())
+
+          suspension =
+            concurrent_request(parent, fn ->
+              %{rows: [[backend]]} = Repo.query!("SELECT pg_backend_pid()")
+              send(parent, {:suspension_backend, backend})
+
+              Repo.query!("UPDATE organizations SET status = 'disabled' WHERE id = $1::uuid", [
+                Ecto.UUID.dump!(organization.id)
+              ])
+            end)
+
+          assert_receive {:ready, pid}, @timeout
+          send(pid, :go)
+          assert_receive {:suspension_backend, backend}, @timeout
+          await_backend_lock_wait!(backend, System.monotonic_time(:millisecond) + @timeout)
+          assert Task.yield(suspension, 50) == nil
+          suspension
+        end)
+
+      assert %{num_rows: 1} = Task.await(suspension, @timeout)
+
+      assert {:error, :intake_credential_changed} =
+               Inventory.record_intake_agent_check_in(scope, key, Ecto.UUID.generate())
+
+      Repo.query!("BEGIN")
+
+      Repo.query!("UPDATE organizations SET status = 'active' WHERE id = $1::uuid", [
+        Ecto.UUID.dump!(organization.id)
+      ])
+
+      waiting =
+        concurrent_request(parent, fn ->
+          %{rows: [[backend]]} = Repo.query!("SELECT pg_backend_pid()")
+          send(parent, {:intake_backend, backend})
+          Inventory.record_intake_agent_check_in(scope, key, Ecto.UUID.generate())
+        end)
+
+      assert_receive {:ready, pid}, @timeout
+      send(pid, :go)
+      assert_receive {:intake_backend, backend}, @timeout
+      await_backend_lock_wait!(backend, System.monotonic_time(:millisecond) + @timeout)
+      # Rollback leaves the committed disabled status, not the in-flight active
+      # status the stale scope carries. The waiter must re-read after the fence.
+      Repo.query!("ROLLBACK")
+      assert {:error, :intake_credential_changed} = Task.await(waiting, @timeout)
+    after
+      Repo.query!("ROLLBACK")
+      Repo.delete!(organization)
+      Sandbox.checkin(Repo)
+    end
+  end
+
   test "different installations in one organization register concurrently" do
     :ok = Sandbox.checkout(Repo, sandbox: false)
     {organization, scope, key} = intake_fixture("Parallel intake")

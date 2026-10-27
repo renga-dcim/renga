@@ -517,6 +517,14 @@ defmodule Renga.Inventory.Reconciler do
   end
 
   defp mac_set_candidates(scope, observed_macs) do
+    # Keep the native macaddr predicate indexable and tenant-scoped. Casting
+    # the stored column to text scans every site's interfaces under the lock.
+    macs =
+      Enum.map(observed_macs, fn value ->
+        {:ok, mac} = Renga.Types.MacAddress.cast(value)
+        mac
+      end)
+
     Resource
     |> join(:inner, [resource], interface in Interface, on: interface.resource_id == resource.id)
     |> where([resource], resource.organization_id == ^scope.organization_id)
@@ -526,9 +534,10 @@ defmodule Renga.Inventory.Reconciler do
     |> where([_resource, interface], not is_nil(interface.mac_address))
     |> join(:inner, [resource, _interface], candidate in Interface,
       on:
-        candidate.resource_id == resource.id and candidate.status != "not_present" and
+        candidate.organization_id == ^scope.organization_id and
+          candidate.resource_id == resource.id and candidate.status != "not_present" and
           candidate.kind in ^@identity_interface_kinds and
-          fragment("?::text", candidate.mac_address) in ^MapSet.to_list(observed_macs)
+          candidate.mac_address in ^macs
     )
     |> select(
       [resource, interface, _candidate],

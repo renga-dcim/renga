@@ -325,15 +325,19 @@ defmodule Renga.Inventory.Reconciler.Projections do
 
   defp match_actual_component(organization_id, evidence, allow_position_match?) do
     [
-      {"serial_number", serial_component_matches(organization_id, evidence)},
-      {"provider_id", provider_component_matches(organization_id, evidence)},
+      {"serial_number", fn -> serial_component_matches(organization_id, evidence) end},
+      {"provider_id", fn -> provider_component_matches(organization_id, evidence) end},
       {"position_part_number",
-       position_component_matches(organization_id, evidence, allow_position_match?)}
+       fn -> position_component_matches(organization_id, evidence, allow_position_match?) end}
     ]
-    |> Enum.find_value(:none, fn
-      {_strategy, []} -> false
-      {strategy, [component]} -> {:ok, component, strategy}
-      {_strategy, _ambiguous} -> :ambiguous
+    |> Enum.find_value(:none, fn {strategy, matches} ->
+      # A stronger identity decides the result. Do not scan all historical
+      # provider evidence when a serial number has already settled it.
+      case matches.() do
+        [] -> false
+        [component] -> {:ok, component, strategy}
+        _ambiguous -> :ambiguous
+      end
     end)
   end
 
@@ -360,7 +364,8 @@ defmodule Renga.Inventory.Reconciler.Projections do
     )
     |> where(
       [_component, _match, prior],
-      prior.source_id == ^evidence.source_id and
+      prior.organization_id == ^organization_id and prior.resource_id == ^evidence.resource_id and
+        prior.source_id == ^evidence.source_id and
         prior.kind == ^evidence.kind and
         prior.source_local_id == ^evidence.source_local_id
     )

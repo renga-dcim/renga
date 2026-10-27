@@ -1242,7 +1242,7 @@ defmodule Renga.Jobs do
       Repo.transaction(fn ->
         Organization
         |> where([organization], organization.id == ^organization_id)
-        |> lock("FOR SHARE")
+        |> lock("FOR KEY SHARE")
         |> Repo.one()
 
         Job
@@ -1684,7 +1684,7 @@ defmodule Renga.Jobs do
 
     query =
       case lock do
-        :share -> lock(query, "FOR SHARE")
+        :share -> lock(query, "FOR KEY SHARE")
         :update -> lock(query, "FOR UPDATE")
       end
 

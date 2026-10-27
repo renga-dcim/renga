@@ -42,6 +42,17 @@ defmodule Renga.CapacityLoad do
     Mix.Task.run("app.start")
     Logger.configure(level: :error)
     :ets.new(__MODULE__, [:named_table, :public])
+    :ets.new(:capacity_queries, [:named_table, :public])
+    :ets.new(:capacity_slow_queries, [:named_table, :public, :ordered_set])
+
+    if System.get_env("LOAD_PROFILE") == "true" do
+      :telemetry.attach(
+        "capacity-load-queries",
+        [:renga, :repo, :query],
+        &__MODULE__.record_query/4,
+        nil
+      )
+    end
 
     :telemetry.attach(
       "capacity-load-rejections",
@@ -226,6 +237,8 @@ defmodule Renga.CapacityLoad do
   defp phase(name, events, operation, concurrency) do
     started = System.monotonic_time(:millisecond)
     :ets.delete_all_objects(__MODULE__)
+    :ets.delete_all_objects(:capacity_queries)
+    :ets.delete_all_objects(:capacity_slow_queries)
 
     values =
       events
@@ -251,8 +264,63 @@ defmodule Renga.CapacityLoad do
       failed_reconciliations: Enum.count(values, & &1.failed_reconciliation)
     }
 
+    if System.get_env("LOAD_PROFILE") == "true" do
+      queries =
+        :capacity_queries
+        |> :ets.tab2list()
+        |> Enum.sort_by(fn {_query, _count, time, _queue} -> time end, :desc)
+        |> Enum.take(15)
+        |> Enum.map(fn {query, count, time, queue} ->
+          %{
+            query: query,
+            count: count,
+            query_ms: System.convert_time_unit(time, :native, :millisecond),
+            queue_ms: System.convert_time_unit(queue, :native, :millisecond)
+          }
+        end)
+
+      slow_queries =
+        :capacity_slow_queries
+        |> :ets.tab2list()
+        |> Enum.reverse()
+        |> Enum.map(fn {{duration, _id}, at, query} ->
+          %{query_ms: duration, phase_ms: at - started, query: query}
+        end)
+
+      IO.puts(Jason.encode!(%{profile_phase: name, queries: queries, slow_queries: slow_queries}))
+    end
+
     IO.puts(Jason.encode!(summary))
     summary
+  end
+
+  def record_query(_event, measurements, %{query: query}, _config) do
+    :ets.update_counter(
+      :capacity_queries,
+      query,
+      [
+        {2, 1},
+        {3, Map.get(measurements, :query_time, 0)},
+        {4, Map.get(measurements, :queue_time, 0)}
+      ],
+      {query, 0, 0, 0}
+    )
+
+    duration =
+      measurements
+      |> Map.get(:query_time, 0)
+      |> System.convert_time_unit(:native, :millisecond)
+
+    if duration >= 100 do
+      :ets.insert(:capacity_slow_queries, {
+        {duration, System.unique_integer([:positive])},
+        System.monotonic_time(:millisecond),
+        query
+      })
+
+      if :ets.info(:capacity_slow_queries, :size) > 100,
+        do: :ets.delete(:capacity_slow_queries, :ets.first(:capacity_slow_queries))
+    end
   end
 
   def record_rejection(_event, _measurements, metadata, _config) do
@@ -293,11 +361,10 @@ defmodule Renga.CapacityLoad do
               do: %{
                 kind: "memory",
                 slot: "DIMM#{slot}",
-                attributes: %{
-                  size_bytes: 34_359_738_368,
-                  vendor: "Samsung",
-                  serial_number: "#{n}-#{slot}"
-                }
+                size_bytes: 34_359_738_368,
+                vendor: "Samsung",
+                serial_number:
+                  if(System.get_env("LOAD_COMPONENT_SERIALS") != "false", do: "#{n}-#{slot}")
               }
             )
         }
@@ -321,11 +388,18 @@ defmodule Renga.CapacityLoad do
       |> RengaWeb.Endpoint.call([])
 
     response = Jason.decode!(conn.resp_body)
+    duration = System.monotonic_time(:millisecond) - started
+
+    if System.get_env("LOAD_PROFILE") == "true" and (duration >= 500 or conn.status == 429) do
+      IO.puts(
+        Jason.encode!(%{request_at_ms: started, path: path, status: conn.status, ms: duration})
+      )
+    end
 
     %{
       status: conn.status,
       path: path,
-      ms: System.monotonic_time(:millisecond) - started,
+      ms: duration,
       failed_reconciliation: get_in(response, ["reconciliation", "status"]) == "failed"
     }
   end

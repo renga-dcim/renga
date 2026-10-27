@@ -394,7 +394,10 @@ defmodule Renga.Authorization do
       )
       when principal in @machine_principals do
     if principal in (roles || []) do
-      lock_active_organization!(organization_id)
+      # Canonical work serializes with other writers, but not check-ins.
+      # organizations_status_lock_key makes status a PostgreSQL lock key,
+      # so suspension still conflicts with intake's FOR KEY SHARE fence.
+      lock_active_organization!(organization_id, :no_key_update)
     else
       Repo.rollback(:forbidden)
     end
@@ -420,6 +423,7 @@ defmodule Renga.Authorization do
 
   defp row_lock(query, :update), do: lock(query, "FOR UPDATE")
   defp row_lock(query, :share), do: lock(query, "FOR SHARE")
+  defp row_lock(query, :no_key_update), do: lock(query, "FOR NO KEY UPDATE")
 
   # An unknown permission is a programming error, not a denial.
   defp validate!(permission) when permission in @permissions, do: permission

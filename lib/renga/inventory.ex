@@ -615,7 +615,7 @@ defmodule Renga.Inventory do
     Organization
     |> where([organization], organization.id == ^organization_id)
     |> select([organization], organization.status)
-    |> lock("FOR SHARE")
+    |> lock("FOR KEY SHARE")
     |> Repo.one!()
     |> case do
       "active" -> :ok
@@ -2872,10 +2872,13 @@ defmodule Renga.Inventory do
 
   @doc false
   def lock_organization!(organization_id) do
+    # Serialize canonical mutations without blocking installation liveness.
+    # The status key still excludes suspension/deletion; keep the row before
+    # the advisory fence for compatibility with managed and older writers.
     Organization
     |> where([organization], organization.id == ^organization_id)
     |> select([organization], organization.id)
-    |> lock("FOR UPDATE")
+    |> lock("FOR NO KEY UPDATE")
     |> Repo.one!()
 
     Repo.query!("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [organization_id])
