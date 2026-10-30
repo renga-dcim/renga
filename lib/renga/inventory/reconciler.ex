@@ -71,7 +71,7 @@ defmodule Renga.Inventory.Reconciler do
       Inventory.lock_organization!(scope.organization_id)
 
       case latest_result(scope, observation.id) do
-        nil -> perform_reconciliation(scope, observation, failed)
+        nil -> reconcile_in_transaction(scope, observation, failed)
         result -> result_to_reconciliation(scope, result)
       end
     end)
@@ -92,7 +92,7 @@ defmodule Renga.Inventory.Reconciler do
     Repo.transaction(fn ->
       authorize.()
       Inventory.lock_organization!(scope.organization_id)
-      perform_reconciliation(scope, observation, failed)
+      reconcile_in_transaction(scope, observation, failed)
     end)
     |> case do
       {:ok, result} ->
@@ -132,7 +132,27 @@ defmodule Renga.Inventory.Reconciler do
     end
   end
 
-  defp perform_reconciliation(scope, observation, failed) do
+  @doc """
+  Internal primitive running the canonical reconciliation core in the caller's transaction.
+
+  The caller must freshly authorize the operation and hold the inventory
+  organization lock. `observation` must already be persisted in that same
+  organization. Transaction presence alone proves neither authorization,
+  ownership, nor deduplication. This function neither opens a transaction nor
+  handles rollback/retry bookkeeping or the Inventory wrapper's post-commit triage,
+  address, same-machine, and collector refreshes. Existing projection effects
+  remain inside the core; orchestration and follow-ups remain unchanged.
+
+  `failed` is restricted to members of this report whose unexpected failures the
+  orchestrator already recorded after rollback in this run. A member failure may
+  call `Repo.rollback/1`, rolling back the entire caller transaction. Complete-report
+  orchestration still visits later members and supplies the whole result set to
+  collector finalization.
+  """
+  def reconcile_in_transaction(%Scope{} = scope, %Observation{} = observation, failed \\ %{}) do
+    unless Repo.in_transaction?(),
+      do: raise(ArgumentError, "reconciliation core requires a caller-owned transaction")
+
     if report?(observation),
       do: perform_report_reconciliation(scope, observation, failed),
       else: perform_resource_reconciliation(scope, observation)

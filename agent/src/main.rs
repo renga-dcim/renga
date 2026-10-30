@@ -3616,7 +3616,7 @@ mod tests {
                 parameters: json!({}),
                 attempt: 1,
                 lease_token: "token".into(),
-                lease_expires_at: chrono::Utc::now(),
+                lease_expires_at: chrono::Utc::now() + chrono::Duration::seconds(60),
                 timeout_ms: 60,
                 output_limit_bytes: 65_536,
             })),
