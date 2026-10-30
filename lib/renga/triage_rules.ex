@@ -211,8 +211,9 @@ defmodule Renga.TriageRules do
   it. Runs as the system; rules apply in the order they were created, so
   when two rules could set the same fact the older one does.
 
-  Never fails the report: returns the number of facts set, or
-  `{:error, reason}`.
+  Returns `{:ok, number_of_facts_set}` or `{:error, reason}`; database failures
+  may raise. Root host reconciliation treats failures as transaction-fatal;
+  complete-report orchestration retains its best-effort post-commit policy.
   """
   def apply_to_resource(organization_id, resource_id) do
     scope = %Scope{organization_id: organization_id, roles: [@system_role]}
