@@ -182,28 +182,8 @@ defmodule Renga.Inventory.Reconciler do
   # Carry the decision out of the transaction; source metadata remains mutable
   # and a post-commit reread could skip effects this turn never performed.
   defp reconcile_turn(scope, observation, failed, terminal \\ nil) do
-    source =
-      cond do
-        report?(observation) ->
-          nil
-
-        is_nil(observation.parent_observation_id) ->
-          # The organization lock does not serialize update_source/3. A share
-          # lock pins this root turn's kind without forbidding later edits.
-          Source
-          |> where([source], source.organization_id == ^scope.organization_id)
-          |> where([source], source.id == ^observation.source_id)
-          |> lock("FOR SHARE")
-          |> Repo.one!()
-
-        true ->
-          Inventory.get_source!(scope, observation.source_id)
-      end
-
-    owner =
-      if source && is_nil(observation.parent_observation_id) && source.kind == "host_agent",
-        do: :atomic_host,
-        else: :post_commit
+    source = turn_source(scope, observation)
+    owner = turn_effect_owner(observation, source)
 
     try do
       result =
@@ -225,6 +205,30 @@ defmodule Renga.Inventory.Reconciler do
         Repo.rollback({:turn_failed, exception, owner})
     end
   end
+
+  defp turn_source(scope, observation) do
+    cond do
+      report?(observation) ->
+        nil
+
+      is_nil(observation.parent_observation_id) ->
+        # The organization lock does not serialize update_source/3. A share
+        # lock pins this root turn's kind without forbidding later edits.
+        Source
+        |> where([source], source.organization_id == ^scope.organization_id)
+        |> where([source], source.id == ^observation.source_id)
+        |> lock("FOR SHARE")
+        |> Repo.one!()
+
+      true ->
+        Inventory.get_source!(scope, observation.source_id)
+    end
+  end
+
+  defp turn_effect_owner(%Observation{parent_observation_id: nil}, %Source{kind: "host_agent"}),
+    do: :atomic_host
+
+  defp turn_effect_owner(_observation, _source), do: :post_commit
 
   # Current-state refreshes cannot be deferred past a host commit: an independent
   # IPAM edit may remove a transient condition before its finding was ever recorded.
