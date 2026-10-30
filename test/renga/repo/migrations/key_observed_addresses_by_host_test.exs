@@ -127,36 +127,13 @@ defmodule Renga.Repo.Migrations.KeyObservedAddressesByHostTest do
              Enum.filter(evidence(repo), fn [address, _observation, _text] -> address == split end)
   end
 
-  # Current code on the rolled-back schema: address findings, which need
-  # later tables, fail and are logged without failing ingestion.
   @tag :capture_log
   test "rollback retains the presence watermark so old reports cannot revive historical masks",
        %{repo: repo} do
-    Renga.ScratchMigrations.run(repo, :up, to: @migration_version)
-
-    # The current application runs against this older schema here, so give
-    # it the later columns its schemas read and write; none of them takes
-    # part in the host migration or its rollback.
-    {:ok, _} =
-      query(repo, """
-      ALTER TABLE sources
-        ADD COLUMN authoritative_routing_domains boolean NOT NULL DEFAULT false,
-        ADD COLUMN agent_id uuid,
-        ADD COLUMN collector_id varchar
-      """)
-
-    {:ok, _} =
-      query(repo, """
-      ALTER TABLE observations
-        ADD COLUMN parent_observation_id uuid,
-        ADD COLUMN resource_index integer
-      """)
-
-    {:ok, _} =
-      query(repo, """
-      ALTER TABLE organizations
-        ADD COLUMN guest_without_vm_findings boolean NOT NULL DEFAULT false
-      """)
+    # Only this current-application test needs the real finding dependencies:
+    # host effects now commit atomically instead of swallowing missing-table
+    # failures. Other tests keep exercising the historical schema from setup.
+    Renga.ScratchMigrations.run(repo, :up, all: true)
 
     Renga.Repo.put_dynamic_repo(repo)
 
@@ -170,7 +147,24 @@ defmodule Renga.Repo.Migrations.KeyObservedAddressesByHostTest do
       old_observation = wide.metadata["presence_owner"]["observation_id"]
       [current] = report_addresses(scope, source, ["192.0.2.10/32"])
 
-      Renga.ScratchMigrations.run(repo, :down, to: 20_261_018_120_000)
+      # Roll back just the identities under test, retaining the current app's
+      # independent tables so the replay exercises the real host transaction.
+      assert :ok =
+               Ecto.Migrator.down(
+                 Renga.Repo,
+                 @migration_version,
+                 Renga.Repo.Migrations.KeyObservedAddressesByHost,
+                 log: false
+               )
+
+      assert :ok =
+               Ecto.Migrator.down(
+                 Renga.Repo,
+                 20_261_018_120_000,
+                 Renga.Repo.Migrations.KeyAddressEvidenceByReportedAddress,
+                 log: false
+               )
+
       split = Renga.Repo.get_by!(Renga.Inventory.Address, address: wide.address)
       assert split.metadata["present"] == false
       assert split.metadata["presence_owner"] == current.metadata["presence_owner"]

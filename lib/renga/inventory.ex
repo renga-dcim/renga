@@ -2264,28 +2264,47 @@ defmodule Renga.Inventory do
 
   @doc """
   Reconciles one immutable observation into canonical inventory.
+
+  Root host-agent observations commit transition-critical DB effects with the
+  canonical mutation. Their triage failures now block the commit, rather than
+  leaving a successfully reconciled host for later best-effort triage.
   """
   def reconcile_observation(%Scope{user: nil} = scope, observation_id) do
     observation = get_observation!(scope, observation_id)
 
-    scope
-    |> Reconciler.reconcile(observation)
-    |> apply_triage_rules(scope)
-    |> reconcile_address_findings(scope)
-    |> reconcile_same_machine(scope, observation)
-    |> reconcile_collector_findings(scope, observation)
+    Reconciler.reconcile(scope, observation,
+      after_commit: fn
+        result, :post_commit ->
+          result
+          |> apply_triage_rules(scope)
+          |> reconcile_address_findings(scope)
+          |> reconcile_same_machine(scope, observation)
+          |> reconcile_collector_findings(scope, observation)
+
+        result, _owner ->
+          result
+      end
+    )
     |> Changes.broadcast(scope.organization_id)
   end
 
   def reconcile_observation(%Scope{} = scope, observation_id) do
     with {:ok, observation} <- authorized_reconciliation_observation(scope, observation_id) do
-      scope
-      |> Reconciler.reconcile(observation, authorize: fn -> authorize_reconciliation!(scope) end)
-      |> apply_triage_rules(scope)
-      |> reconcile_address_findings(scope)
-      |> reconcile_same_machine(scope, observation)
-      |> reconcile_collector_findings(scope, observation)
-      |> reconcile_collector_findings(scope, observation)
+      Reconciler.reconcile(scope, observation,
+        authorize: fn -> authorize_reconciliation!(scope) end,
+        after_commit: fn
+          result, :post_commit ->
+            result
+            |> apply_triage_rules(scope)
+            |> reconcile_address_findings(scope)
+            |> reconcile_same_machine(scope, observation)
+            |> reconcile_collector_findings(scope, observation)
+            |> reconcile_collector_findings(scope, observation)
+
+          result, _owner ->
+            result
+        end
+      )
       |> Changes.broadcast(scope.organization_id)
     end
   end
@@ -2297,26 +2316,39 @@ defmodule Renga.Inventory do
   def reconcile_observation_once(%Scope{user: nil} = scope, observation_id) do
     observation = get_observation!(scope, observation_id)
 
-    scope
-    |> Reconciler.reconcile_once(observation)
-    |> apply_triage_rules(scope)
-    |> reconcile_address_findings(scope)
-    |> reconcile_same_machine(scope, observation)
-    |> reconcile_collector_findings(scope, observation)
+    Reconciler.reconcile_once(scope, observation,
+      after_commit: fn
+        result, :post_commit ->
+          result
+          |> apply_triage_rules(scope)
+          |> reconcile_address_findings(scope)
+          |> reconcile_same_machine(scope, observation)
+          |> reconcile_collector_findings(scope, observation)
+
+        result, _owner ->
+          result
+      end
+    )
     |> Changes.broadcast(scope.organization_id)
   end
 
   def reconcile_observation_once(%Scope{} = scope, observation_id) do
     with {:ok, observation} <- authorized_reconciliation_observation(scope, observation_id) do
-      scope
-      |> Reconciler.reconcile_once(observation,
-        authorize: fn -> authorize_reconciliation!(scope) end
+      Reconciler.reconcile_once(scope, observation,
+        authorize: fn -> authorize_reconciliation!(scope) end,
+        after_commit: fn
+          result, :post_commit ->
+            result
+            |> apply_triage_rules(scope)
+            |> reconcile_address_findings(scope)
+            |> reconcile_same_machine(scope, observation)
+            |> reconcile_collector_findings(scope, observation)
+            |> reconcile_collector_findings(scope, observation)
+
+          result, _owner ->
+            result
+        end
       )
-      |> apply_triage_rules(scope)
-      |> reconcile_address_findings(scope)
-      |> reconcile_same_machine(scope, observation)
-      |> reconcile_collector_findings(scope, observation)
-      |> reconcile_collector_findings(scope, observation)
       |> Changes.broadcast(scope.organization_id)
     end
   end
