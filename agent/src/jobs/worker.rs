@@ -64,6 +64,14 @@ impl PolicyGeneration {
 pub trait JobApi {
     fn lease(&self, capabilities: &[String], limit: u32) -> Result<Vec<LeasedJob>, TransportError>;
     fn report(&self, job_id: Uuid, report: &JobReport<'_>) -> Result<ReportAck, TransportError>;
+    fn report_before(
+        &self,
+        job_id: Uuid,
+        report: &JobReport<'_>,
+        _deadline: Instant,
+    ) -> Result<ReportAck, TransportError> {
+        self.report(job_id, report)
+    }
 }
 
 impl JobApi for HttpClient {
@@ -73,6 +81,15 @@ impl JobApi for HttpClient {
 
     fn report(&self, job_id: Uuid, report: &JobReport<'_>) -> Result<ReportAck, TransportError> {
         self.post_job_report(job_id, report)
+    }
+
+    fn report_before(
+        &self,
+        job_id: Uuid,
+        report: &JobReport<'_>,
+        deadline: Instant,
+    ) -> Result<ReportAck, TransportError> {
+        self.post_job_report_before(job_id, report, deadline)
     }
 }
 
@@ -279,6 +296,12 @@ impl<'a, A: JobApi> Worker<'a, A> {
                 let _ = runner.join();
                 return None;
             }
+            // Backpressure may prevent another report from reaching Renga.
+            // Lease loss must still stop execution without waiting for a 409.
+            if now >= reporter.lease_deadline {
+                reporter.lost = true;
+                cancellation.cancel();
+            }
             if now >= deadline {
                 cancellation.cancel();
                 warn!(job_id = %job.id, timeout_seconds = timeout.as_secs(), "job timed out");
@@ -392,6 +415,7 @@ struct Reporter<'a, A: JobApi> {
     job_id: Uuid,
     lease_token: String,
     sequence: u64,
+    lease_deadline: Instant,
     /// Renga withdrew authentication/authorization or the lease moved on,
     /// so execution stops and nothing more is sent under this authority.
     lost: bool,
@@ -404,12 +428,17 @@ impl<'a, A: JobApi> Reporter<'a, A> {
             job_id: job.id,
             lease_token: job.lease_token.clone(),
             sequence: 0,
+            lease_deadline: Instant::now()
+                + (job.lease_expires_at - Utc::now())
+                    .to_std()
+                    .unwrap_or_default(),
             lost: false,
         }
     }
 
     fn send(&mut self, kind: ReportType, payload: &Value) -> Option<ReportAck> {
-        if self.lost {
+        if self.lost || Instant::now() >= self.lease_deadline {
+            self.lost = true;
             return None;
         }
         self.sequence += 1;
@@ -419,8 +448,17 @@ impl<'a, A: JobApi> Reporter<'a, A> {
             kind,
             payload,
         };
-        match self.api.report(self.job_id, &report) {
-            Ok(ack) => Some(ack),
+        let sent_at = Instant::now();
+        match self
+            .api
+            .report_before(self.job_id, &report, self.lease_deadline)
+        {
+            Ok(ack) => {
+                // Every accepted report renews Renga's 60-second lease. Use
+                // the request start, not response time, as the safe boundary.
+                self.lease_deadline = sent_at + Duration::from_secs(60);
+                Some(ack)
+            }
             Err(error) => {
                 if matches!(
                     error.status(),
@@ -616,7 +654,7 @@ mod tests {
             parameters: json!({}),
             attempt: 1,
             lease_token: "token".into(),
-            lease_expires_at: Utc::now(),
+            lease_expires_at: Utc::now() + chrono::Duration::seconds(60),
             timeout_ms: 60_000,
             output_limit_bytes: 65_536,
         }
@@ -938,6 +976,20 @@ mod tests {
             let records = JobRecords::open(&fixture.state).unwrap();
             assert_eq!(records.get(id).unwrap().outcome, None);
         }
+    }
+
+    #[test]
+    fn an_expired_lease_never_runs_even_without_a_server_conflict() {
+        let capability = fake(RetryClass::Idempotent, succeeds());
+        let fixture = Fixture::new(capability.clone());
+        let mut job = leased(Uuid::new_v4());
+        job.lease_expires_at = Utc::now() - chrono::Duration::seconds(1);
+        let api = FakeApi::lease_once(job);
+
+        fixture.pass(&api);
+
+        assert_eq!(*capability.runs.lock().unwrap(), 0);
+        assert!(api.kinds().is_empty());
     }
 
     #[test]
