@@ -17,6 +17,8 @@ defmodule Renga.Transfers.Export do
   with microseconds, binary values in base64, and JSON columns as they are.
   """
 
+  import Ecto.Query, only: [from: 2]
+
   alias Ecto.Adapters.SQL
   alias Renga.Accounts.Organization
   alias Renga.Repo
@@ -41,7 +43,9 @@ defmodule Renga.Transfers.Export do
       export may hold (`Renga.Jobs.readable_payloads/1`); other jobs'
       parameters, results, and agent reports are withheld. Default: all
 
-  Returns `{:ok, %{snapshot_at: at, records: count}}`.
+  Returns `{:ok, %{snapshot_at: at, records: count}}`, or
+  `{:error, :unsupported_processing_state}` while durable work is unfinished.
+  Runtime ownership is not portable; this guard runs inside the export snapshot.
   """
   def write(%Organization{} = organization, path, opts \\ []) do
     parts = Keyword.get(opts, :parts, [])
@@ -52,18 +56,22 @@ defmodule Renga.Transfers.Export do
     writer = Writer.new(Keyword.take(opts, [:tmp_dir]))
 
     try do
-      {writer, snapshot_at, organization} =
-        snapshot(fn -> write_records(writer, organization, parts, opts) end)
+      case snapshot(fn -> write_records(writer, organization, parts, opts) end) do
+        {:ok, {writer, snapshot_at, organization}} ->
+          :ok =
+            Writer.finish(
+              writer,
+              %{organization: organization, snapshot_at: snapshot_at, parts: parts},
+              path
+            )
 
-      :ok =
-        Writer.finish(
-          writer,
-          %{organization: organization, snapshot_at: snapshot_at, parts: parts},
-          path
-        )
+          records = writer.files |> Map.values() |> Enum.map(& &1["records"]) |> Enum.sum()
+          {:ok, %{snapshot_at: snapshot_at, records: records}}
 
-      records = writer.files |> Map.values() |> Enum.map(& &1["records"]) |> Enum.sum()
-      {:ok, %{snapshot_at: snapshot_at, records: records}}
+        {:error, reason} ->
+          Writer.discard(writer)
+          {:error, reason}
+      end
     rescue
       exception ->
         Writer.discard(writer)
@@ -76,6 +84,21 @@ defmodule Renga.Transfers.Export do
   defp write_records(writer, organization, parts, opts) do
     snapshot_at = snapshot_time()
     organization = Repo.get!(Organization, organization.id)
+
+    if Repo.exists?(
+         from(work in Renga.Inventory.ReconciliationWork,
+           where: work.organization_id == ^organization.id and work.status != "succeeded"
+         )
+       ) or
+         Repo.exists?(
+           from(lane in Renga.Inventory.ReconciliationLane,
+             where:
+               lane.organization_id == ^organization.id and
+                 (lane.pending_units > 0 or lane.pending_bytes > 0 or not is_nil(lane.token))
+           )
+         ),
+       do: Repo.rollback(:unsupported_processing_state)
+
     columns = Schema.columns()
     types = RecordTypes.included(parts)
     after_type = Keyword.get(opts, :after_record_type, fn _type -> :ok end)
@@ -105,22 +128,19 @@ defmodule Renga.Transfers.Export do
   # cannot run inside another transaction. Statements may run as long as
   # approved background work (RFD 21); each fetches one batch.
   defp snapshot(fun) do
-    {:ok, result} =
-      Repo.transaction(
-        fn ->
-          if repeatable_read?(),
-            do: Repo.query!("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+    Repo.transaction(
+      fn ->
+        if repeatable_read?(),
+          do: Repo.query!("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
 
-          Repo.query!("SELECT set_config('statement_timeout', $1, true)", [
-            "#{Repo.background_statement_timeout_ms()}ms"
-          ])
+        Repo.query!("SELECT set_config('statement_timeout', $1, true)", [
+          "#{Repo.background_statement_timeout_ms()}ms"
+        ])
 
-          fun.()
-        end,
-        timeout: :infinity
-      )
-
-    result
+        fun.()
+      end,
+      timeout: :infinity
+    )
   end
 
   # The SQL sandbox runs each test inside a transaction that has already
