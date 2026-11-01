@@ -416,7 +416,11 @@ enabled = ["inventory.collect", "query.disk_usage", "query.packages"]
 This build has these capabilities:
 
 * `inventory.collect@1` (`observe`): runs the normal inventory collection now,
-  delivers it through the observation queue, and reports the observation ID.
+  delivers it through the ordinary observation queue, and reports the observation
+  ID only after that exact observation receives a matching durable acceptance
+  receipt. Enqueueing it or accepting an older queue entry is not success; later
+  canonical processing is not part of job completion. An ambiguous response
+  retains the observation for replay, even if the job reports delivery failure.
 * Operational queries (RFD 12), each `observe` and read-only, on Linux. They
   read procfs, system calls, and package databases directly. Where one must
   run a program, the program's arguments are fixed in the agent and never
