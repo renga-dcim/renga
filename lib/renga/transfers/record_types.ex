@@ -306,6 +306,7 @@ defmodule Renga.Transfers.RecordTypes do
     {"interface_vlan_evidence", "observation_id"},
     {"interface_vlan_mode_evidence", "observation_id"},
     {"placement_evidence", "observation_id"},
+    {"reconciliation_work", "observation_id"},
     {"resource_identifier_claims", "observation_id"},
     {"topology_snapshot_events", "observation_id"}
   ]
@@ -361,6 +362,10 @@ defmodule Renga.Transfers.RecordTypes do
     "organization_limits" => "operator policy of the source deployment",
     "organization_lifecycle_notices" =>
       "the source deployment's pending lifecycle email delivery, not portable tenant data",
+    "reconciliation_lanes" =>
+      "deployment-local ownership and reservations; unfinished work blocks export",
+    "reconciliation_work" =>
+      "deployment-local processing ledger; unfinished work blocks export, succeeded work is not replayed",
     "scim_connections" =>
       "provisioning through one of the deployment's identity providers, set up at the destination",
     "scim_tokens" => "credentials for the source deployment's SCIM endpoint",

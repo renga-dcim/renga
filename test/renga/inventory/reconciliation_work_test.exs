@@ -17,6 +17,8 @@ defmodule Renga.Inventory.ReconciliationWorkTest do
   alias Renga.Inventory.ReconciliationWork, as: Work
   alias Renga.Inventory.Reconciler
   alias Renga.Repo
+  alias Renga.Transfers.Archive
+  alias Renga.Transfers.Export
 
   @limits %{max_units: 1_000, max_bytes: 1_000_000}
 
@@ -354,6 +356,7 @@ defmodule Renga.Inventory.ReconciliationWorkTest do
            )
   end
 
+  @tag :tmp_dir
   test "opaque scoped roots reserve declared units without materializing or finalizing",
        context do
     source =
@@ -410,6 +413,110 @@ defmodule Renga.Inventory.ReconciliationWorkTest do
 
     assert Work.get(context.scope, work.id).checkpoint == 0
     assert lane(context).pending_bytes == work.bytes
+
+    assert {:error, :unsupported_processing_state} =
+             Export.write(
+               context.scope.organization,
+               Path.join(context.tmp_dir, "opaque.tar.zst")
+             )
+  end
+
+  @tag :tmp_dir
+  test "transfer rejects outstanding states but permits drained history", context do
+    path = Path.join(context.tmp_dir, "guard.tar.zst")
+    export = fn -> Export.write(context.scope.organization, path, parts: ["raw_observations"]) end
+    assert {:ok, _} = export.()
+    File.rm!(path)
+
+    # This earlier drained preflight cannot authorize the later snapshot.
+    {:ok, %{work: work}} = concurrent(fn -> admit(context, host("transfer")) end) |> Task.await()
+    assert {:error, :unsupported_processing_state} = export.()
+    refute File.exists?(path)
+    {:ok, owner} = claim(context)
+    assert {:ok, :chunk} = Work.execute(owner, fn _, _ -> {:progress, :chunk} end)
+    assert {:error, :unsupported_processing_state} = export.()
+    {:ok, owner} = claim(context)
+    assert {:ok, _} = Work.fail(owner, :backoff, %{}, backoff_ms: 60_000)
+    assert {:error, :unsupported_processing_state} = export.()
+    assert {:ok, _} = Work.retry(context.scope, work.id, 0)
+    {:ok, owner} = claim(context)
+    assert {:ok, _} = Work.fail(owner, :domain, %{})
+    assert {:error, :unsupported_processing_state} = export.()
+    assert {:ok, _} = Work.retry(context.scope, work.id, 1)
+    assert {:error, :unsupported_processing_state} = export.()
+    {:ok, owner} = claim(context)
+    assert {:ok, {:ok, _, true}} = Work.execute_host(owner)
+    assert {:ok, _} = export.()
+
+    {:ok, archive} = Archive.open(path, tmp_dir: context.tmp_dir)
+
+    try do
+      refute "reconciliation_work" in Archive.record_types(archive)
+      refute "reconciliation_lanes" in Archive.record_types(archive)
+      assert [%{"id" => observation_id}] = Enum.to_list(Archive.records(archive, "observations"))
+      assert observation_id == work.observation_id
+    after
+      Archive.close(archive)
+    end
+
+    # Even inconsistent residual accounting must not be silently dropped.
+    File.rm!(path)
+
+    for residual <- [
+          [pending_units: 1],
+          [pending_bytes: 1],
+          [token: Ecto.UUID.generate(), work_id: work.id, expires_at: DateTime.utc_now()]
+        ] do
+      Repo.update_all(
+        from(lane in ReconciliationLane,
+          where: lane.organization_id == ^context.scope.organization_id
+        ),
+        set: Keyword.merge([pending_units: 0, pending_bytes: 0], residual)
+      )
+
+      assert {:error, :unsupported_processing_state} = export.()
+      refute File.exists?(path)
+    end
+  end
+
+  @tag :tmp_dir
+  test "acceptance after the export snapshot cannot tear or authorize the next snapshot",
+       context do
+    previous = Application.get_env(:renga, Export)
+    Application.put_env(:renga, Export, repeatable_read: true)
+    on_exit(fn -> Application.put_env(:renga, Export, previous) end)
+    path = Path.join(context.tmp_dir, "snapshot.tar.zst")
+
+    write = fn
+      "addressing_plan_levels" ->
+        assert {:ok, _} =
+                 concurrent(fn -> admit(context, host("late-transfer")) end) |> Task.await()
+
+      _type ->
+        :ok
+    end
+
+    assert {:ok, _} =
+             Export.write(context.scope.organization, path,
+               parts: ["raw_observations"],
+               after_record_type: write
+             )
+
+    {:ok, archive} = Archive.open(path, tmp_dir: context.tmp_dir)
+
+    try do
+      assert Enum.to_list(Archive.records(archive, "observations")) == []
+      assert :ok = Renga.Transfers.Validation.validate(archive)
+    after
+      Archive.close(archive)
+    end
+
+    assert Repo.exists?(
+             from work in Work, where: work.organization_id == ^context.scope.organization_id
+           )
+
+    assert {:error, :unsupported_processing_state} =
+             Export.write(context.scope.organization, Path.join(context.tmp_dir, "next.tar.zst"))
   end
 
   test "quarantined or delayed heads block later work before the candidate limit", context do
