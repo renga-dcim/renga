@@ -83,9 +83,8 @@ defmodule Renga.Background do
               %{worker: state.worker, organization_id: organization_id}
             )
 
-            Renga.UsageTelemetry.with_organization(organization_id, fn ->
-              state.batch.(organization_id)
-            end)
+            Renga.UsageTelemetry.put_organization(organization_id)
+            state.batch.(organization_id)
           end,
           timeout,
           state.caller_ref
