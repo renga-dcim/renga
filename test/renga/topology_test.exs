@@ -1,5 +1,6 @@
 defmodule Renga.TopologyTest do
-  use Renga.DataCase, async: true
+  # Real background sweeps share a node-wide permit, not just tenant-local data.
+  use Renga.DataCase, async: false
 
   import Renga.AccountsFixtures
   import Renga.InventoryFixtures

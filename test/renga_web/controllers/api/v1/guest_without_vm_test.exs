@@ -3,7 +3,8 @@ defmodule RengaWeb.Api.V1.GuestWithoutVmTest do
   RFD 11 phase 4: the opt-in guest-without-VM collector finding.
   """
 
-  use RengaWeb.ConnCase, async: true
+  # Real background sweeps share a node-wide permit, not just tenant-local data.
+  use RengaWeb.ConnCase, async: false
 
   import Ecto.Query
   import Phoenix.LiveViewTest
