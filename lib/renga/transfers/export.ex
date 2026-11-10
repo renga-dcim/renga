@@ -53,7 +53,7 @@ defmodule Renga.Transfers.Export do
     unless Enum.all?(parts, &(&1 in Archive.parts())),
       do: raise(ArgumentError, "unknown export parts #{inspect(parts)}")
 
-    writer = Writer.new(Keyword.take(opts, [:tmp_dir]))
+    writer = Writer.new(Keyword.take(opts, [:tmp_dir, :maximum_bytes]))
 
     try do
       case snapshot(fn -> write_records(writer, organization, parts, opts) end) do

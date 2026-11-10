@@ -542,6 +542,34 @@ defmodule Renga.Transfers.ImportTest do
     assert leaked == []
   end
 
+  for copy? <- [false, true] do
+    @copy_quota copy?
+    test "quota workflow follows its organization during import (copy=#{copy?})", context do
+      :ok =
+        Renga.Limits.set(context.source, [resources: 1], Renga.DeploymentAudit.operator("quota"))
+
+      {[finding], 1} = Renga.Findings.list_findings(context.owner, domain: "quota")
+      until = DateTime.add(Renga.Time.utc_now_ms(), 7, :day)
+      assert {:ok, _} = Renga.Findings.snooze(context.owner, finding, until)
+      path = export(context, [])
+      unless @copy_quota, do: Repo.delete!(context.source)
+      destination = target()
+      assert {:ok, _} = import_archive(path, destination, copy: @copy_quota)
+
+      :ok =
+        Renga.Limits.set(destination, [resources: 1], Renga.DeploymentAudit.operator("quota"))
+
+      owner = member_scope(destination, "owner")
+
+      assert {[imported], 1} =
+               Renga.Findings.list_findings(owner, domain: "quota", state: "snoozed")
+
+      assert imported.subject_id == destination.id
+      assert imported.workflow.subject_id == destination.id
+      assert imported.workflow.snoozed_until == until
+    end
+  end
+
   test "copying preserves textual and hashed finding identities with their workflows", context do
     scope = context.owner
     {device, ports} = device_fixture(scope, "server", "identity-keys", ~w(eth0 eth1))

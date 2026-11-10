@@ -86,6 +86,16 @@ limit_defaults =
 
 if limit_defaults != [], do: config(:renga, Renga.Limits, limit_defaults)
 
+if maximum = System.get_env("EXPORT_MAXIMUM_BYTES") do
+  case Integer.parse(maximum) do
+    {bytes, ""} when bytes > 0 and bytes <= 9_223_372_036_854_775_807 ->
+      config :renga, Renga.Transfers, maximum_bytes: bytes
+
+    _invalid ->
+      raise "EXPORT_MAXIMUM_BYTES must be a positive bigint number of bytes"
+  end
+end
+
 if config_env() == :prod do
   database_url =
     System.get_env("DATABASE_URL") ||

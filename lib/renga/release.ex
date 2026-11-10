@@ -145,7 +145,12 @@ defmodule Renga.Release do
 
     Enum.reduce(repos(), fun, fn repo, inner ->
       fn ->
-        {:ok, result, _apps} = Ecto.Migrator.with_repo(repo, fn _repo -> inner.() end)
+        {:ok, result, _apps} =
+          Ecto.Migrator.with_repo(repo, fn _repo ->
+            Renga.Quotas.configure_defaults()
+            inner.()
+          end)
+
         result
       end
     end).()

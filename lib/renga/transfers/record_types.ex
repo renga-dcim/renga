@@ -373,6 +373,8 @@ defmodule Renga.Transfers.RecordTypes do
     "organization_imports" => "the source's own imports, recorded in its Activity",
     "organization_limits" => "operator policy of the source deployment",
     "request_limit_windows" => "ephemeral request counters of the source deployment",
+    "organization_quota_usage" => "recomputed from destination mutations rather than imported",
+    "organization_quota_findings" => "derived from destination capacity and usage",
     "organization_lifecycle_notices" =>
       "the source deployment's pending lifecycle email delivery, not portable tenant data",
     "reconciliation_lanes" =>

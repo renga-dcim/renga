@@ -20,9 +20,14 @@ defmodule Renga.Transfers.OrganizationExport do
     field :parts, {:array, :string}, default: []
     field :readable_payloads, {:array, :string}, default: []
     field :status, :string
+    field :storage, :string, default: "managed"
     field :snapshot_at, :utc_datetime_usec
     field :records, :integer
     field :bytes, :integer
+    # While running, maximum_bytes - retained_bytes is reserved; retained bytes stay
+    # charged after completion until their archive is physically deleted.
+    field :maximum_bytes, :integer, default: 1_073_741_824
+    field :retained_bytes, :integer, default: 0, read_after_writes: true
     field :sha256, :string
     field :finished_at, :utc_datetime_usec
     field :expires_at, :utc_datetime_usec

@@ -125,20 +125,40 @@ SLUG --actor NAME --job-creation-rate N` overrides a limit for one
 organization (RFD 21) and records the change in its Activity too,
 `limits show` lists them, and `limits clear` returns one to the deployment
 default, which `LIMIT_*` variables such as `LIMIT_JOB_CREATION_RATE` set.
-Owners see their limits and usage under Settings > Limits.
+Owners see their limits and usage under Settings > Limits. At 80% of a quota,
+an owner-only Inbox finding supports the usual assignment, snooze, and exception
+workflow; accepting an exception never permits quota growth. Lowering a quota
+below current use blocks new capacity, not non-growing updates or deletion.
 
 Human request counters are shared across nodes and sessions, using fixed
 one-minute windows. A user's allowance is within the selected organization;
 people without one use the deployment's user default. Authenticated browser HTTP overload returns
 `429` and `Retry-After`; LiveView blocks the event or navigation and shows a
-retryable notice. These defaults are provisional, not load-validated:
+retryable notice. Quota counts include retired resources and disabled agents
+until physical deletion; intake keys count only while active. The defaults
+below are provisional, not load-validated:
 
 | Variable | Default |
 | --- | ---: |
+| `LIMIT_RESOURCES` | 1,000,000 envelopes |
+| `LIMIT_AGENTS` | 100,000 agents |
+| `LIMIT_INSTALLATION_IDENTITIES` | 100,000 agent-bound installation UUIDs |
+| `LIMIT_INTAKE_KEYS` | 10,000 active keys |
+| `LIMIT_EXPORT_ARCHIVE_BYTES` | 10,737,418,240 bytes (10 GiB) |
 | `LIMIT_HTTP_ORGANIZATION_RATE` | 60,000 requests/minute |
 | `LIMIT_HTTP_USER_RATE` | 6,000 requests/minute/user |
 | `LIMIT_LIVE_ORGANIZATION_RATE` | 120,000 interactions/minute |
 | `LIMIT_LIVE_USER_RATE` | 12,000 interactions/minute/user |
+| `EXPORT_MAXIMUM_BYTES` | 1,073,741,824 compressed bytes per export (1 GiB) |
+
+`EXPORT_MAXIMUM_BYTES` is deployment-wide, not an organization override in
+`limits set`. CLI generation has an approximately one-minute deadline.
+Every managed or CLI export reserves its fixed maximum before generation.
+Stored archive chunks convert reserved bytes to retained bytes; generation end
+releases only the unused allowance. Retained bytes are freed only when their
+chunks are deleted. CLI output is operator-owned, not retained managed storage,
+so its generation reservation ends at completion; a crashed generator's durable
+deadline lets the existing worker fail it and reclaim the reservation.
 
 Intake has separate bulk and maintenance rates, per-installation rates, and pool-relative
 concurrency; overload returns `429` with `Retry-After`. The agent retains the

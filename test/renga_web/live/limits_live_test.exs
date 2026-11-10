@@ -53,4 +53,27 @@ defmodule RengaWeb.LimitsLiveTest do
     assert has_element?(view, "#limits-owners-only")
     refute has_element?(view, "#limits-list")
   end
+
+  test "owners see the quota finding at 80 percent without gaining edit controls", %{conn: conn} do
+    {conn, organization} = member_conn(conn, "owner")
+    scope = Renga.Accounts.scope_for(organization)
+    {:ok, _} = Renga.Inventory.create_resource(scope, %{kind: "server", name: "one"})
+
+    :ok = Renga.Limits.set(organization, [resources: 1], Renga.DeploymentAudit.operator("test"))
+    {:ok, view, _html} = live(conn, ~p"/settings/limits")
+    assert has_element?(view, "#quota-finding-resources", "1 of 1 in use")
+    refute has_element?(view, "#limits form")
+
+    finding =
+      Renga.Repo.get_by!(Renga.Quotas.Finding,
+        organization_id: organization.id,
+        name: "resources"
+      )
+
+    path = ~p"/inbox?#{[group: "health", finding: "quota:#{finding.id}"]}"
+    assert has_element?(view, "#quota-finding-resources a[href='#{path}']")
+    {:ok, inbox, _} = live(conn, path)
+    assert has_element?(inbox, "#finding-panel", "Organization quota")
+    assert has_element?(inbox, "#finding-properties a[href='/settings/limits']")
+  end
 end
