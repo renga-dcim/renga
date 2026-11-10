@@ -163,7 +163,7 @@ defmodule Renga.AssignmentsTest do
 
     Assignments.sweep_expired()
     assert Enum.all?(noisy, &Repo.reload!(&1).expired_at)
-    assert length(expiry_events(context.owner, quiet.id)) == 0
+    assert expiry_events(context.owner, quiet.id) == []
     assert length(expiry_events(quiet_scope, quiet.id)) == 1
   end
 

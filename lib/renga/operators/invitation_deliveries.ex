@@ -104,17 +104,21 @@ defmodule Renga.Operators.InvitationDeliveries do
       |> limit(@batch_size)
       |> select([delivery], delivery.invitation_id)
       |> Repo.all()
-      |> Enum.reduce(%{delivered: 0, pending: 0, discarded: 0}, fn id, counts ->
-        case dispatch.(id) do
-          :ok -> Map.update!(counts, :delivered, &(&1 + 1))
-          :discarded -> Map.update!(counts, :discarded, &(&1 + 1))
-          _pending -> Map.update!(counts, :pending, &(&1 + 1))
-        end
-      end)
+      |> dispatch_available(dispatch)
     end)
     |> Enum.reduce(%{delivered: 0, pending: 0, discarded: 0}, fn
       {:ok, counts}, total -> Map.merge(total, counts, fn _key, a, b -> a + b end)
       _failure, total -> total
+    end)
+  end
+
+  defp dispatch_available(ids, dispatch) do
+    Enum.reduce(ids, %{delivered: 0, pending: 0, discarded: 0}, fn id, counts ->
+      case dispatch.(id) do
+        :ok -> Map.update!(counts, :delivered, &(&1 + 1))
+        :discarded -> Map.update!(counts, :discarded, &(&1 + 1))
+        _pending -> Map.update!(counts, :pending, &(&1 + 1))
+      end
     end)
   end
 

@@ -47,32 +47,38 @@ defmodule Renga.Topology.NeighborGeneration do
         pending(scope.organization_id) ||
           if(due?, do: begin_generation(scope.organization_id, version, as_of))
 
-      cond do
-        is_nil(generation) ->
-          :cleaned
-
-        generation.status == "building" and generation.watermark != version ->
-          Repo.query!("UPDATE neighbor_generations SET status = 'obsolete' WHERE id = $1", [
-            dump(generation.id)
-          ])
-
-          :invalidated
-
-        true ->
-          Repo.query!("SELECT set_config('renga.neighbor_generation', $1, true)", [generation.id])
-
-          result =
-            if generation.status == "published",
-              do: compact(generation, Keyword.get(options, :batch_size, 25)),
-              else: advance(generation, Keyword.get(options, :batch_size, 10))
-
-          if hook = options[:after_batch], do: hook.(result)
-          # Failed transactions discard LOCAL settings on rollback; issuing
-          # another query there would mask the original cancellation error.
-          Repo.query!("SELECT set_config('renga.neighbor_generation', '', true)")
-          result
-      end
+      step_generation(generation, version, options)
     end)
+  end
+
+  defp step_generation(nil, _version, _options), do: :cleaned
+
+  defp step_generation(
+         %{status: "building", watermark: watermark} = generation,
+         version,
+         _options
+       )
+       when watermark != version do
+    Repo.query!("UPDATE neighbor_generations SET status = 'obsolete' WHERE id = $1", [
+      dump(generation.id)
+    ])
+
+    :invalidated
+  end
+
+  defp step_generation(generation, _version, options) do
+    Repo.query!("SELECT set_config('renga.neighbor_generation', $1, true)", [generation.id])
+
+    result =
+      if generation.status == "published",
+        do: compact(generation, Keyword.get(options, :batch_size, 25)),
+        else: advance(generation, Keyword.get(options, :batch_size, 10))
+
+    if hook = options[:after_batch], do: hook.(result)
+    # Failed transactions discard LOCAL settings on rollback; issuing
+    # another query there would mask the original cancellation error.
+    Repo.query!("SELECT set_config('renga.neighbor_generation', '', true)")
+    result
   end
 
   defp pending(org) do
@@ -107,7 +113,16 @@ defmodule Renga.Topology.NeighborGeneration do
     pending(org)
   end
 
-  defp advance(%{phase: "matches"} = g, size) do
+  defp advance(g, size) do
+    case g.phase do
+      "matches" -> stage_matches(g, size)
+      "select" -> select_adjacencies(g, size)
+      "findings" -> stage_interface_findings(g)
+      "publish" -> publish(g)
+    end
+  end
+
+  defp stage_matches(g, size) do
     query =
       from e in InterfaceNeighborEvidence,
         where: e.organization_id == ^g.org and is_nil(e.stale_at),
@@ -117,42 +132,43 @@ defmodule Renga.Topology.NeighborGeneration do
     query = if g.cursor, do: where(query, [e], e.id > ^g.cursor), else: query
     evidence = Repo.all(query)
 
-    Enum.each(evidence, fn e ->
-      existing =
-        Repo.get_by(InterfaceNeighborMatch,
-          organization_id: g.org,
-          interface_neighbor_evidence_id: e.id
-        )
-
-      interface = Repo.get!(Interface, e.local_interface_id)
-
-      if interface.status == "not_present" do
-        if existing,
-          do: store(g, "interface_neighbor_matches", existing.id, row(existing), deleted: true)
-      else
-        attrs = NeighborReconciler.expiry_match(g.org, e)
-
-        match =
-          Map.merge(
-            %{
-              id: (existing && existing.id) || Ecto.UUID.generate(),
-              organization_id: g.org,
-              interface_neighbor_evidence_id: e.id,
-              inserted_at: (existing && existing.inserted_at) || g.as_of,
-              updated_at: g.as_of
-            },
-            attrs
-          )
-
-        store(g, "interface_neighbor_matches", match.id, match)
-        if attrs.status == "matched", do: candidate(g, e, attrs.remote_interface_id)
-      end
-    end)
-
+    Enum.each(evidence, &stage_match(g, &1))
     checkpoint(g, evidence, "select")
   end
 
-  defp advance(%{phase: "select"} = g, size) do
+  defp stage_match(g, e) do
+    existing =
+      Repo.get_by(InterfaceNeighborMatch,
+        organization_id: g.org,
+        interface_neighbor_evidence_id: e.id
+      )
+
+    interface = Repo.get!(Interface, e.local_interface_id)
+
+    if interface.status == "not_present" do
+      if existing,
+        do: store(g, "interface_neighbor_matches", existing.id, row(existing), deleted: true)
+    else
+      attrs = NeighborReconciler.expiry_match(g.org, e)
+
+      match =
+        Map.merge(
+          %{
+            id: (existing && existing.id) || Ecto.UUID.generate(),
+            organization_id: g.org,
+            interface_neighbor_evidence_id: e.id,
+            inserted_at: (existing && existing.inserted_at) || g.as_of,
+            updated_at: g.as_of
+          },
+          attrs
+        )
+
+      store(g, "interface_neighbor_matches", match.id, match)
+      if attrs.status == "matched", do: candidate(g, e, attrs.remote_interface_id)
+    end
+  end
+
+  defp select_adjacencies(g, size) do
     candidates =
       Repo.query!(
         """
@@ -207,78 +223,82 @@ defmodule Renga.Topology.NeighborGeneration do
     if candidates == [], do: phase(g, "findings"), else: :building
   end
 
-  defp advance(%{phase: "findings"} = g, _size) do
+  defp stage_interface_findings(g) do
     query = from i in Interface, where: i.organization_id == ^g.org, order_by: i.id, limit: 1
     query = if g.cursor, do: where(query, [i], i.id > ^g.cursor), else: query
     interfaces = Repo.all(query)
 
-    Enum.each(interfaces, fn interface ->
-      desired =
-        NeighborReconciler.expiry_findings(g.org, interface.id, g.as_of, g.id) ++
-          CableReconciler.expiry_findings(g.org, interface.id, g.as_of)
-
-      kinds = NeighborReconciler.finding_kinds() ++ ["cable_neighbor_mismatch"]
-
-      existing =
-        Repo.all(
-          from f in TopologyFinding,
-            where:
-              f.organization_id == ^g.org and f.interface_id == ^interface.id and
-                f.status == "open" and f.kind in ^kinds
-        )
-
-      existing = Map.new(existing, &{{&1.kind, &1.resolution_key}, &1})
-
-      Enum.each(desired, fn attrs ->
-        previous = existing[{attrs.kind, attrs.resolution_key}]
-        id = (previous && previous.id) || Ecto.UUID.generate()
-
-        observed =
-          if previous && DateTime.after?(previous.last_observed_at, attrs.last_observed_at),
-            do: previous.last_observed_at,
-            else: attrs.last_observed_at
-
-        store(
-          g,
-          "topology_findings",
-          id,
-          Map.merge(attrs, %{
-            id: id,
-            organization_id: g.org,
-            status: "open",
-            resolved_at: nil,
-            last_observed_at: observed,
-            inserted_at: (previous && previous.inserted_at) || g.as_of,
-            updated_at: g.as_of
-          })
-        )
-      end)
-
-      desired_keys = MapSet.new(desired, &{&1.kind, &1.resolution_key})
-
-      for {key, previous} <- existing, not MapSet.member?(desired_keys, key) do
-        resolved =
-          if DateTime.after?(previous.last_observed_at, g.as_of),
-            do: previous.last_observed_at,
-            else: g.as_of
-
-        store(
-          g,
-          "topology_findings",
-          previous.id,
-          Map.merge(row(previous), %{
-            status: "resolved",
-            resolved_at: resolved,
-            updated_at: g.as_of
-          })
-        )
-      end
-    end)
-
+    Enum.each(interfaces, &stage_findings(g, &1))
     checkpoint(g, interfaces, "publish")
   end
 
-  defp advance(%{phase: "publish"} = g, _size) do
+  defp stage_findings(g, interface) do
+    desired =
+      NeighborReconciler.expiry_findings(g.org, interface.id, g.as_of, g.id) ++
+        CableReconciler.expiry_findings(g.org, interface.id, g.as_of)
+
+    kinds = NeighborReconciler.finding_kinds() ++ ["cable_neighbor_mismatch"]
+
+    existing =
+      Repo.all(
+        from f in TopologyFinding,
+          where:
+            f.organization_id == ^g.org and f.interface_id == ^interface.id and
+              f.status == "open" and f.kind in ^kinds
+      )
+
+    existing = Map.new(existing, &{{&1.kind, &1.resolution_key}, &1})
+
+    Enum.each(desired, fn attrs ->
+      stage_open_finding(g, attrs, existing[{attrs.kind, attrs.resolution_key}])
+    end)
+
+    desired_keys = MapSet.new(desired, &{&1.kind, &1.resolution_key})
+
+    for {key, previous} <- existing, not MapSet.member?(desired_keys, key) do
+      resolved =
+        if DateTime.after?(previous.last_observed_at, g.as_of),
+          do: previous.last_observed_at,
+          else: g.as_of
+
+      store(
+        g,
+        "topology_findings",
+        previous.id,
+        Map.merge(row(previous), %{
+          status: "resolved",
+          resolved_at: resolved,
+          updated_at: g.as_of
+        })
+      )
+    end
+  end
+
+  defp stage_open_finding(g, attrs, previous) do
+    id = (previous && previous.id) || Ecto.UUID.generate()
+
+    observed =
+      if previous && DateTime.after?(previous.last_observed_at, attrs.last_observed_at),
+        do: previous.last_observed_at,
+        else: attrs.last_observed_at
+
+    store(
+      g,
+      "topology_findings",
+      id,
+      Map.merge(attrs, %{
+        id: id,
+        organization_id: g.org,
+        status: "open",
+        resolved_at: nil,
+        last_observed_at: observed,
+        inserted_at: (previous && previous.inserted_at) || g.as_of,
+        updated_at: g.as_of
+      })
+    )
+  end
+
+  defp publish(g) do
     # The organization row and topology lock still fence every relevant input.
     # No relationship or finding is copied/deleted during this constant-size commit.
     %{num_rows: 1} =
@@ -399,13 +419,7 @@ defmodule Renga.Topology.NeighborGeneration do
         [] -> %{}
       end
 
-    primary =
-      if previous["primary"], do: Repo.get!(InterfaceNeighborEvidence, previous["primary"])
-
-    primary =
-      if primary &&
-           NeighborReconciler.primary_evidence_order(primary) >
-             NeighborReconciler.primary_evidence_order(e), do: primary, else: e
+    primary = primary_evidence(previous["primary"], e)
 
     payload = %{
       primary: primary.id,
@@ -421,6 +435,15 @@ defmodule Renga.Topology.NeighborGeneration do
       endpoint_a: dump(a),
       endpoint_b: dump(b)
     )
+  end
+
+  defp primary_evidence(nil, evidence), do: evidence
+
+  defp primary_evidence(previous_id, evidence) do
+    previous = Repo.get!(InterfaceNeighborEvidence, previous_id)
+
+    if NeighborReconciler.primary_evidence_order(previous) >
+         NeighborReconciler.primary_evidence_order(evidence), do: previous, else: evidence
   end
 
   defp checkpoint(g, [], next), do: phase(g, next)

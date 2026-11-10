@@ -179,17 +179,7 @@ defmodule Renga.Inventory.Reconciler.Projections do
     end
   end
 
-  defp reconcile_component_evidence(
-         scope,
-         source,
-         observation,
-         resource,
-         payload,
-         current_snapshot?
-       ) do
-    complete_snapshot? =
-      complete_component_snapshot?(source, observation, payload, current_snapshot?)
-
+  defp unambiguous_component_attrs(payload) do
     component_attrs = reported_component_attrs(payload)
 
     module_identity_frequencies =
@@ -202,15 +192,40 @@ defmodule Renga.Inventory.Reconciler.Projections do
       |> Enum.filter(&(&1["kind"] == "module"))
       |> Enum.frequencies_by(&module_position_identity_key/1)
 
-    component_attrs =
-      Enum.reject(component_attrs, fn
-        %{"kind" => "module", "source_local_id" => source_local_id} = module ->
-          module_identity_frequencies[source_local_id] > 1 or
-            module_position_frequencies[module_position_identity_key(module)] > 1
+    Enum.reject(component_attrs, fn
+      %{"kind" => "module", "source_local_id" => source_local_id} = module ->
+        module_identity_frequencies[source_local_id] > 1 or
+          module_position_frequencies[module_position_identity_key(module)] > 1
 
-        _component ->
-          false
-      end)
+      _component ->
+        false
+    end)
+  end
+
+  defp component_evidence_by_identity(_scope, _observation, []), do: %{}
+
+  defp component_evidence_by_identity(scope, observation, _component_attrs) do
+    ComponentEvidence
+    |> where(
+      [e],
+      e.organization_id == ^scope.organization_id and e.observation_id == ^observation.id
+    )
+    |> Repo.all()
+    |> Map.new(&{{&1.kind, &1.source_local_id}, &1})
+  end
+
+  defp reconcile_component_evidence(
+         scope,
+         source,
+         observation,
+         resource,
+         payload,
+         current_snapshot?
+       ) do
+    complete_snapshot? =
+      complete_component_snapshot?(source, observation, payload, current_snapshot?)
+
+    component_attrs = unambiguous_component_attrs(payload)
 
     position_frequencies =
       component_attrs
@@ -221,18 +236,7 @@ defmodule Renga.Inventory.Reconciler.Projections do
     # One observation owns this immutable evidence set. Load it once, then
     # include newly inserted entries so duplicate identities and retries keep
     # the same first-evidence behavior without a lookup per component.
-    existing =
-      if component_attrs == [] do
-        %{}
-      else
-        ComponentEvidence
-        |> where(
-          [e],
-          e.organization_id == ^scope.organization_id and e.observation_id == ^observation.id
-        )
-        |> Repo.all()
-        |> Map.new(&{{&1.kind, &1.source_local_id}, &1})
-      end
+    existing = component_evidence_by_identity(scope, observation, component_attrs)
 
     missing =
       component_attrs
@@ -243,28 +247,32 @@ defmodule Renga.Inventory.Reconciler.Projections do
       persist_component_evidence(scope, source, observation, resource, missing)
       |> Map.new(&{{&1.kind, &1.source_local_id}, &1})
 
-    Enum.reduce(component_attrs, existing, fn attrs, evidence_by_identity ->
-      position_key = position_identity_key(attrs)
-      allow_position_match? = not is_nil(position_key) and position_frequencies[position_key] == 1
-      identity = {attrs["kind"], attrs["source_local_id"]}
-      existing_evidence = evidence_by_identity[identity]
+    _evidence_by_identity =
+      Enum.reduce(component_attrs, existing, fn attrs, evidence_by_identity ->
+        position_key = position_identity_key(attrs)
 
-      evidence =
-        existing_evidence ||
-          Map.fetch!(inserted, identity)
+        allow_position_match? =
+          not is_nil(position_key) and position_frequencies[position_key] == 1
 
-      if evidence.kind in @canonical_component_kinds do
-        reconcile_actual_component(
-          scope,
-          evidence,
-          allow_position_match?,
-          current_snapshot?,
-          is_nil(existing_evidence)
-        )
-      end
+        identity = {attrs["kind"], attrs["source_local_id"]}
+        existing_evidence = evidence_by_identity[identity]
 
-      Map.put(evidence_by_identity, identity, evidence)
-    end)
+        evidence =
+          existing_evidence ||
+            Map.fetch!(inserted, identity)
+
+        if evidence.kind in @canonical_component_kinds do
+          reconcile_actual_component(
+            scope,
+            evidence,
+            allow_position_match?,
+            current_snapshot?,
+            is_nil(existing_evidence)
+          )
+        end
+
+        Map.put(evidence_by_identity, identity, evidence)
+      end)
 
     if complete_snapshot? do
       observed_ids =

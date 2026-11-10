@@ -46,14 +46,16 @@ defmodule Renga.Transfers.Schema do
 
       Map.update(acc, table, %{column => info}, &Map.put(&1, column, info))
     end)
-    |> then(fn columns ->
-      # Current-state views retain their physical constraints. In particular,
-      # a UNION view's nullable metadata must not weaken archive validation.
-      Enum.reduce(columns, columns, fn {table, fields}, acc ->
-        if String.ends_with?(table, "_neighbor_storage"),
-          do: Map.put(acc, String.replace_suffix(table, "_neighbor_storage", ""), fields),
-          else: acc
-      end)
+    |> logical_columns()
+  end
+
+  # Current-state views retain their physical constraints. In particular,
+  # a UNION view's nullable metadata must not weaken archive validation.
+  defp logical_columns(columns) do
+    Enum.reduce(columns, columns, fn {table, fields}, acc ->
+      if String.ends_with?(table, "_neighbor_storage"),
+        do: Map.put(acc, String.replace_suffix(table, "_neighbor_storage", ""), fields),
+        else: acc
     end)
   end
 
