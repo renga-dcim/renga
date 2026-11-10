@@ -1,5 +1,7 @@
 defmodule Renga.Telemetry.StoreTest do
-  use Renga.DataCase, async: true
+  # These prune assertions need the node-wide background permit, not only
+  # an isolated database transaction. Other async sweep tests may hold it.
+  use Renga.DataCase, async: false
 
   import Renga.InventoryFixtures
   import Renga.PowerReadingFixtures
