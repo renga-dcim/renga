@@ -450,26 +450,35 @@ impl HttpClient {
         body: &[u8],
         cancelled: impl Fn() -> bool,
     ) -> Result<(), TransportError> {
-        self.post_encoded_while(&self.observation_url, body, cancelled)
+        self.post_encoded_while(&self.observation_url, body, cancelled, |response| {
+            let status = response.status();
+            let accepted = response_body(response)?;
+            validate_observation_receipt(status, body, &accepted)
+        })
     }
 
     /// Posts a telemetry batch exactly as encoded, so a queued batch replays byte for byte and
     /// the server recognizes a repeat by its replay ID (RFD 10, "Measured history").
     pub fn post_encoded_telemetry(&self, body: &[u8]) -> Result<(), TransportError> {
-        self.post_encoded_while(&self.telemetry_url, body, || self.cancellation.cancelled())
-            .map_err(|error| {
-                // A batch's collector kind is fixed when it is encoded and a stream's kind never
-                // changes, so no retry can deliver it; unlike an observation, a telemetry batch
-                // is disposable, so it is dropped instead of holding back the batches after it.
-                if error.collector_kind_conflict {
-                    TransportError {
-                        kind: FailureKind::PayloadRejected,
-                        ..error
-                    }
-                } else {
-                    error
+        self.post_encoded_while(
+            &self.telemetry_url,
+            body,
+            || self.cancellation.cancelled(),
+            response_result,
+        )
+        .map_err(|error| {
+            // A batch's collector kind is fixed when it is encoded and a stream's kind never
+            // changes, so no retry can deliver it; unlike an observation, a telemetry batch
+            // is disposable, so it is dropped instead of holding back the batches after it.
+            if error.collector_kind_conflict {
+                TransportError {
+                    kind: FailureKind::PayloadRejected,
+                    ..error
                 }
-            })
+            } else {
+                error
+            }
+        })
     }
 
     fn post_encoded_while(
@@ -477,6 +486,7 @@ impl HttpClient {
         url: &Url,
         body: &[u8],
         cancelled: impl Fn() -> bool,
+        accept_response: impl Fn(Response) -> Result<(), TransportError>,
     ) -> Result<(), TransportError> {
         let timeout = self.settings.request_timeout.min(DELIVERY_BUDGET);
         self.noting_moved(retry(
@@ -494,7 +504,7 @@ impl HttpClient {
                     .body(body.to_vec())
                     .send()
                     .map_err(request_error)?;
-                self.remember_retry_deadline(url, response_result(response))
+                self.remember_retry_deadline(url, accept_response(response))
             },
             thread::sleep,
             cancelled,
@@ -782,8 +792,7 @@ fn response_result(mut response: Response) -> Result<(), TransportError> {
 
 /// Validates the durable receipt from an authenticated observation POST, not a receipt lookup.
 /// The server's immutable-body conflict check binds that POST's body; a lookup by ID alone
-/// cannot prove that the queued body was accepted. Transport activation belongs to the atomic
-/// server/API/agent cutover, so the current inline-response path does not call this yet.
+/// cannot prove that the queued body was accepted.
 pub fn validate_observation_receipt(
     status: StatusCode,
     submitted: &[u8],
@@ -1277,12 +1286,20 @@ mod tests {
                     response["observation"]["observed_at"] = json!(response_time);
                     let body = json!({ "observation_id": "first", "observed_at": request_time });
                     let body = serde_json::to_vec(&body).unwrap();
-                    validate_observation_receipt(
-                        StatusCode::from_u16(status).unwrap(),
-                        &body,
-                        &serde_json::to_vec(&response).unwrap(),
-                    )
-                    .unwrap();
+                    let (origin, server) = answer_once(status, response.to_string());
+                    insecure_client(&origin)
+                        .post_encoded_observation(&body)
+                        .unwrap();
+                    assert_eq!(
+                        server
+                            .join()
+                            .unwrap()
+                            .split_once("\r\n\r\n")
+                            .unwrap()
+                            .1
+                            .as_bytes(),
+                        body
+                    );
                 }
             }
         }
@@ -1318,6 +1335,7 @@ mod tests {
         let mut responses = vec![
             (202, "<html><body>proxy error</body></html>".to_owned()),
             (202, "{\"status\":\"accepted\",\"observation\":".to_owned()),
+            (202, " ".repeat(MAX_RESPONSE_BODY as usize + 1)),
             (204, String::new()),
             (201, receipt(false, "pending").to_string()),
             (200, receipt(false, "pending").to_string()),
@@ -1346,6 +1364,11 @@ mod tests {
         }
 
         for (status, response) in responses {
+            let (origin, server) = answer_each(vec![
+                (status, response.clone()),
+                (200, receipt(true, "quarantined").to_string()),
+            ]);
+            let client = insecure_client(&origin);
             let state = env::temp_dir().join(format!("renga-receipt-{}", uuid::Uuid::new_v4()));
             let open = || {
                 DiskQueue::open(
@@ -1364,11 +1387,7 @@ mod tests {
             let drained = queue
                 .drain(now, &Cancellation::default(), |body| {
                     assert_eq!(body, OBSERVATION_BODY);
-                    validate_observation_receipt(
-                        StatusCode::from_u16(status).unwrap(),
-                        body,
-                        response.as_bytes(),
-                    )
+                    client.post_encoded_observation(body)
                 })
                 .unwrap();
 
@@ -1385,15 +1404,21 @@ mod tests {
             // Neither a restart nor a completed/failed processing disposition changes delivery:
             // only the matching duplicate receipt lets the queue acknowledge these exact bytes.
             let mut queue = open();
-            let response = serde_json::to_vec(&receipt(true, "quarantined")).unwrap();
             let drained = queue
                 .drain(now, &Cancellation::default(), |body| {
                     assert_eq!(body, OBSERVATION_BODY);
-                    validate_observation_receipt(StatusCode::OK, body, &response)
+                    client
+                        .post_encoded_observation_with_cancellation(body, &Cancellation::default())
                 })
                 .unwrap();
             assert_eq!(drained.delivered, 1);
             assert_eq!(queue.health().unwrap().entries, 0);
+            for request in server.join().unwrap() {
+                assert_eq!(
+                    request.split_once("\r\n\r\n").unwrap().1.as_bytes(),
+                    OBSERVATION_BODY
+                );
+            }
             fs::remove_dir_all(state).unwrap();
         }
     }
