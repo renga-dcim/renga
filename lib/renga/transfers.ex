@@ -113,9 +113,7 @@ defmodule Renga.Transfers do
           export
 
         {:error, changeset} ->
-          if Renga.Quotas.exceeded?(changeset, :export_archive_bytes),
-            do: Repo.rollback({:quota_exceeded, :export_archive_bytes}),
-            else: Repo.rollback(:already_running)
+          rollback_export_start(changeset)
       end
     end)
   end
@@ -144,45 +142,16 @@ defmodule Renga.Transfers do
   def write_operator_export(%Organization{} = organization, path, options \\ []) do
     maximum = export_maximum_bytes()
 
-    reserved =
-      Repo.transaction(fn ->
-        lock_organization!(organization.id)
-
-        %OrganizationExport{
-          organization_id: organization.id,
-          status: "running",
-          storage: "operator",
-          maximum_bytes: maximum,
-          parts: Keyword.get(options, :parts, []),
-          processing_deadline: DateTime.add(Renga.Time.utc_now_ms(), 60, :second)
-        }
-        |> Ecto.Changeset.change()
-        |> Renga.Quotas.constrain(:export_archive_bytes)
-        |> Ecto.Changeset.unique_constraint(:organization_id,
-          name: :organization_exports_one_running
-        )
-        |> Repo.insert()
-        |> case do
-          {:ok, export} ->
-            export
-
-          {:error, reason} ->
-            if Renga.Quotas.exceeded?(reason, :export_archive_bytes),
-              do: Repo.rollback({:quota_exceeded, :export_archive_bytes}),
-              else: Repo.rollback(:already_running)
-        end
-      end)
-
-    with {:ok, export} <- reserved do
+    with {:ok, export} <- insert_operator_export(organization, maximum, options) do
       task =
         Task.async(fn ->
-          Renga.UsageTelemetry.with_organization(organization.id, fn ->
-            try do
-              Export.write(organization, path, Keyword.put(options, :maximum_bytes, maximum))
-            rescue
-              exception -> {:error, Exception.message(exception)}
-            end
-          end)
+          Renga.UsageTelemetry.put_organization(organization.id)
+
+          try do
+            Export.write(organization, path, Keyword.put(options, :maximum_bytes, maximum))
+          rescue
+            exception -> {:error, Exception.message(exception)}
+          end
         end)
 
       try do
@@ -211,6 +180,40 @@ defmodule Renga.Transfers do
         fail(export, false)
       end
     end
+  end
+
+  defp insert_operator_export(organization, maximum, options) do
+    Repo.transaction(fn ->
+      lock_organization!(organization.id)
+
+      %OrganizationExport{
+        organization_id: organization.id,
+        status: "running",
+        storage: "operator",
+        maximum_bytes: maximum,
+        parts: Keyword.get(options, :parts, []),
+        processing_deadline: DateTime.add(Renga.Time.utc_now_ms(), 60, :second)
+      }
+      |> Ecto.Changeset.change()
+      |> Renga.Quotas.constrain(:export_archive_bytes)
+      |> Ecto.Changeset.unique_constraint(:organization_id,
+        name: :organization_exports_one_running
+      )
+      |> Repo.insert()
+      |> case do
+        {:ok, export} -> export
+        {:error, reason} -> rollback_export_start(reason)
+      end
+    end)
+  end
+
+  defp rollback_export_start(changeset) do
+    reason =
+      if Renga.Quotas.exceeded?(changeset, :export_archive_bytes),
+        do: {:quota_exceeded, :export_archive_bytes},
+        else: :already_running
+
+    Repo.rollback(reason)
   end
 
   @doc false
