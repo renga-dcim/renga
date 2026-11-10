@@ -1,5 +1,6 @@
 defmodule RengaWeb.OrganizationProviderLiveTest do
-  use RengaWeb.ConnCase, async: true
+  # Provider changes hold a deployment-wide advisory lock until Sandbox teardown.
+  use RengaWeb.ConnCase, async: false
 
   import Ecto.Query
   import Phoenix.LiveViewTest

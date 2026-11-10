@@ -1,5 +1,6 @@
 defmodule RengaWeb.UserLive.SettingsTest do
-  use RengaWeb.ConnCase, async: true
+  # Provider changes hold a deployment-wide advisory lock until Sandbox teardown.
+  use RengaWeb.ConnCase, async: false
 
   alias Renga.Accounts
   import Ecto.Query

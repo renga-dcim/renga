@@ -13,7 +13,8 @@ defmodule Renga.Transfers.RoundTripTest do
 
       mix test test/renga/transfers/round_trip_test.exs --only write_transfer_fixture
   """
-  use Renga.DataCase, async: true
+  # Provider changes hold a deployment-wide advisory lock until Sandbox teardown.
+  use Renga.DataCase, async: false
 
   import Renga.TransfersFixtures
 
