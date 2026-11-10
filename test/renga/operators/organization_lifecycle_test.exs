@@ -1,5 +1,6 @@
 defmodule Renga.Operators.OrganizationLifecycleTest do
-  use Renga.DataCase, async: true
+  # Provider changes hold a deployment-wide advisory lock until Sandbox teardown.
+  use Renga.DataCase, async: false
   import Renga.JobsFixtures
 
   alias Renga.Accounts
