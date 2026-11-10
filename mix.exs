@@ -5,6 +5,7 @@ defmodule Renga.MixProject do
     [
       app: :renga,
       version: "0.1.0",
+      package: [licenses: ["Apache-2.0"]],
       elixir: "~> 1.15",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,

@@ -1,6 +1,7 @@
 {
   "name": "renga-assets",
   "private": true,
+  "license": "Apache-2.0",
   "description": "Browser test tooling. Keep the playwright version equal to nixpkgs' playwright-driver (see flake.nix).",
   "devDependencies": {
     "playwright": "1.63.0"
