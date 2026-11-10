@@ -3,7 +3,8 @@ defmodule RengaWeb.Api.V1.TargetUnreachableTest do
   RFD 11 phase 4: the target-unreachable collector finding.
   """
 
-  use RengaWeb.ConnCase, async: true
+  # Real background sweeps share a node-wide permit, not just tenant-local data.
+  use RengaWeb.ConnCase, async: false
 
   import Ecto.Query
   import Renga.AccountsFixtures
