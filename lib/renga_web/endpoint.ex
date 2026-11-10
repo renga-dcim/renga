@@ -66,6 +66,7 @@ defmodule RengaWeb.Endpoint do
   plug Plug.RequestId
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint], log: {__MODULE__, :log_level, []}
 
+  plug RengaWeb.UsageTelemetry, :start
   plug RengaWeb.Parsers
 
   plug Plug.MethodOverride

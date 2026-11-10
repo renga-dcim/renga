@@ -276,6 +276,7 @@ defmodule Renga.Release.CLITest do
         )
 
       assert stdout =~ "Exported #{organization.slug}"
+      assert Renga.Transfers.archive_usage(organization.id) == 0
       assert File.stat!(output).access == :read_write
       assert Bitwise.band(File.stat!(output).mode, 0o077) == 0
       assert File.stat!(output).links == 1
@@ -296,6 +297,41 @@ defmodule Renga.Release.CLITest do
                  from event in Renga.Inventory.ChangeEvent,
                    where: event.organization_id == ^organization.id and event.kind == "exported"
                )
+    end
+
+    test "refuses an export without its full maximum reservation", %{
+      organization: org,
+      tmp_dir: tmp
+    } do
+      :ok =
+        Renga.Limits.set(org, [export_archive_bytes: 0], Renga.DeploymentAudit.operator("quota"))
+
+      output = Path.join(tmp, "refused.tar.zst")
+
+      {1, "", stderr} =
+        run(~w(export --organization #{org.slug} --output #{output} --actor alice))
+
+      assert stderr =~ "export_archive_bytes"
+      refute File.exists?(output)
+      assert File.ls!(tmp) == []
+      assert Renga.Transfers.archive_usage(org.id) == 0
+    end
+
+    test "enforces the compressed maximum and removes partial output and scratch files", %{
+      organization: org,
+      tmp_dir: tmp
+    } do
+      config = Application.get_env(:renga, Renga.Transfers, [])
+      Application.put_env(:renga, Renga.Transfers, Keyword.put(config, :maximum_bytes, 1))
+      on_exit(fn -> Application.put_env(:renga, Renga.Transfers, config) end)
+      output = Path.join(tmp, "too-large.tar.zst")
+
+      {1, "", stderr} =
+        run(~w(export --organization #{org.slug} --output #{output} --actor alice))
+
+      assert stderr =~ "reserved maximum bytes"
+      assert File.ls!(tmp) == []
+      assert Renga.Transfers.archive_usage(org.id) == 0
     end
 
     test "never overwrites a file and needs an actor and an organization", %{

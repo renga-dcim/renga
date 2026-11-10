@@ -19,6 +19,7 @@ defmodule Renga.Application do
       [
         RengaWeb.Telemetry,
         Renga.Repo,
+        Renga.Quotas,
         Renga.IntakeCapacity,
         Renga.IntakeContactWorker,
         {Task.Supervisor, name: Renga.Background.Tasks},

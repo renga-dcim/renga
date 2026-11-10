@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict OL0ScNLIKgXtVzQf1XUfYNCicKcre90P9TpWOJU5muUMI3hfJhqCznmcTtPN7uH
+\restrict e7IMfL1euFikT4LgSSEkJMldoXCHxNGaWinAKZaz8TgRs7r8V0myZdDovY8LfXB
 
 -- Dumped from database version 18.6
 -- Dumped by pg_dump version 18.6
@@ -752,6 +752,173 @@ BEGIN
     USING ERRCODE = 'integrity_constraint_violation';
 END;
 $$;
+
+
+--
+-- Name: renga_charge_quota(uuid, text, bigint, bigint); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.renga_charge_quota(org uuid, quota text, used_delta bigint, reserved_delta bigint) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+DECLARE current_used bigint; current_reserved bigint; capacity bigint;
+BEGIN
+  -- During a tenant cascade the parent's ledger is being deleted too.
+  IF NOT EXISTS (SELECT 1 FROM organizations WHERE id = org) THEN RETURN; END IF;
+  INSERT INTO organization_quota_usage(organization_id, name) VALUES (org, quota)
+    ON CONFLICT DO NOTHING;
+  SELECT used, reserved INTO current_used, current_reserved FROM organization_quota_usage
+    WHERE organization_id = org AND name = quota FOR UPDATE;
+  SELECT COALESCE((SELECT value FROM organization_limits WHERE organization_id = org AND name = quota), value)
+    INTO capacity FROM organization_quota_defaults WHERE name = quota;
+  IF used_delta::numeric + reserved_delta > 0 AND
+     current_used::numeric + current_reserved + used_delta + reserved_delta > capacity THEN
+    RAISE EXCEPTION '% quota exceeded', quota USING
+      ERRCODE = '23514', CONSTRAINT = 'renga_quota_' || quota || '_exceeded';
+  END IF;
+  UPDATE organization_quota_usage SET used = used + used_delta, reserved = reserved + reserved_delta
+    WHERE organization_id = org AND name = quota;
+  PERFORM renga_refresh_quota_finding(org, quota);
+END $$;
+
+
+--
+-- Name: renga_count_quota(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.renga_count_quota() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE before_count bigint := 0; after_count bigint := 0; org uuid;
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    org := OLD.organization_id;
+    before_count := CASE
+      WHEN TG_ARGV[0] = 'installation_identities' THEN (to_jsonb(OLD)->>'installation_id' IS NOT NULL)::int
+      WHEN TG_ARGV[0] = 'intake_keys' THEN (to_jsonb(OLD)->>'status' = 'active')::int ELSE 1 END;
+  END IF;
+  IF TG_OP <> 'DELETE' THEN
+    IF org IS NOT NULL AND org <> NEW.organization_id THEN
+      RAISE EXCEPTION 'quota owners cannot move between organizations';
+    END IF;
+    org := NEW.organization_id;
+    after_count := CASE
+      WHEN TG_ARGV[0] = 'installation_identities' THEN (to_jsonb(NEW)->>'installation_id' IS NOT NULL)::int
+      WHEN TG_ARGV[0] = 'intake_keys' THEN (to_jsonb(NEW)->>'status' = 'active')::int ELSE 1 END;
+  END IF;
+  IF before_count <> after_count THEN
+    PERFORM renga_charge_quota(org, TG_ARGV[0], after_count - before_count, 0::bigint);
+  END IF;
+  RETURN NULL;
+END $$;
+
+
+--
+-- Name: renga_export_chunk_quota(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.renga_export_chunk_quota() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    UPDATE organization_exports SET retained_bytes = retained_bytes + octet_length(NEW.data)
+      WHERE id = NEW.export_id;
+  ELSE
+    UPDATE organization_exports SET retained_bytes = retained_bytes - octet_length(OLD.data)
+      WHERE id = OLD.export_id;
+  END IF;
+  RETURN NULL;
+END $$;
+
+
+--
+-- Name: renga_export_quota(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.renga_export_quota() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE old_used bigint := 0; old_reserved bigint := 0;
+  new_used bigint := 0; new_reserved bigint := 0; org uuid;
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    org := OLD.organization_id;
+    old_used := OLD.retained_bytes;
+    IF OLD.status = 'running' THEN old_reserved := OLD.maximum_bytes - old_used; END IF;
+  END IF;
+  IF TG_OP <> 'DELETE' THEN
+    org := NEW.organization_id;
+    new_used := NEW.retained_bytes;
+    IF new_used > NEW.maximum_bytes THEN
+      RAISE EXCEPTION 'export exceeds its reserved maximum bytes' USING ERRCODE = '23514';
+    END IF;
+    IF NEW.status = 'running' THEN new_reserved := NEW.maximum_bytes - new_used; END IF;
+  END IF;
+  PERFORM renga_charge_quota(org, 'export_archive_bytes', new_used - old_used, new_reserved - old_reserved);
+  RETURN NULL;
+END $$;
+
+
+--
+-- Name: renga_quota_policy_changed(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.renga_quota_policy_changed() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE org uuid; quota text;
+BEGIN
+  IF TG_TABLE_NAME = 'organization_limits' THEN
+    IF TG_OP = 'DELETE' THEN org := OLD.organization_id; quota := OLD.name;
+    ELSE org := NEW.organization_id; quota := NEW.name; END IF;
+    IF EXISTS (SELECT 1 FROM organization_quota_defaults WHERE name = quota) THEN
+      INSERT INTO organization_quota_usage(organization_id, name) SELECT org, quota
+        WHERE EXISTS (SELECT 1 FROM organizations WHERE id = org) ON CONFLICT DO NOTHING;
+      PERFORM renga_refresh_quota_finding(org, quota);
+    END IF;
+  ELSE
+    FOR org IN SELECT organization_id FROM organization_quota_usage WHERE name = NEW.name ORDER BY organization_id LOOP
+      PERFORM id FROM organizations WHERE id = org FOR KEY SHARE;
+      PERFORM renga_refresh_quota_finding(org, NEW.name);
+    END LOOP;
+  END IF;
+  RETURN NULL;
+END $$;
+
+
+--
+-- Name: renga_refresh_quota_finding(uuid, text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.renga_refresh_quota_finding(org uuid, quota text) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+DECLARE held bigint; cap bigint;
+BEGIN
+  SELECT used + reserved INTO held FROM organization_quota_usage
+    WHERE organization_id = org AND name = quota FOR UPDATE;
+  IF NOT FOUND THEN RETURN; END IF;
+  SELECT COALESCE((SELECT value FROM organization_limits WHERE organization_id = org AND name = quota), value)
+    INTO cap FROM organization_quota_defaults WHERE name = quota;
+  IF held::numeric * 5 >= cap::numeric * 4 THEN
+    INSERT INTO organization_quota_findings (organization_id, name, used, capacity, opened_at)
+    VALUES (org, quota, held, cap, timezone('UTC', clock_timestamp()))
+    ON CONFLICT (organization_id, name) DO UPDATE SET
+      used = EXCLUDED.used, capacity = EXCLUDED.capacity,
+      id = CASE WHEN organization_quota_findings.resolved_at IS NULL
+        THEN organization_quota_findings.id ELSE gen_random_uuid() END,
+      opened_at = CASE WHEN organization_quota_findings.resolved_at IS NULL
+        THEN organization_quota_findings.opened_at ELSE EXCLUDED.opened_at END,
+      last_observed_at = EXCLUDED.last_observed_at,
+      resolved_at = NULL;
+  ELSE
+    UPDATE organization_quota_findings SET used = held, capacity = cap,
+      last_observed_at = timezone('UTC', clock_timestamp()),
+      resolved_at = COALESCE(resolved_at, timezone('UTC', clock_timestamp()))
+      WHERE organization_id = org AND name = quota;
+  END IF;
+END $$;
 
 
 --
@@ -1757,7 +1924,7 @@ CREATE TABLE public.expected_components (
 CREATE TABLE public.finding_workflows (
     id uuid NOT NULL,
     organization_id uuid NOT NULL,
-    resource_id uuid NOT NULL,
+    resource_id uuid,
     domain character varying(255) NOT NULL,
     subject_id uuid NOT NULL,
     kind character varying(255) NOT NULL,
@@ -1771,7 +1938,8 @@ CREATE TABLE public.finding_workflows (
     inserted_at timestamp without time zone NOT NULL,
     updated_at timestamp without time zone NOT NULL,
     CONSTRAINT finding_workflows_exception_state CHECK ((((exception_reason IS NULL) AND (exception_at IS NULL) AND (exception_expires_at IS NULL)) OR ((exception_reason IS NOT NULL) AND (exception_at IS NOT NULL)))),
-    CONSTRAINT finding_workflows_valid_domain CHECK (((domain)::text = ANY ((ARRAY['component'::character varying, 'hardware_match'::character varying, 'placement'::character varying, 'topology'::character varying, 'address'::character varying, 'collector'::character varying, 'power'::character varying])::text[])))
+    CONSTRAINT finding_workflows_subject CHECK ((((domain)::text = 'quota'::text) = (resource_id IS NULL))),
+    CONSTRAINT finding_workflows_valid_domain CHECK (((domain)::text = ANY ((ARRAY['component'::character varying, 'hardware_match'::character varying, 'placement'::character varying, 'topology'::character varying, 'address'::character varying, 'collector'::character varying, 'power'::character varying, 'quota'::character varying])::text[])))
 );
 
 
@@ -2788,6 +2956,12 @@ CREATE TABLE public.organization_exports (
     updated_at timestamp(3) without time zone NOT NULL,
     notification_url text,
     processing_deadline timestamp without time zone,
+    maximum_bytes bigint DEFAULT 1073741824 NOT NULL,
+    storage text DEFAULT 'managed'::text NOT NULL,
+    retained_bytes bigint DEFAULT 0 NOT NULL,
+    CONSTRAINT export_capacity_bounds CHECK (((maximum_bytes > 0) AND ((bytes IS NULL) OR ((bytes >= 0) AND (bytes <= maximum_bytes))))),
+    CONSTRAINT export_storage CHECK ((storage = ANY (ARRAY['managed'::text, 'operator'::text]))),
+    CONSTRAINT organization_exports_retained_bytes_check CHECK ((retained_bytes >= 0)),
     CONSTRAINT valid_status CHECK (((status)::text = ANY ((ARRAY['running'::character varying, 'ready'::character varying, 'failed'::character varying, 'revoked'::character varying, 'expired'::character varying])::text[])))
 );
 
@@ -2886,6 +3060,47 @@ CREATE TABLE public.organization_memberships (
     inserted_at timestamp(3) without time zone NOT NULL,
     updated_at timestamp(3) without time zone NOT NULL,
     scim_connection_id uuid
+);
+
+
+--
+-- Name: organization_quota_defaults; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.organization_quota_defaults (
+    name text NOT NULL,
+    value bigint NOT NULL,
+    CONSTRAINT organization_quota_defaults_value_check CHECK ((value >= 0))
+);
+
+
+--
+-- Name: organization_quota_findings; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.organization_quota_findings (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    organization_id uuid NOT NULL,
+    name text NOT NULL,
+    used bigint NOT NULL,
+    capacity bigint NOT NULL,
+    opened_at timestamp(6) without time zone NOT NULL,
+    last_observed_at timestamp(6) without time zone DEFAULT timezone('UTC'::text, clock_timestamp()) NOT NULL,
+    resolved_at timestamp(6) without time zone
+);
+
+
+--
+-- Name: organization_quota_usage; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.organization_quota_usage (
+    organization_id uuid NOT NULL,
+    name text NOT NULL,
+    used bigint DEFAULT 0 NOT NULL,
+    reserved bigint DEFAULT 0 NOT NULL,
+    CONSTRAINT organization_quota_usage_reserved_check CHECK ((reserved >= 0)),
+    CONSTRAINT organization_quota_usage_used_check CHECK ((used >= 0))
 );
 
 
@@ -3258,6 +3473,20 @@ CREATE TABLE public.reconciliation_work (
     CONSTRAINT reconciliation_work_provenance CHECK (((((origin)::text = 'intake'::text) AND (original_key_id IS NOT NULL) AND (installation_agent_id IS NOT NULL) AND (installation_id IS NOT NULL)) OR (((origin)::text = 'maintenance'::text) AND (installation_agent_id IS NULL) AND (installation_id IS NULL)))),
     CONSTRAINT reconciliation_work_status CHECK (((((status)::text = ANY ((ARRAY['pending'::character varying, 'succeeded'::character varying])::text[])) AND (quarantine_kind IS NULL)) OR (((status)::text = 'quarantined'::text) AND ((quarantine_kind)::text = 'domain'::text)))),
     CONSTRAINT reconciliation_work_values CHECK ((("position" > 0) AND (units > 0) AND (bytes >= 0) AND (generation >= 0) AND (checkpoint >= 0)))
+);
+
+
+--
+-- Name: request_limit_windows; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.request_limit_windows (
+    organization_id uuid,
+    key text NOT NULL,
+    kind text NOT NULL,
+    user_id uuid,
+    "window" bigint NOT NULL,
+    count bigint NOT NULL
 );
 
 
@@ -5004,6 +5233,38 @@ ALTER TABLE ONLY public.organization_memberships
 
 
 --
+-- Name: organization_quota_defaults organization_quota_defaults_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_quota_defaults
+    ADD CONSTRAINT organization_quota_defaults_pkey PRIMARY KEY (name);
+
+
+--
+-- Name: organization_quota_findings organization_quota_findings_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_quota_findings
+    ADD CONSTRAINT organization_quota_findings_id_key UNIQUE (id);
+
+
+--
+-- Name: organization_quota_findings organization_quota_findings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_quota_findings
+    ADD CONSTRAINT organization_quota_findings_pkey PRIMARY KEY (organization_id, name);
+
+
+--
+-- Name: organization_quota_usage organization_quota_usage_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_quota_usage
+    ADD CONSTRAINT organization_quota_usage_pkey PRIMARY KEY (organization_id, name);
+
+
+--
 -- Name: organization_security_settings organization_security_settings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -5145,6 +5406,14 @@ ALTER TABLE ONLY public.reconciliation_lanes
 
 ALTER TABLE ONLY public.reconciliation_work
     ADD CONSTRAINT reconciliation_work_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: request_limit_windows request_limit_windows_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.request_limit_windows
+    ADD CONSTRAINT request_limit_windows_pkey PRIMARY KEY (key);
 
 
 --
@@ -7746,6 +8015,13 @@ CREATE INDEX reconciliation_work_outstanding ON public.reconciliation_work USING
 
 
 --
+-- Name: request_limit_windows_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX request_limit_windows_organization_id_index ON public.request_limit_windows USING btree (organization_id);
+
+
+--
 -- Name: resource_conditions_organization_id_resource_id_type_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -8691,6 +8967,20 @@ CREATE INDEX webauthn_challenges_expires_at_index ON public.webauthn_challenges 
 
 
 --
+-- Name: agents agents_quota_agents; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER agents_quota_agents AFTER INSERT OR DELETE OR UPDATE ON public.agents FOR EACH ROW EXECUTE FUNCTION public.renga_count_quota('agents');
+
+
+--
+-- Name: agents agents_quota_installation_identities; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER agents_quota_installation_identities AFTER INSERT OR DELETE OR UPDATE ON public.agents FOR EACH ROW EXECUTE FUNCTION public.renga_count_quota('installation_identities');
+
+
+--
 -- Name: cable_assertions cable_assertions_enforce_immutability; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -8765,6 +9055,13 @@ CREATE TRIGGER current_interface_adjacencies_occupy_endpoints AFTER INSERT ON pu
 --
 
 CREATE CONSTRAINT TRIGGER current_interface_adjacency_endpoints_enforce_consistency AFTER INSERT OR DELETE OR UPDATE ON public.current_interface_adjacency_endpoints DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public.enforce_current_interface_adjacency_occupancy();
+
+
+--
+-- Name: intake_api_keys intake_api_keys_quota_intake_keys; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER intake_api_keys_quota_intake_keys AFTER INSERT OR DELETE OR UPDATE ON public.intake_api_keys FOR EACH ROW EXECUTE FUNCTION public.renga_count_quota('intake_keys');
 
 
 --
@@ -8901,6 +9198,34 @@ CREATE TRIGGER observations_reject_update BEFORE UPDATE ON public.observations F
 
 
 --
+-- Name: organization_export_chunks organization_export_chunks_quota; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER organization_export_chunks_quota AFTER INSERT OR DELETE ON public.organization_export_chunks FOR EACH ROW EXECUTE FUNCTION public.renga_export_chunk_quota();
+
+
+--
+-- Name: organization_exports organization_exports_quota; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER organization_exports_quota AFTER INSERT OR DELETE OR UPDATE ON public.organization_exports FOR EACH ROW EXECUTE FUNCTION public.renga_export_quota();
+
+
+--
+-- Name: organization_limits organization_limits_quota; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER organization_limits_quota AFTER INSERT OR DELETE OR UPDATE ON public.organization_limits FOR EACH ROW EXECUTE FUNCTION public.renga_quota_policy_changed();
+
+
+--
+-- Name: organization_quota_defaults organization_quota_defaults_changed; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER organization_quota_defaults_changed AFTER UPDATE ON public.organization_quota_defaults FOR EACH ROW EXECUTE FUNCTION public.renga_quota_policy_changed();
+
+
+--
 -- Name: reconciliation_lanes reconciliation_lanes_history; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -8919,6 +9244,13 @@ CREATE TRIGGER reconciliation_work_history BEFORE DELETE OR UPDATE ON public.rec
 --
 
 CREATE TRIGGER resources_enforce_kind_immutability BEFORE UPDATE OF kind ON public.resources FOR EACH ROW EXECUTE FUNCTION public.enforce_resource_kind_immutability();
+
+
+--
+-- Name: resources resources_quota_resources; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER resources_quota_resources AFTER INSERT OR DELETE OR UPDATE ON public.resources FOR EACH ROW EXECUTE FUNCTION public.renga_count_quota('resources');
 
 
 --
@@ -10045,6 +10377,14 @@ ALTER TABLE ONLY public.finding_workflows
 
 
 --
+-- Name: finding_workflows finding_workflows_organization_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.finding_workflows
+    ADD CONSTRAINT finding_workflows_organization_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
 -- Name: finding_workflows finding_workflows_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -11093,6 +11433,30 @@ ALTER TABLE ONLY public.organization_memberships
 
 
 --
+-- Name: organization_quota_findings organization_quota_findings_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_quota_findings
+    ADD CONSTRAINT organization_quota_findings_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: organization_quota_usage organization_quota_usage_name_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_quota_usage
+    ADD CONSTRAINT organization_quota_usage_name_fkey FOREIGN KEY (name) REFERENCES public.organization_quota_defaults(name);
+
+
+--
+-- Name: organization_quota_usage organization_quota_usage_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_quota_usage
+    ADD CONSTRAINT organization_quota_usage_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
 -- Name: organization_security_settings organization_security_settings_changed_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -11362,6 +11726,22 @@ ALTER TABLE ONLY public.reconciliation_work
 
 ALTER TABLE ONLY public.reconciliation_work
     ADD CONSTRAINT reconciliation_work_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: request_limit_windows request_limit_windows_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.request_limit_windows
+    ADD CONSTRAINT request_limit_windows_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: request_limit_windows request_limit_windows_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.request_limit_windows
+    ADD CONSTRAINT request_limit_windows_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 
 
 --
@@ -12336,7 +12716,7 @@ ALTER TABLE ONLY public.webauthn_challenges
 -- PostgreSQL database dump complete
 --
 
-\unrestrict OL0ScNLIKgXtVzQf1XUfYNCicKcre90P9TpWOJU5muUMI3hfJhqCznmcTtPN7uH
+\unrestrict e7IMfL1euFikT4LgSSEkJMldoXCHxNGaWinAKZaz8TgRs7r8V0myZdDovY8LfXB
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);
@@ -12473,4 +12853,7 @@ INSERT INTO public."schema_migrations" (version) VALUES (20261106110000);
 INSERT INTO public."schema_migrations" (version) VALUES (20261106120000);
 INSERT INTO public."schema_migrations" (version) VALUES (20261106130000);
 INSERT INTO public."schema_migrations" (version) VALUES (20261110093000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261110100000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261110102000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261110103000);
 INSERT INTO public."schema_migrations" (version) VALUES (20261110120000);

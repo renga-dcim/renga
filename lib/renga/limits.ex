@@ -25,6 +25,70 @@ defmodule Renga.Limits do
   @max_value 9_223_372_036_854_775_807
 
   @definitions [
+    resources: %{
+      env: "LIMIT_RESOURCES",
+      default: 1_000_000,
+      unit: "resource envelopes",
+      description:
+        "Every persisted resource, including retired and deletion-requested resources.",
+      usage: {Renga.Quotas, :usage, [:resources]}
+    },
+    agents: %{
+      env: "LIMIT_AGENTS",
+      default: 100_000,
+      unit: "agents",
+      description: "Every registered agent, including disabled agents.",
+      usage: {Renga.Quotas, :usage, [:agents]}
+    },
+    installation_identities: %{
+      env: "LIMIT_INSTALLATION_IDENTITIES",
+      default: 100_000,
+      unit: "installation identities",
+      description: "Every agent-bound installation UUID, regardless of approval or agent status.",
+      usage: {Renga.Quotas, :usage, [:installation_identities]}
+    },
+    intake_keys: %{
+      env: "LIMIT_INTAKE_KEYS",
+      default: 10_000,
+      unit: "active intake keys",
+      description: "Revoking a key releases its capacity; its audit history remains.",
+      usage: {Renga.Quotas, :usage, [:intake_keys]}
+    },
+    export_archive_bytes: %{
+      env: "LIMIT_EXPORT_ARCHIVE_BYTES",
+      default: 10_737_418_240,
+      unit: "bytes",
+      description: "Stored archives plus unused running-export reservations.",
+      usage: {Renga.Quotas, :usage, [:export_archive_bytes]}
+    },
+    http_organization_rate: %{
+      env: "LIMIT_HTTP_ORGANIZATION_RATE",
+      default: 60_000,
+      unit: "requests per minute",
+      description: "Authenticated browser HTTP requests across the organization.",
+      usage: {Renga.RequestLimits, :usage, [:http]}
+    },
+    http_user_rate: %{
+      env: "LIMIT_HTTP_USER_RATE",
+      default: 6_000,
+      unit: "requests per minute per user",
+      description: "HTTP requests per person in this organization; usage shows its busiest user.",
+      usage: {Renga.RequestLimits, :usage, [:http, true]}
+    },
+    live_organization_rate: %{
+      env: "LIMIT_LIVE_ORGANIZATION_RATE",
+      default: 120_000,
+      unit: "interactions per minute",
+      description: "LiveView events and navigations across the organization.",
+      usage: {Renga.RequestLimits, :usage, [:live]}
+    },
+    live_user_rate: %{
+      env: "LIMIT_LIVE_USER_RATE",
+      default: 12_000,
+      unit: "interactions per minute per user",
+      description: "LiveView events and navigations per person; usage shows its busiest user.",
+      usage: {Renga.RequestLimits, :usage, [:live, true]}
+    },
     intake_bulk_rate: %{
       env: "LIMIT_INTAKE_BULK_RATE",
       default: 60_000,
@@ -85,8 +149,8 @@ defmodule Renga.Limits do
 
   @doc """
   Every limit, as `{name, definition}` with `:env`, `:default`, `:unit`,
-  `:description`, and `:usage`, a function of the organization ID returning
-  its current usage.
+  `:description`, and `:usage`, a function of the organization ID or
+  `{module, function, extra_arguments}` returning its current usage.
   """
   def definitions, do: @definitions
 
@@ -157,12 +221,17 @@ defmodule Renga.Limits do
         value: override || default(name),
         default: default(name),
         overridden?: not is_nil(override),
-        usage: definition.usage.(organization_id),
+        usage: usage(definition.usage, organization_id),
         unit: definition.unit,
         description: definition.description
       }
     end
   end
+
+  defp usage({module, function, args}, organization_id),
+    do: apply(module, function, [organization_id | args])
+
+  defp usage(fun, organization_id), do: fun.(organization_id)
 
   @doc """
   The largest value a limit can have: PostgreSQL's `bigint`, which stores
@@ -227,6 +296,12 @@ defmodule Renga.Limits do
   # Serializes changes to one organization's limits, so a change that sets
   # the value already in place is recognized as no change.
   defp lock!(organization) do
+    # Quota triggers lock the ledger and may insert a finding. Take the
+    # parent first, matching resource creation and Activity's foreign key.
+    Repo.query!("SELECT id FROM organizations WHERE id = $1 FOR KEY SHARE", [
+      Ecto.UUID.dump!(organization.id)
+    ])
+
     Repo.query!("SELECT pg_advisory_xact_lock(hashtext('renga.limits'), hashtext($1))", [
       organization.id
     ])

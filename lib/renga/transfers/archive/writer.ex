@@ -20,7 +20,7 @@ defmodule Renga.Transfers.Archive.Writer do
 
   @manifest "manifest.json"
 
-  defstruct [:dir, files: %{}]
+  defstruct [:dir, :maximum_bytes, files: %{}]
 
   @doc "Starts an archive in a private directory under `:tmp_dir`."
   def new(opts \\ []) do
@@ -28,7 +28,7 @@ defmodule Renga.Transfers.Archive.Writer do
     dir = Path.join(base, "renga-export-" <> Base.url_encode64(:crypto.strong_rand_bytes(12)))
     File.mkdir_p!(dir)
     File.chmod!(dir, 0o700)
-    %__MODULE__{dir: dir}
+    %__MODULE__{dir: dir, maximum_bytes: Keyword.get(opts, :maximum_bytes)}
   end
 
   @doc """
@@ -104,7 +104,7 @@ defmodule Renga.Transfers.Archive.Writer do
 
     tar = Path.join(writer.dir, "archive.tar")
     pack(writer, tar)
-    compress(tar, path)
+    compress(tar, path, writer.maximum_bytes)
     :ok
   after
     discard(writer)
@@ -136,32 +136,41 @@ defmodule Renga.Transfers.Archive.Writer do
     end
   end
 
-  defp compress(tar, path) do
+  defp compress(tar, path, maximum) do
     {:ok, context} = :zstd.context(:compress)
 
     try do
       File.open!(path, [:write, :binary, :raw], fn out ->
         tar
         |> File.stream!(64 * 1024)
-        |> Enum.each(&compress_chunk(context, &1, out))
+        |> Enum.each(&compress_chunk(context, &1, out, maximum))
 
         {:done, output} = :zstd.finish(context, "")
-        :ok = IO.binwrite(out, output)
+        write_output(out, output, maximum)
       end)
     after
       :zstd.close(context)
     end
   end
 
-  defp compress_chunk(context, chunk, out) do
+  defp compress_chunk(context, chunk, out, maximum) do
     case :zstd.stream(context, chunk) do
       {:continue, output} ->
-        :ok = IO.binwrite(out, output)
+        write_output(out, output, maximum)
 
       {:continue, remainder, output} ->
-        :ok = IO.binwrite(out, output)
-        compress_chunk(context, remainder, out)
+        write_output(out, output, maximum)
+        compress_chunk(context, remainder, out, maximum)
     end
+  end
+
+  defp write_output(out, output, maximum) do
+    {:ok, written} = :file.position(out, :cur)
+
+    if maximum && written + IO.iodata_length(output) > maximum,
+      do: raise(ArgumentError, "export exceeds its reserved maximum bytes")
+
+    :ok = IO.binwrite(out, output)
   end
 
   defp renga_version, do: :renga |> Application.spec(:vsn) |> to_string()

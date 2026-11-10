@@ -45,6 +45,14 @@ defmodule Renga.Transfers do
   @doc "How long an archive is offered for download, in days."
   def validity_days, do: @validity_days
 
+  @doc "Retained archive bytes plus unused running-export reservations."
+  def archive_usage(organization_id),
+    do: Renga.Quotas.usage(organization_id, :export_archive_bytes)
+
+  @doc "The deployment's declared maximum compressed size for each new export."
+  def export_maximum_bytes,
+    do: Application.get_env(:renga, __MODULE__, []) |> Keyword.get(:maximum_bytes, 1_073_741_824)
+
   @doc "The organization's exports, newest first."
   def list_exports(%Scope{} = scope) do
     Repo.transaction(fn ->
@@ -52,6 +60,7 @@ defmodule Renga.Transfers do
 
       OrganizationExport
       |> where([export], export.organization_id == ^scope.organization_id)
+      |> where([export], export.storage == "managed")
       |> order_by([export], desc: export.inserted_at, desc: export.id)
       |> preload([:requested_by_user, :revoked_by_user])
       |> Repo.all()
@@ -89,9 +98,11 @@ defmodule Renga.Transfers do
         parts: parts,
         readable_payloads: scope |> Jobs.readable_payloads() |> Enum.sort(),
         notification_url: url_fun.(),
+        maximum_bytes: export_maximum_bytes(),
         status: "running"
       }
       |> Ecto.Changeset.change()
+      |> Renga.Quotas.constrain(:export_archive_bytes)
       |> Ecto.Changeset.unique_constraint(:organization_id,
         name: :organization_exports_one_running
       )
@@ -101,8 +112,8 @@ defmodule Renga.Transfers do
           record!(export, scope.user.id, "export_started", %{"parts" => parts})
           export
 
-        {:error, _changeset} ->
-          Repo.rollback(:already_running)
+        {:error, changeset} ->
+          rollback_export_start(changeset)
       end
     end)
   end
@@ -120,6 +131,89 @@ defmodule Renga.Transfers do
     end
 
     :ok
+  end
+
+  @doc """
+  Generates an operator-owned file with a durable maximum-byte reservation.
+  The linked task cannot outlive its caller; a crashed caller leaves the
+  existing deadline worker to end the reservation. No managed archive bytes
+  remain after generation because the operator owns and deletes the file.
+  """
+  def write_operator_export(%Organization{} = organization, path, options \\ []) do
+    maximum = export_maximum_bytes()
+
+    with {:ok, export} <- insert_operator_export(organization, maximum, options) do
+      task =
+        Task.async(fn ->
+          Renga.UsageTelemetry.put_organization(organization.id)
+
+          try do
+            Export.write(organization, path, Keyword.put(options, :maximum_bytes, maximum))
+          rescue
+            exception -> {:error, Exception.message(exception)}
+          end
+        end)
+
+      try do
+        case Task.yield(task, @generation_budget_ms) || Task.shutdown(task, :brutal_kill) do
+          {:ok, {:ok, summary}} ->
+            Repo.transaction(fn ->
+              lock_organization!(organization.id)
+              current = locked_export(organization.id, export.id)
+              if current.status != "running", do: Repo.rollback(:not_running)
+              check_generation_deadline!(current)
+              # There is no download to retain: the completed file is external.
+              current
+              |> Ecto.Changeset.change(status: "expired", finished_at: Renga.Time.utc_now_ms())
+              |> Repo.update!()
+
+              summary
+            end)
+
+          {:ok, {:error, reason}} ->
+            {:error, reason}
+
+          _timeout ->
+            {:error, :generation_timeout}
+        end
+      after
+        fail(export, false)
+      end
+    end
+  end
+
+  defp insert_operator_export(organization, maximum, options) do
+    Repo.transaction(fn ->
+      lock_organization!(organization.id)
+
+      %OrganizationExport{
+        organization_id: organization.id,
+        status: "running",
+        storage: "operator",
+        maximum_bytes: maximum,
+        parts: Keyword.get(options, :parts, []),
+        processing_deadline: DateTime.add(Renga.Time.utc_now_ms(), 60, :second)
+      }
+      |> Ecto.Changeset.change()
+      |> Renga.Quotas.constrain(:export_archive_bytes)
+      |> Ecto.Changeset.unique_constraint(:organization_id,
+        name: :organization_exports_one_running
+      )
+      |> Repo.insert()
+      |> case do
+        {:ok, export} -> export
+        {:error, reason} -> rollback_export_start(reason)
+      end
+    end)
+  end
+
+  defp rollback_export_start(changeset) do
+    reason =
+      if Renga.Quotas.exceeded?(changeset, :export_archive_bytes),
+        do: {:quota_exceeded, :export_archive_bytes},
+        else: :already_running
+
+    Repo.rollback(reason)
   end
 
   @doc false
@@ -149,21 +243,24 @@ defmodule Renga.Transfers do
       # an outer worker timeout must not leave its snapshot running.
       task =
         Task.Supervisor.async(Renga.Background.Tasks, fn ->
-          {:ok, summary} =
-            Export.write(
-              organization,
-              path,
-              Keyword.merge(options,
-                tmp_dir: dir,
-                parts: export.parts,
-                readable_payloads: export.readable_payloads
+          Renga.UsageTelemetry.with_organization(export.organization_id, fn ->
+            {:ok, summary} =
+              Export.write(
+                organization,
+                path,
+                Keyword.merge(options,
+                  tmp_dir: dir,
+                  parts: export.parts,
+                  maximum_bytes: export.maximum_bytes,
+                  readable_payloads: export.readable_payloads
+                )
               )
-            )
 
-          case store(export, path, summary) do
-            {:ok, export} -> notify_ready(export, organization, url_fun)
-            {:error, :not_running} -> :ok
-          end
+            case store(export, path, summary) do
+              {:ok, export} -> notify_ready(export, organization, url_fun)
+              {:error, :not_running} -> :ok
+            end
+          end)
         end)
 
       budget =
@@ -358,16 +455,19 @@ defmodule Renga.Transfers do
     :ok
   end
 
-  defp fail(export) do
-    Repo.with_statement_timeout(200, fn _options ->
-      lock_organization!(export.organization_id)
+  defp fail(export, broadcast? \\ true) do
+    result =
+      Repo.with_statement_timeout(200, fn _options ->
+        lock_organization!(export.organization_id)
 
-      case locked_export(export.organization_id, export.id) do
-        %OrganizationExport{status: "running"} = export -> mark_failed!(export)
-        _other -> :ok
-      end
-    end)
-    |> Changes.broadcast(export.organization_id)
+        case locked_export(export.organization_id, export.id) do
+          %OrganizationExport{status: "running"} = export -> mark_failed!(export)
+          _other -> :ok
+        end
+      end)
+
+    # Repo-only CLI commands deliberately start neither PubSub nor endpoints.
+    if broadcast?, do: Changes.broadcast(result, export.organization_id)
 
     :ok
   end

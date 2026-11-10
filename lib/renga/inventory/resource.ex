@@ -88,6 +88,7 @@ defmodule Renga.Inventory.Resource do
     |> validate_map(:spec)
     |> validate_map(:labels)
     |> validate_map(:annotations)
+    |> Renga.Quotas.constrain(:resources, :name)
     |> assoc_constraint(:organization)
     |> unique_constraint([:organization_id, :kind, :name])
   end

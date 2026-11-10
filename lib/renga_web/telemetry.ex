@@ -8,6 +8,13 @@ defmodule RengaWeb.Telemetry do
 
   @impl true
   def init(_arg) do
+    :telemetry.attach(
+      "renga-organization-database",
+      [:renga, :repo, :query],
+      &Renga.UsageTelemetry.database_query/4,
+      nil
+    )
+
     children = [
       # Telemetry poller will execute the given period measurements
       # every 10_000ms. Learn more here: https://hexdocs.pm/telemetry_metrics
@@ -21,6 +28,19 @@ defmodule RengaWeb.Telemetry do
 
   def metrics do
     [
+      sum("renga.intake.request.count", tags: [:organization_id, :status]),
+      sum("renga.intake.request.bytes", tags: [:organization_id]),
+      sum("renga.intake.rejected.count", tags: [:organization_id]),
+      summary("renga.intake.database.total_time",
+        tags: [:organization_id],
+        unit: {:native, :millisecond}
+      ),
+      sum("renga.request.rejected.count", tags: [:organization_id, :transport, :status]),
+      summary("renga.organization.database.total_time",
+        tags: [:organization_id],
+        unit: {:native, :millisecond},
+        description: "Database time attributed to the organization doing the work"
+      ),
       # Phoenix Metrics
       summary("phoenix.endpoint.start.system_time",
         unit: {:native, :millisecond}

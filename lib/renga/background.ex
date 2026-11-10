@@ -83,6 +83,7 @@ defmodule Renga.Background do
               %{worker: state.worker, organization_id: organization_id}
             )
 
+            Renga.UsageTelemetry.put_organization(organization_id)
             state.batch.(organization_id)
           end,
           timeout,

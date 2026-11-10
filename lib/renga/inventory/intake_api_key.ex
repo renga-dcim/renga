@@ -37,6 +37,7 @@ defmodule Renga.Inventory.IntakeApiKey do
     |> validate_required([:organization_id, :name, :status, :token_hash])
     |> validate_length(:name, min: 1, max: 255)
     |> validate_inclusion(:status, @statuses)
+    |> Renga.Quotas.constrain(:intake_keys, :name)
     |> assoc_constraint(:organization)
     |> unique_constraint(:token_hash)
   end

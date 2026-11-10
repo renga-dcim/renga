@@ -21,6 +21,7 @@ defmodule RengaWeb.LimitsLive do
      socket
      |> assign(:page_title, "Limits")
      |> assign(:owner?, owner?)
+     |> assign(:quota_findings, Renga.Quotas.findings(scope))
      |> assign(:limits, if(owner?, do: Limits.list(scope.organization), else: []))}
   end
 
@@ -42,6 +43,27 @@ defmodule RengaWeb.LimitsLive do
         <p :if={!@owner?} id="limits-owners-only" class="text-sm text-fg-muted">
           Only organization owners can see limits.
         </p>
+
+        <div :if={@quota_findings != []} id="quota-findings" class="space-y-2" role="status">
+          <p
+            :for={finding <- @quota_findings}
+            id={"quota-finding-#{finding.name}"}
+            class="flex items-start gap-2 rounded-lg border border-warn-line bg-warn-fill px-3 py-2.5 text-sm text-warn-text"
+          >
+            <.icon name="hero-exclamation-triangle-mini" class="mt-0.5 size-4 shrink-0" />
+            <span>
+              <strong>{limit_label(finding.name)} quota needs attention.</strong>
+              {format_number(finding.used)} of {format_number(finding.capacity)} in use.
+              Contact this deployment's operator before starting work that needs more capacity.
+              <.link
+                navigate={~p"/inbox?#{[group: "health", finding: "quota:#{finding.id}"]}"}
+                class="underline"
+              >
+                Review finding
+              </.link>
+            </span>
+          </p>
+        </div>
 
         <div
           :if={@owner?}
@@ -78,7 +100,7 @@ defmodule RengaWeb.LimitsLive do
   end
 
   defp limit_label(name) do
-    name |> Atom.to_string() |> String.replace("_", " ") |> String.capitalize()
+    name |> to_string() |> String.replace("_", " ") |> String.capitalize()
   end
 
   defp format_number(number) do

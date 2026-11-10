@@ -473,6 +473,16 @@ defmodule Renga.Transfers.Import do
   # The archive's records of `type`; in a copy, with every ID they hold,
   # in an ID column or anywhere in a JSON value, rewritten to the record's
   # new ID. IDs are random, so a value that equals a record's ID names it.
+  defp records(%{copy?: false} = state, "finding_workflows") do
+    state.archive
+    |> Archive.records("finding_workflows")
+    |> Stream.map(fn
+      # Unlike resource IDs, the destination tenant ID changes in migrations too.
+      %{"domain" => "quota"} = row -> Map.put(row, "subject_id", state.organization_id)
+      row -> row
+    end)
+  end
+
   defp records(%{copy?: false} = state, type), do: Archive.records(state.archive, type)
 
   defp records(state, type) do
