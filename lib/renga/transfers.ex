@@ -173,7 +173,7 @@ defmodule Renga.Transfers do
           0
         )
 
-      case Task.yield(task, budget) || Task.shutdown(task, :brutal_kill) do
+      case await_snapshot(task, budget) do
         {:ok, _result} ->
           :ok
 
@@ -188,6 +188,26 @@ defmodule Renga.Transfers do
     after
       File.rm_rf(dir)
       Process.flag(:trap_exit, previous_trap_exit)
+    end
+  end
+
+  # Task.yield ignores linked parent exits while this process traps exits.
+  # Cancel the snapshot before unwinding through cleanup and releasing the
+  # batch's execution permit, even when its coordinator has been killed.
+  defp await_snapshot(task, budget) do
+    receive do
+      {ref, result} when ref == task.ref ->
+        Process.demonitor(ref, [:flush])
+        {:ok, result}
+
+      {:DOWN, ref, :process, _pid, reason} when ref == task.ref ->
+        {:exit, reason}
+
+      {:EXIT, pid, reason} when pid != task.pid and reason != :normal ->
+        Task.shutdown(task, :brutal_kill)
+        exit(reason)
+    after
+      budget -> Task.shutdown(task, :brutal_kill)
     end
   end
 
@@ -226,25 +246,7 @@ defmodule Renga.Transfers do
               lock: "FOR UPDATE SKIP LOCKED"
           )
 
-        case export do
-          %OrganizationExport{processing_deadline: nil} ->
-            export
-            |> Ecto.Changeset.change(
-              processing_deadline: DateTime.add(Renga.Time.utc_now_ms(), 60, :second)
-            )
-            |> Repo.update!()
-
-          %OrganizationExport{} ->
-            # A claimed snapshot cannot be resumed across a crashed database
-            # transaction. Fail it once; never publish or restart a stale claim.
-            if DateTime.compare(export.processing_deadline, Renga.Time.utc_now_ms()) != :gt,
-              do: mark_failed!(export)
-
-            nil
-
-          nil ->
-            nil
-        end
+        claim_generation!(export)
       end)
 
     if claimed do
@@ -255,6 +257,25 @@ defmodule Renga.Transfers do
       )
     end
   end
+
+  defp claim_generation!(%OrganizationExport{processing_deadline: nil} = export) do
+    export
+    |> Ecto.Changeset.change(
+      processing_deadline: DateTime.add(Renga.Time.utc_now_ms(), 60, :second)
+    )
+    |> Repo.update!()
+  end
+
+  defp claim_generation!(%OrganizationExport{} = export) do
+    # A claimed snapshot cannot be resumed across a crashed database
+    # transaction. Fail it once; never publish or restart a stale claim.
+    if DateTime.compare(export.processing_deadline, Renga.Time.utc_now_ms()) != :gt,
+      do: mark_failed!(export)
+
+    nil
+  end
+
+  defp claim_generation!(nil), do: nil
 
   defp store(export, path, summary) do
     result =
@@ -503,27 +524,29 @@ defmodule Renga.Transfers do
       |> limit(5)
       |> select([export], export.id)
       |> Repo.all()
-      |> Enum.count(fn export_id ->
-        {:ok, changed?} =
-          Repo.transaction(fn ->
-            lock_organization!(organization_id)
-            export = locked_export(organization_id, export_id)
-            changed? = sweep_one(export, now, stale_before)
-
-            if export && (changed? or export.status in ~w(expired failed revoked)),
-              do: delete_chunk_batch!(export)
-
-            changed?
-          end)
-
-        if changed?, do: Changes.broadcast({:ok, nil}, organization_id)
-        changed?
-      end)
+      |> Enum.count(&sweep_export(organization_id, &1, now, stale_before))
     end)
     |> Enum.reduce(0, fn
       {:ok, count}, total -> total + count
       _failure, total -> total
     end)
+  end
+
+  defp sweep_export(organization_id, export_id, now, stale_before) do
+    {:ok, changed?} =
+      Repo.transaction(fn ->
+        lock_organization!(organization_id)
+        export = locked_export(organization_id, export_id)
+        changed? = sweep_one(export, now, stale_before)
+
+        if export && (changed? or export.status in ~w(expired failed revoked)),
+          do: delete_chunk_batch!(export)
+
+        changed?
+      end)
+
+    if changed?, do: Changes.broadcast({:ok, nil}, organization_id)
+    changed?
   end
 
   # Rechecked under the lock: a revocation may have won the race.

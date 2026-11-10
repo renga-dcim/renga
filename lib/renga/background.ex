@@ -11,74 +11,132 @@ defmodule Renga.Background do
   alias Renga.Repo
 
   def run(worker, ready_query, batch, options \\ []) do
+    caller = self()
+    deadline = System.monotonic_time(:millisecond) + Keyword.get(options, :budget_ms, 1_000)
+
+    # This coordinator survives its caller long enough to cancel active work.
+    # Each executing child owns its reserve, so even an exit-trapping batch
+    # cannot lose its permit merely because the coordinator dies.
+    Task.Supervisor.async_nolink(Renga.Background.Tasks, fn ->
+      Process.flag(:trap_exit, true)
+      caller_ref = Process.monitor(caller)
+
+      try do
+        rotate(
+          %{
+            worker: worker,
+            query: ready_query,
+            batch: batch,
+            deadline: deadline,
+            caller_ref: caller_ref,
+            visited: MapSet.new(),
+            options: options
+          },
+          []
+        )
+      catch
+        :caller_down -> []
+      after
+        Process.demonitor(caller_ref, [:flush])
+      end
+    end)
+    |> Task.await(:infinity)
+  end
+
+  defp rotate(state, results) do
+    remaining = state.deadline - System.monotonic_time(:millisecond)
+    max_batches = Keyword.get(state.options, :max_batches)
+
+    if remaining <= 0 or (is_integer(max_batches) and MapSet.size(state.visited) >= max_batches) do
+      Enum.reverse(results)
+    else
+      case bounded_task(
+             state.worker,
+             fn -> next(state.worker, state.query) end,
+             remaining,
+             state.caller_ref
+           ) do
+        {:ok, organization_id} when not is_nil(organization_id) ->
+          visit(state, organization_id, results)
+
+        _selection_failed_or_empty ->
+          Enum.reverse(results)
+      end
+    end
+  end
+
+  defp visit(state, organization_id, results) do
+    remaining = state.deadline - System.monotonic_time(:millisecond)
+
+    if remaining <= 0 or MapSet.member?(state.visited, organization_id) do
+      Enum.reverse(results)
+    else
+      timeout = min(remaining, Keyword.get(state.options, :batch_timeout_ms, 250))
+
+      result =
+        bounded_task(
+          state.worker,
+          fn ->
+            :telemetry.execute(
+              [:renga, :background, :batch, :start],
+              %{monotonic_time: System.monotonic_time()},
+              %{worker: state.worker, organization_id: organization_id}
+            )
+
+            state.batch.(organization_id)
+          end,
+          timeout,
+          state.caller_ref
+        )
+
+      unless match?({:ok, _}, result),
+        do:
+          Logger.warning(
+            "Background #{state.worker} batch failed for #{organization_id}: #{inspect(result)}"
+          )
+
+      rotate(%{state | visited: MapSet.put(state.visited, organization_id)}, [result | results])
+    end
+  end
+
+  defp bounded_task(worker, fun, timeout, caller_ref) do
     lane =
       case worker do
         "job_sweep" -> :job_background
         "export_generation" -> :export_background
-        _other -> :background
+        _ -> :background
       end
 
-    case Renga.IntakeCapacity.acquire(lane, 1) do
-      {:ok, permit} ->
-        try do
-          deadline = System.monotonic_time(:millisecond) + Keyword.get(options, :budget_ms, 1_000)
-          rotate(worker, ready_query, batch, deadline, MapSet.new(), options, [])
-        after
-          Renga.IntakeCapacity.release(permit)
+    task =
+      Task.Supervisor.async(Renga.Background.Tasks, fn ->
+        case Renga.IntakeCapacity.acquire(lane, 1) do
+          {:ok, permit} ->
+            try do
+              {:ok, fun.()}
+            after
+              Renga.IntakeCapacity.release(permit)
+            end
+
+          :full ->
+            :full
         end
+      end)
 
-      :full ->
-        []
-    end
-  end
+    receive do
+      {ref, result} when ref == task.ref ->
+        Process.demonitor(ref, [:flush])
+        result
 
-  defp rotate(worker, query, batch, deadline, visited, options, results) do
-    remaining = deadline - System.monotonic_time(:millisecond)
-    max_batches = Keyword.get(options, :max_batches)
+      {:DOWN, ref, :process, _pid, reason} when ref == task.ref ->
+        {:exit, reason}
 
-    if remaining <= 0 or (is_integer(max_batches) and MapSet.size(visited) >= max_batches) do
-      Enum.reverse(results)
-    else
-      case next(worker, query) do
-        nil ->
-          Enum.reverse(results)
-
-        organization_id ->
-          if MapSet.member?(visited, organization_id) do
-            Enum.reverse(results)
-          else
-            timeout = min(remaining, Keyword.get(options, :batch_timeout_ms, 250))
-
-            task =
-              Task.Supervisor.async_nolink(Renga.Background.Tasks, fn ->
-                :telemetry.execute(
-                  [:renga, :background, :batch, :start],
-                  %{monotonic_time: System.monotonic_time()},
-                  %{worker: worker, organization_id: organization_id}
-                )
-
-                batch.(organization_id)
-              end)
-
-            result = Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill)
-
-            unless match?({:ok, _}, result),
-              do:
-                Logger.warning(
-                  "Background #{worker} batch failed for #{organization_id}: #{inspect(result)}"
-                )
-
-            rotate(
-              worker,
-              query,
-              batch,
-              deadline,
-              MapSet.put(visited, organization_id),
-              options,
-              [result | results]
-            )
-          end
-      end
+      {:DOWN, ^caller_ref, :process, _pid, _reason} ->
+        Task.shutdown(task, 100)
+        throw(:caller_down)
+    after
+      max(timeout, 0) ->
+        Task.shutdown(task, 100)
+        nil
     end
   end
 

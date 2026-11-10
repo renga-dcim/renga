@@ -167,9 +167,7 @@ if config_env() == :prod do
     ssl: database_ssl,
     url: database_url,
     parameters: [statement_timeout: "#{statement_timeout}ms"],
-    # RFD 21's checked-in large-site/re-enrollment profile uses this budget.
-    # Budget every replica against PostgreSQL's connection limit.
-    pool_size: String.to_integer(System.get_env("POOL_SIZE") || "64"),
+    pool_size: String.to_integer(System.get_env("POOL_SIZE") || "10"),
     # For machines with several cores, consider starting multiple pools of `pool_size`
     # pool_count: 4,
     socket_options: maybe_ipv6

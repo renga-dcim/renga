@@ -1,11 +1,61 @@
 # Intake capacity validation (RFD 21)
 
-**Overall launch gate: OPEN; latest integrated fleet gate has regressions.**
+**Delivery: capacity foundation; overall launch gate remains OPEN.**
+The checkpoint is now integrated with the durable work ledger and atomic host
+reconciliation on `main` at `90a715ce`. This slice does not wire that ledger
+into asynchronous intake or implement protected job-evidence reservations.
+The historical synchronous fleet gate below still has regressions; it is not
+a passing gate for the newer asynchronous contract.
 An earlier 64-connection checkpoint passed normal, full re-enrollment, and
 quiet-neighbor phases without raising intake limits. Subsequent integrated
 runs rejected some re-enrollment requests; the retained failures and current
 investigation appear below. Fixed-watermark resumable neighbor generation is
-implemented and tested, but does not by itself close the fleet gate.
+implemented and tested against its original restart-on-change contract. It
+still invalidates a building generation on concurrent evidence changes; it
+does not yet implement the revised immutable versioned-input contract needed
+for progress under continuous intake. These are explicit remaining launch
+requirements, not reasons to increase limits or claim the foundation complete.
+
+## Integrated foundation checks (2026-11-10)
+
+The preserved checkpoint is `d577683f`; `ad4ebce0` integrates it with
+`main` at `90a715ce`. The follow-up fixes task/permit lifetime, includes
+cursor selection in the wall deadline, and removes source/organization lock
+inversion. These controls use real PostgreSQL. Export and lease controls run
+separately from fleet load and regression tests, with a 64-connection pool.
+They do not validate the revised five-slot budget under fleet traffic.
+
+| Check | Result |
+| --- | --- |
+| Targeted Phoenix integration regressions | 179 passed, including ledger, reconciliation, intake admission, topology, exports, source lock ordering and recovery policy |
+| Serialized nonbrowser precommit | 3,072 passed (one doctest and 3,071 tests), 122 excluded; compile with warnings as errors, dependency check and format completed |
+| Browser regressions | All 121 passed in three serialized batches: 37, 43 and 41; no browser tests skipped |
+| Full Rust workspace | 453 unit + 30 transport integration + 15 worker integration tests passed |
+| Export deadline | A 500 ms budget cancelled the snapshot in 530 ms; no partial chunks or deadline scratch files remained |
+| Scheduler and coordinator death | Immediate replacement attempts could not overlap the snapshot; its PostgreSQL transaction advisory lock was released before replacement started |
+| Blocked cursor | A 50 ms wall budget returned in 51 ms, below the 175 ms test ceiling; no late batch started |
+| Lease expiry with noisy tenant and saturated retention lane | 99 quiet organizations / 2,475 leases processed in six rounds; maximum ready delay 8,874 ms; all 25 locked noisy leases remained untouched |
+
+`scripts/load-export-capacity.exs` includes both supervising-process death
+controls and the blocked-cursor control. Execution tasks own their permits;
+a coordinator's death alone cannot reclaim a still-running batch's capacity.
+An export that traps exits cancels its nested snapshot before releasing the
+permit. The outer deadline includes cursor selection and allows at most
+100 ms cooperative cancellation before forced termination.
+
+Two combined full precommit attempts were killed before completion. An
+intermediate nonbrowser run passed 3,071/3,072 checks; its recovery-policy test
+found one organization left by the killed run in the disposable test
+database. That fixture was removed, and both the targeted recovery-policy
+rerun and the final serialized nonbrowser precommit passed. The final run
+completed all 3,072 nonbrowser checks in 359.4 seconds
+(`tmp/capacity-foundation-precommit-nonbrowser-final.log`). The browser checks
+then passed in three separate batches (34.2, 43.9 and 38.0 seconds;
+`tmp/capacity-foundation-browser-{1,2,3}.log`). Neither killed combined run is
+presented as a pass. Credo also reports no issues. The export-control fixture's
+first two-owner run hit the one-running-export constraint; the harness now
+removes its own interrupted fixture between controls, without changing that
+constraint (`tmp/capacity-integrated-export-fixture-unique-failed.log`).
 
 ## Reproduce
 
@@ -50,16 +100,24 @@ the ordinary phases makes the command exit nonzero.
 
 The candidate per-node rates are 60,000/minute/organization for each of bulk
 and maintenance, and 600/minute/installation/lane. A domain lane has
-`max((pool_size - 4) / 3, 1)` integer slots; one organization can use at most
+`max((pool_size - 5) / 3, 1)` integer slots; one organization can use at most
 half a lane (at least one slot). The two authentication lanes each have
 `max(pool_size / 8, 1)` slots. The recorder, job sweep, archive generation,
-and general background rotation use separate execution capacity.
+general background rotation, and one independent reconciliation turn use
+separate execution capacity. Historical runs below used four reserved slots;
+the fifth is reserved for the separately supervised async executor. This is a
+conservative interim budget, not validation of a pool-derived admission
+default under the revised contract. Increasing executor concurrency requires
+revisiting this budget and rerunning the matched workload.
 Per-organization overrides cannot remove the hard half-lane isolation cap.
 These are bounded execution lanes, not physically separate PostgreSQL pools.
-After an earlier strict checkpoint passed without a limit increase, the
-production pool default was aligned with that 64-connection budget. Subsequent
-failures mean this remains an experimental default, not a validated launch
-requirement or evidence that PostgreSQL needs 64 active queries per node.
+An earlier checkpoint temporarily aligned the production pool default with
+its passing 64-connection run. Subsequent failures do not justify that
+increase: this foundation preserves `main`'s **10-connection default** and
+the explicit `POOL_SIZE` override. This preserves existing deployment cost;
+it is not validation of the launch workload at ten connections or evidence
+that PostgreSQL needs 64 active queries per node. Operators must budget every
+replica against PostgreSQL's connection limit.
 Smaller-pool validation below also changes the derived admission caps; it is
 not an isolated measurement of database connection demand.
 
@@ -258,9 +316,10 @@ After rebasing the capacity work onto the merged authorization/lifecycle
 baseline, `nix develop --command sh -c 'MIX_ENV=test mix precommit'` passed:
 **3,124 passed (one doctest and 3,123 tests), one excluded**. This includes
 the generated API-document checks and the lifecycle/authorization suites.
-The production runtime configuration test was then extended to verify the
-measured 64-connection default and an explicit 16-connection override;
-all eleven runtime-configuration tests passed.
+At that historical checkpoint, the production runtime configuration test
+verified the then-64-connection default and an explicit 16-connection override;
+all eleven runtime-configuration tests passed. The integrated foundation now
+preserves `main`'s ten-connection default instead, as described above.
 
 ### Resumable neighbor expiry
 
@@ -283,6 +342,13 @@ is reclaimed 100 rows per later batch. A legacy writer materializes a published
 overlay before its own mutation, preserving the old relation names, physical
 foreign keys, and archive semantics. That compatibility operation is not the
 background compaction path and is not claimed to be constant time.
+Current source edits take the organization fence before the source tuple.
+Migration `20261110120000` makes the materializer's organization fence
+`NOWAIT`: a contended legacy/direct tuple-first writer gets PostgreSQL
+`lock_not_available` and must retry its **whole transaction**, rather than
+deadlock an organization-first reconciler. Apply that migration before
+relying on this cutover guarantee. Deployment and production index-build
+timing remain unverified.
 
 Run the real-connection generation control separately from all other load:
 
@@ -635,7 +701,7 @@ against disposable local databases.
 * The measured lease-sweep delay must be paired with a supported ready-org and
   backlog envelope; it does not establish a maximum for unbounded load.
 * Neither the smaller-pool profiles nor 64 connections have a consistently
-  passing integrated fleet gate. The 64-connection default remains
-  experimental, not an established minimum. Operators must budget all
+  passing integrated fleet gate. The production default stays at ten rather
+  than adopting an unvalidated 64-connection increase. Operators must budget all
   replicas against PostgreSQL's connection limit. These results do not yet
   establish a safe smaller-pool default or a database instance-size floor.

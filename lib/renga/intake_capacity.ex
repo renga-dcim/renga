@@ -30,10 +30,11 @@ defmodule Renga.IntakeCapacity do
 
   def lane_size(:authentication), do: max(div(pool_size(), 8), 1)
   # Reserve connections for lease sweeping, archive generation, other background
-  # work, and the contact recorder before splitting domain capacity. Authentication lanes
+  # work, the contact recorder, and one independent reconciliation turn before
+  # splitting domain capacity. Authentication lanes
   # and the remaining headroom are outside these domain permits.
   def lane_size(lane) when lane in [:bulk, :maintenance],
-    do: max(div(pool_size() - 4, 3), 1)
+    do: max(div(pool_size() - 5, 3), 1)
 
   def organization_size, do: max(div(lane_size(:bulk), 2), 1)
 
@@ -137,71 +138,23 @@ defmodule Renga.IntakeCapacity do
       {{:installation, org, installation, lane}, limits.installation_intake_rate}
     ]
 
-    keys = [{:lane, lane}, {:organization, org, lane}]
-    installation_key = {:installation, org, installation, lane}
-    new_installation? = not Map.has_key?(rates, installation_key)
-    {_, installation_count} = Map.get(rates, {:keys, org}, {window, 0})
+    case admission_failure(state, org, installation, class, limits, organization_limit, rate_keys) do
+      nil ->
+        rates = charge_rates(state, org, installation, lane, rate_keys)
 
-    rate_available? =
-      Enum.all?(rate_keys, fn {key, limit} ->
-        {_window, count} = Map.get(rates, key, {window, 0})
-        count < limit
-      end)
+        {ref, state} =
+          permit(%{state | rates: rates}, pid, [{:lane, lane}, {:organization, org, lane}])
 
-    {_, maintenance_used} = Map.get(rates, {:organization, org, :maintenance}, {window, 0})
+        {:reply, {:ok, ref}, state}
 
-    lease_headroom? =
-      class != :lease or
-        (maintenance_used * 2 < limits.intake_maintenance_rate and
-           Map.get(state.counts, {:organization, org, :maintenance}, 0) <
-             organization_limit)
+      reason ->
+        :telemetry.execute([:renga, :intake, :admission_rejected], %{count: 1}, %{
+          organization_id: org,
+          lane: lane,
+          reason: reason
+        })
 
-    available? =
-      Map.get(state.counts, {:lane, lane}, 0) < lane_size(lane) and
-        Map.get(state.counts, {:organization, org, lane}, 0) < organization_limit and
-        map_size(rates) < 100_000 and
-        (not new_installation? or installation_count < 20_000) and rate_available? and
-        lease_headroom?
-
-    if available? do
-      rates =
-        Enum.reduce(rate_keys, rates, fn {key, _limit}, rates ->
-          Map.update(rates, key, {window, 1}, fn {_, count} -> {window, count + 1} end)
-        end)
-
-      rates =
-        if new_installation?,
-          do: Map.put(rates, {:keys, org}, {window, installation_count + 1}),
-          else: rates
-
-      {ref, state} = permit(%{state | rates: rates}, pid, keys)
-      {:reply, {:ok, ref}, state}
-    else
-      reason =
-        cond do
-          not rate_available? ->
-            :rate
-
-          not lease_headroom? ->
-            :lease_reserve
-
-          Map.get(state.counts, {:lane, lane}, 0) >= lane_size(lane) ->
-            :node_concurrency
-
-          Map.get(state.counts, {:organization, org, lane}, 0) >= organization_limit ->
-            :organization_concurrency
-
-          true ->
-            :cardinality
-        end
-
-      :telemetry.execute([:renga, :intake, :admission_rejected], %{count: 1}, %{
-        organization_id: org,
-        lane: lane,
-        reason: reason
-      })
-
-      {:reply, {:error, if(rate_available?, do: 1, else: 60 - Integer.mod(now, 60))}, state}
+        {:reply, {:error, if(reason == :rate, do: 60 - Integer.mod(now, 60), else: 1)}, state}
     end
   end
 
@@ -290,6 +243,54 @@ defmodule Renga.IntakeCapacity do
 
   @impl true
   def handle_info({:DOWN, ref, :process, _pid, _reason}, state), do: {:noreply, drop(state, ref)}
+
+  defp admission_failure(state, org, installation, class, limits, organization_limit, rate_keys) do
+    lane = if class == :lease, do: :bulk, else: class
+
+    checks = [
+      rate:
+        Enum.all?(rate_keys, fn {key, limit} ->
+          elem(Map.get(state.rates, key, {state.window, 0}), 1) < limit
+        end),
+      lease_reserve: lease_headroom?(class, state, org, limits, organization_limit),
+      node_concurrency: Map.get(state.counts, {:lane, lane}, 0) < lane_size(lane),
+      organization_concurrency:
+        Map.get(state.counts, {:organization, org, lane}, 0) < organization_limit,
+      cardinality: cardinality_available?(state, org, installation, lane)
+    ]
+
+    Enum.find_value(checks, fn {reason, available?} -> if not available?, do: reason end)
+  end
+
+  defp lease_headroom?(:lease, state, org, limits, organization_limit) do
+    {_, used} = Map.get(state.rates, {:organization, org, :maintenance}, {state.window, 0})
+
+    used * 2 < limits.intake_maintenance_rate and
+      Map.get(state.counts, {:organization, org, :maintenance}, 0) < organization_limit
+  end
+
+  defp lease_headroom?(_class, _state, _org, _limits, _organization_limit), do: true
+
+  defp cardinality_available?(state, org, installation, lane) do
+    {_, count} = Map.get(state.rates, {:keys, org}, {state.window, 0})
+
+    map_size(state.rates) < 100_000 and
+      (Map.has_key?(state.rates, {:installation, org, installation, lane}) or count < 20_000)
+  end
+
+  defp charge_rates(state, org, installation, lane, rate_keys) do
+    rates =
+      Enum.reduce(rate_keys, state.rates, fn {key, _limit}, rates ->
+        Map.update(rates, key, {state.window, 1}, &{state.window, elem(&1, 1) + 1})
+      end)
+
+    if Map.has_key?(state.rates, {:installation, org, installation, lane}) do
+      rates
+    else
+      {_, count} = Map.get(state.rates, {:keys, org}, {state.window, 0})
+      Map.put(rates, {:keys, org}, {state.window, count + 1})
+    end
+  end
 
   defp permit(state, pid, keys) do
     ref = Process.monitor(pid)

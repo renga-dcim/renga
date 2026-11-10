@@ -42,7 +42,7 @@ defmodule Renga.RuntimeConfigTest do
     end
   end
 
-  test "application connections get the measured pool default and a baseline statement timeout" do
+  test "application connections preserve the pool default and a baseline statement timeout" do
     repo_config = fn environment ->
       config =
         with_env(
@@ -65,7 +65,7 @@ defmodule Renga.RuntimeConfigTest do
     end
 
     {repo, background} = repo_config.(%{})
-    assert repo[:pool_size] == 64
+    assert repo[:pool_size] == 10
     assert repo[:parameters][:statement_timeout] == "30000ms"
     assert background == 300_000
 
