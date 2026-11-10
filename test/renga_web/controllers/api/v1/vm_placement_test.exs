@@ -3,7 +3,8 @@ defmodule RengaWeb.Api.V1.VmPlacementTest do
   RFD 11 phase 3: defined-on versus active VM placement from libvirt reports.
   """
 
-  use RengaWeb.ConnCase, async: true
+  # Real background sweeps share a node-wide permit, not just tenant-local data.
+  use RengaWeb.ConnCase, async: false
 
   import Renga.AccountsFixtures
   import Ecto.Query
