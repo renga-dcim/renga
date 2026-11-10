@@ -322,33 +322,37 @@ defmodule Renga.Inventory.AtomicHostReconciliationTest do
   # connection; pg_stat_activity below proves an actual database lock wait.
   def turn_barrier(_event, _measurements, metadata, %{worker: worker} = config) do
     if self() == worker and is_binary(metadata.query) do
-      key = {__MODULE__, config.token}
-      state = Process.get(key, :unread)
+      pause_turn_query(metadata.query, config)
+    end
+  end
 
-      cond do
-        state == :unread and String.contains?(metadata.query, "UPDATE \"reconciliation_lanes\"") and
-            String.contains?(metadata.query, "\"token\"") ->
-          Process.put(key, :claimed)
+  defp pause_turn_query(query, config) do
+    key = {__MODULE__, config.token}
+    state = Process.get(key, :unread)
 
-        state == :claimed and String.contains?(metadata.query, "FROM \"sources\"") ->
-          Process.put(key, :source_read)
-          send(config.parent, {:source_read, config.token})
+    cond do
+      state == :unread and String.contains?(query, "UPDATE \"reconciliation_lanes\"") and
+          String.contains?(query, "\"token\"") ->
+        Process.put(key, :claimed)
 
-          receive do
-            {:resume_source, token} when token == config.token -> :ok
-          end
+      state == :claimed and String.contains?(query, "FROM \"sources\"") ->
+        Process.put(key, :source_read)
+        send(config.parent, {:source_read, config.token})
 
-        state == :source_read and metadata.query == "commit" ->
-          Process.put(key, :committed)
-          send(config.parent, {:canonical_committed, config.token})
+        receive do
+          {:resume_source, token} when token == config.token -> :ok
+        end
 
-          receive do
-            {:resume_commit, token} when token == config.token -> :ok
-          end
+      state == :source_read and query == "commit" ->
+        Process.put(key, :committed)
+        send(config.parent, {:canonical_committed, config.token})
 
-        true ->
-          :ok
-      end
+        receive do
+          {:resume_commit, token} when token == config.token -> :ok
+        end
+
+      true ->
+        :ok
     end
   end
 

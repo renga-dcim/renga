@@ -230,114 +230,11 @@ defmodule Renga.Inventory.ReconciliationWork do
       do: raise(ArgumentError, "post-commit dispatch requires top-level reconciliation")
 
     prepared =
-      transaction(fn ->
-        lock_organization!(scope.organization_id)
-        if scope.user, do: Authorization.authorize!(scope, "inventory.reconcile")
-        Keyword.get(opts, :authorize, fn -> :ok end).()
-        requested = Inventory.get_observation!(scope, observation.id)
+      scope
+      |> prepare_reconciliation(observation, opts)
+      |> retry_prepared(scope)
 
-        observation =
-          if requested.parent_observation_id,
-            do: Inventory.get_observation!(scope, requested.parent_observation_id),
-            else: requested
-
-        lock_source!(scope.organization_id, observation.source_id)
-        first = first_work(scope.organization_id, observation.id)
-        work = if first, do: latest_work(first)
-
-        legacy_result =
-          if is_nil(work),
-            do: List.last(Inventory.list_observation_reconciliations(scope, observation.id))
-
-        action =
-          cond do
-            (opts[:once] || is_nil(scope.user)) &&
-                ((work && work.status in ["succeeded", "quarantined"]) ||
-                   (legacy_result && legacy_result.status in ["succeeded", "failed"])) ->
-              {:stored, Reconciler.stored_result(scope, observation)}
-
-            is_nil(work) ->
-              work =
-                reserve!(
-                  lock_lane!(scope.organization_id),
-                  observation,
-                  observation.intake_api_key_id,
-                  nil,
-                  nil,
-                  limits(scope.organization_id),
-                  "maintenance"
-                )
-
-              if legacy_result do
-                audit!(
-                  scope,
-                  work,
-                  "reconciliation_legacy_retry",
-                  %{"attempt" => legacy_result.attempt, "status" => legacy_result.status},
-                  %{"work_id" => work.id, "status" => "pending"}
-                )
-              end
-
-              {:scheduled, work}
-
-            opts[:once] || is_nil(scope.user) ->
-              {:scheduled, work}
-
-            true ->
-              {:retry, work}
-          end
-
-        {requested, action}
-      end)
-
-    prepared =
-      case prepared do
-        {:ok, {requested, {:retry, work}}} ->
-          retried =
-            if work.status == "succeeded",
-              do: terminal_retry(scope, work.id, work.generation, limits(scope.organization_id)),
-              else: retry(scope, work.id, work.generation)
-
-          case retried do
-            {:ok, work} -> {:ok, {requested, {:scheduled, work}}}
-            error -> error
-          end
-
-        result ->
-          result
-      end
-
-    result =
-      case prepared do
-        {:ok, {_requested, {:stored, result}}} ->
-          result
-
-        {:ok, {_requested, {:scheduled, work}}} ->
-          case Renga.Inventory.ReconciliationWorker.run_once(
-                 organization_id: scope.organization_id,
-                 work_id: work.id
-               ) do
-            {:ok, idle} when idle in [:idle, :busy] ->
-              # Another bounded caller may have completed this exact obligation
-              # while we waited for the slot. Reading it grants no retry authority.
-              if get(scope, work.id).status in ["succeeded", "quarantined"],
-                do:
-                  Reconciler.stored_result(
-                    scope,
-                    Inventory.get_observation!(scope, work.observation_id)
-                  ),
-                else: {:error, :work_pending}
-
-            {:ok, result} ->
-              result
-
-            error ->
-              error
-          end
-
-        error ->
-          error
-      end
+    result = dispatch_prepared(prepared, scope)
 
     result =
       case prepared do
@@ -353,6 +250,115 @@ defmodule Renga.Inventory.ReconciliationWork do
 
     Keyword.get(opts, :after_commit, fn result, _owner -> result end).(result, :durable)
   end
+
+  defp prepare_reconciliation(scope, observation, opts) do
+    transaction(fn ->
+      lock_organization!(scope.organization_id)
+      if scope.user, do: Authorization.authorize!(scope, "inventory.reconcile")
+      Keyword.get(opts, :authorize, fn -> :ok end).()
+      requested = Inventory.get_observation!(scope, observation.id)
+
+      observation =
+        if requested.parent_observation_id,
+          do: Inventory.get_observation!(scope, requested.parent_observation_id),
+          else: requested
+
+      lock_source!(scope.organization_id, observation.source_id)
+      first = first_work(scope.organization_id, observation.id)
+      work = if first, do: latest_work(first)
+
+      legacy_result =
+        if is_nil(work),
+          do: List.last(Inventory.list_observation_reconciliations(scope, observation.id))
+
+      read_only? = opts[:once] || is_nil(scope.user)
+
+      action =
+        if read_only? && terminal_disposition?(work, legacy_result),
+          do: {:stored, Reconciler.stored_result(scope, observation)},
+          else: maintenance_action(scope, observation, work, legacy_result, read_only?)
+
+      {requested, action}
+    end)
+  end
+
+  defp terminal_disposition?(%{status: status}, _legacy),
+    do: status in ["succeeded", "quarantined"]
+
+  defp terminal_disposition?(nil, %{status: status}), do: status in ["succeeded", "failed"]
+  defp terminal_disposition?(nil, nil), do: false
+
+  defp maintenance_action(scope, observation, nil, legacy_result, _read_only?) do
+    work =
+      reserve!(
+        lock_lane!(scope.organization_id),
+        observation,
+        observation.intake_api_key_id,
+        nil,
+        nil,
+        limits(scope.organization_id),
+        "maintenance"
+      )
+
+    if legacy_result do
+      audit!(
+        scope,
+        work,
+        "reconciliation_legacy_retry",
+        %{"attempt" => legacy_result.attempt, "status" => legacy_result.status},
+        %{"work_id" => work.id, "status" => "pending"}
+      )
+    end
+
+    {:scheduled, work}
+  end
+
+  defp maintenance_action(_scope, _observation, work, _legacy, read_only?),
+    do: if(read_only?, do: {:scheduled, work}, else: {:retry, work})
+
+  # Explicit retry owns its own authorization and audit transaction; preparation
+  # must finish before entering it or waiting for the shared execution slot.
+  defp retry_prepared({:ok, {requested, {:retry, work}}}, scope) do
+    retried =
+      if work.status == "succeeded",
+        do: terminal_retry(scope, work.id, work.generation, limits(scope.organization_id)),
+        else: retry(scope, work.id, work.generation)
+
+    case retried do
+      {:ok, work} -> {:ok, {requested, {:scheduled, work}}}
+      error -> error
+    end
+  end
+
+  defp retry_prepared(result, _scope), do: result
+
+  defp dispatch_prepared({:ok, {_requested, {:stored, result}}}, _scope), do: result
+
+  defp dispatch_prepared({:ok, {_requested, {:scheduled, work}}}, scope) do
+    case Renga.Inventory.ReconciliationWorker.run_once(
+           organization_id: scope.organization_id,
+           work_id: work.id
+         ) do
+      {:ok, idle} when idle in [:idle, :busy] ->
+        # Another bounded caller may have completed this exact obligation
+        # while we waited for the slot. Reading it grants no retry authority.
+        if get(scope, work.id).status in ["succeeded", "quarantined"],
+          do:
+            Reconciler.stored_result(
+              scope,
+              Inventory.get_observation!(scope, work.observation_id)
+            ),
+          else: {:error, :work_pending}
+
+      {:ok, result} ->
+        result
+
+      error ->
+        error
+    end
+  end
+
+  defp dispatch_prepared(error, _scope), do: error
 
   @doc """
   Rediscover and claim one ready organization head without notifications.

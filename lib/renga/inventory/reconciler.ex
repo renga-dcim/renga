@@ -74,31 +74,35 @@ defmodule Renga.Inventory.Reconciler do
     result = reconcile_turn(scope, observation)
 
     if report?(observation) do
-      resources =
-        scope
-        |> Inventory.list_derived_observations(observation.id)
-        |> Enum.flat_map(fn derived ->
-          case latest_result(scope, derived.id) do
-            %{status: "succeeded", matched_resource_id: id} ->
-              [Inventory.get_resource!(scope, id)]
-
-            _ ->
-              []
-          end
-        end)
-        |> Enum.uniq_by(& &1.id)
-
-      Enum.each(resources, fn resource ->
-        {:ok, _} = Renga.TriageRules.apply_to_resource(scope.organization_id, resource.id)
-      end)
-
-      success = {:ok, resources, false}
-      {:ok, :ok} = Renga.IPAM.AddressFindings.reconcile(scope.organization_id)
-      {:ok, _} = Renga.Inventory.SameMachine.refresh_after!(scope, observation, success)
-      {:ok, _} = Renga.Inventory.CollectorFindings.refresh_after!(scope, observation, success)
+      reconcile_report_effects(scope, observation)
     end
 
     result
+  end
+
+  defp reconcile_report_effects(scope, observation) do
+    resources =
+      scope
+      |> Inventory.list_derived_observations(observation.id)
+      |> Enum.flat_map(fn derived ->
+        case latest_result(scope, derived.id) do
+          %{status: "succeeded", matched_resource_id: id} ->
+            [Inventory.get_resource!(scope, id)]
+
+          _ ->
+            []
+        end
+      end)
+      |> Enum.uniq_by(& &1.id)
+
+    Enum.each(resources, fn resource ->
+      {:ok, _} = Renga.TriageRules.apply_to_resource(scope.organization_id, resource.id)
+    end)
+
+    success = {:ok, resources, false}
+    {:ok, :ok} = Renga.IPAM.AddressFindings.reconcile(scope.organization_id)
+    {:ok, _} = Renga.Inventory.SameMachine.refresh_after!(scope, observation, success)
+    {:ok, _} = Renga.Inventory.CollectorFindings.refresh_after!(scope, observation, success)
   end
 
   defp reconcile_turn(scope, observation) do
@@ -106,10 +110,9 @@ defmodule Renga.Inventory.Reconciler do
 
     try do
       result =
-        cond do
-          is_nil(source) -> perform_report_reconciliation(scope, observation)
-          true -> perform_resource_reconciliation(scope, observation, source)
-        end
+        if is_nil(source),
+          do: perform_report_reconciliation(scope, observation),
+          else: perform_resource_reconciliation(scope, observation, source)
 
       if not report?(observation) and is_nil(observation.parent_observation_id) do
         reconcile_host_effects(result, scope, observation)
