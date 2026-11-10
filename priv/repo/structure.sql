@@ -3260,6 +3260,20 @@ CREATE TABLE public.reconciliation_work (
 
 
 --
+-- Name: request_limit_windows; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.request_limit_windows (
+    organization_id uuid,
+    key text NOT NULL,
+    kind text NOT NULL,
+    user_id uuid,
+    "window" bigint NOT NULL,
+    count bigint NOT NULL
+);
+
+
+--
 -- Name: resource_conditions; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -5143,6 +5157,14 @@ ALTER TABLE ONLY public.reconciliation_lanes
 
 ALTER TABLE ONLY public.reconciliation_work
     ADD CONSTRAINT reconciliation_work_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: request_limit_windows request_limit_windows_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.request_limit_windows
+    ADD CONSTRAINT request_limit_windows_pkey PRIMARY KEY (key);
 
 
 --
@@ -7741,6 +7763,13 @@ CREATE UNIQUE INDEX reconciliation_work_organization_id_position_index ON public
 --
 
 CREATE INDEX reconciliation_work_outstanding ON public.reconciliation_work USING btree (organization_id, "position") WHERE ((status)::text <> 'succeeded'::text);
+
+
+--
+-- Name: request_limit_windows_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX request_limit_windows_organization_id_index ON public.request_limit_windows USING btree (organization_id);
 
 
 --
@@ -11363,6 +11392,22 @@ ALTER TABLE ONLY public.reconciliation_work
 
 
 --
+-- Name: request_limit_windows request_limit_windows_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.request_limit_windows
+    ADD CONSTRAINT request_limit_windows_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: request_limit_windows request_limit_windows_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.request_limit_windows
+    ADD CONSTRAINT request_limit_windows_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
 -- Name: resource_conditions resource_conditions_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -12470,4 +12515,5 @@ INSERT INTO public."schema_migrations" (version) VALUES (20261106100000);
 INSERT INTO public."schema_migrations" (version) VALUES (20261106110000);
 INSERT INTO public."schema_migrations" (version) VALUES (20261106120000);
 INSERT INTO public."schema_migrations" (version) VALUES (20261106130000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261110100000);
 INSERT INTO public."schema_migrations" (version) VALUES (20261110120000);

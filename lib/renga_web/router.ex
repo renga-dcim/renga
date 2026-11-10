@@ -11,6 +11,8 @@ defmodule RengaWeb.Router do
     plug :protect_from_forgery
     plug :put_secure_browser_headers
     plug :fetch_current_scope_for_user
+    plug RengaWeb.UsageTelemetry, :scope
+    plug RengaWeb.RequestLimit
     plug RengaWeb.RecoveryMode
   end
 
@@ -198,6 +200,7 @@ defmodule RengaWeb.Router do
         RengaWeb.SQLSandbox,
         RengaWeb.RecoveryMode,
         {RengaWeb.UserAuth, :require_authenticated},
+        RengaWeb.RequestLimit,
         RengaWeb.AccessHook,
         RengaWeb.SidebarViews,
         RengaWeb.AppearanceHook
@@ -267,6 +270,7 @@ defmodule RengaWeb.Router do
     end
 
     get "/settings/export/:id/download", ExportController, :download
+    get "/requests/throttled", RequestLimitController, :show
 
     # Recovery authenticates a person, but deliberately does not require or
     # select an active tenant. Each operation rechecks the pending tenant's owner.
@@ -290,6 +294,7 @@ defmodule RengaWeb.Router do
         RengaWeb.SQLSandbox,
         RengaWeb.RecoveryMode,
         {RengaWeb.UserAuth, :mount_current_scope},
+        RengaWeb.RequestLimit,
         RengaWeb.AppearanceHook
       ] do
       live "/recovery", RecoveryLive, :show

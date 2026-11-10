@@ -149,21 +149,23 @@ defmodule Renga.Transfers do
       # an outer worker timeout must not leave its snapshot running.
       task =
         Task.Supervisor.async(Renga.Background.Tasks, fn ->
-          {:ok, summary} =
-            Export.write(
-              organization,
-              path,
-              Keyword.merge(options,
-                tmp_dir: dir,
-                parts: export.parts,
-                readable_payloads: export.readable_payloads
+          Renga.UsageTelemetry.with_organization(export.organization_id, fn ->
+            {:ok, summary} =
+              Export.write(
+                organization,
+                path,
+                Keyword.merge(options,
+                  tmp_dir: dir,
+                  parts: export.parts,
+                  readable_payloads: export.readable_payloads
+                )
               )
-            )
 
-          case store(export, path, summary) do
-            {:ok, export} -> notify_ready(export, organization, url_fun)
-            {:error, :not_running} -> :ok
-          end
+            case store(export, path, summary) do
+              {:ok, export} -> notify_ready(export, organization, url_fun)
+              {:error, :not_running} -> :ok
+            end
+          end)
         end)
 
       budget =

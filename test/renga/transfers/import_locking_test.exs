@@ -36,6 +36,8 @@ defmodule Renga.Transfers.ImportLockingTest do
     "deployment_audit_events" => "the operator's audit log, never the organization's data",
     "identity_providers" =>
       "a deployment provider has no organization; an organization's names it",
+    "request_limit_windows" =>
+      "deployment counters may belong to an authenticated user without an organization",
     # catalog_type_revisions_one_owner requires exactly one of the two
     # type references, and each reaches the organization.
     "catalog_type_revisions" => "one of hardware_type_id or module_type_id is always set",
