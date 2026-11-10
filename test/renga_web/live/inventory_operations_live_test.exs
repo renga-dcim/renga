@@ -621,6 +621,7 @@ defmodule RengaWeb.InventoryOperationsLiveTest do
     |> put_req_header("authorization", "Bearer #{token}")
     |> put_req_header("x-renga-installation-id", @installation_id)
     |> post(~p"/api/v1/observations", payload)
+    |> settle_observation()
     |> valid_api_response(202)
   end
 end

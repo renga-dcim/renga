@@ -113,7 +113,16 @@ defmodule Renga.Inventory.AtomicHostReconciliationTest do
         remove_failure!(@table)
       end
 
-      assert {:ok, resource, true} = Inventory.reconcile_observation(actor, observation.id)
+      # Maintenance reads the quarantine; only a freshly authorized operator
+      # may explicitly retry the existing obligation.
+      if @actor == :system,
+        do:
+          assert(
+            {:error, %{status: "failed", attempt: 1}} =
+              Inventory.reconcile_observation(actor, observation.id)
+          )
+
+      assert {:ok, resource, true} = Inventory.reconcile_observation(scope, observation.id)
       assert Inventory.get_resource!(scope, resource.id).owner_team_id == team.id
       assert [%{status: "open"}] = findings(scope)
 
@@ -128,7 +137,7 @@ defmodule Renga.Inventory.AtomicHostReconciliationTest do
   end
 
   for {before_kind, after_kind} <- [{"host_agent", "manual"}, {"manual", "host_agent"}],
-      entry <- [:retry, :once, :replay],
+      entry <- [:retry, :once],
       actor <- [:human, :system] do
     @before_kind before_kind
     @after_kind after_kind
@@ -141,9 +150,6 @@ defmodule Renga.Inventory.AtomicHostReconciliationTest do
       observation = observation(context)
       actor = if @actor == :human, do: scope, else: Accounts.scope_for(scope.organization)
       action = if @entry == :retry, do: :reconcile_observation, else: :reconcile_observation_once
-
-      if @entry == :replay,
-        do: assert({:ok, _, true} = Inventory.reconcile_observation_once(actor, observation.id))
 
       parent = self()
       token = make_ref()
@@ -202,18 +208,15 @@ defmodule Renga.Inventory.AtomicHostReconciliationTest do
         assert_receive {:canonical_committed, ^token}, 5_000
         assert {:ok, %{kind: @after_kind}} = Task.await(updater, 5_000)
 
-        if @before_kind == "host_agent" do
-          [resource] = Enum.reject(Inventory.list_resources(scope), &(&1.kind == "prefix"))
-          [interface] = Inventory.list_interfaces(scope, resource.id)
-          [address] = Inventory.list_addresses(scope, interface.id)
-          assert {:ok, _} = IPAM.adopt_address(scope, address.id)
-        end
+        [resource] = Enum.reject(Inventory.list_resources(scope), &(&1.kind == "prefix"))
+        [interface] = Inventory.list_interfaces(scope, resource.id)
+        [address] = Inventory.list_addresses(scope, interface.id)
+        assert {:ok, _} = IPAM.adopt_address(scope, address.id)
 
         send(worker.pid, {:resume_commit, token})
         assert {:ok, _, _} = Task.await(worker, 5_000)
         assert Inventory.get_source!(scope, source.id).kind == @after_kind
-        expected = if @before_kind == "host_agent", do: "resolved", else: "open"
-        assert [%{status: ^expected}] = findings(scope)
+        assert [%{status: "resolved"}] = findings(scope)
 
         assert [%{status: "succeeded", attempt: 1}] =
                  Inventory.list_observation_reconciliations(scope, observation.id)
@@ -231,7 +234,8 @@ defmodule Renga.Inventory.AtomicHostReconciliationTest do
   for actor <- [:human, :system] do
     @actor actor
 
-    test "#{actor} faulted successful replay cannot leak host effects after rollback", context do
+    test "#{actor} successful replay is read-only even if projection writes would fail",
+         context do
       %{scope: scope} = context
       actor = if @actor == :human, do: scope, else: Accounts.scope_for(scope.organization)
       observation = observation(context)
@@ -271,7 +275,7 @@ defmodule Renga.Inventory.AtomicHostReconciliationTest do
 
         assert replayed.id == resource.id
 
-        assert [[1, true]] =
+        assert [[1, false]] =
                  Repo.query!("SELECT last_value, is_called FROM atomic_host_replay_calls").rows
 
         assert [^finding] = findings(scope)
@@ -322,7 +326,11 @@ defmodule Renga.Inventory.AtomicHostReconciliationTest do
       state = Process.get(key, :unread)
 
       cond do
-        state == :unread and String.contains?(metadata.query, "FROM \"sources\"") ->
+        state == :unread and String.contains?(metadata.query, "UPDATE \"reconciliation_lanes\"") and
+            String.contains?(metadata.query, "\"token\"") ->
+          Process.put(key, :claimed)
+
+        state == :claimed and String.contains?(metadata.query, "FROM \"sources\"") ->
           Process.put(key, :source_read)
           send(config.parent, {:source_read, config.token})
 

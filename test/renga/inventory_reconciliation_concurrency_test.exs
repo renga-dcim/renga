@@ -164,7 +164,9 @@ defmodule Renga.InventoryReconciliationConcurrencyTest do
       end
 
     try do
-      assert Enum.all?(Task.await_many(tasks, @timeout), &match?({:ok, %{}, _}, &1))
+      results = Task.await_many(tasks, @timeout)
+      assert Enum.any?(results, &match?({:ok, %{}, _}, &1))
+      assert Enum.all?(results, &(match?({:ok, %{}, _}, &1) || &1 == {:error, :work_pending}))
 
       assert [%{attempt: 1, status: "succeeded"}] =
                Inventory.list_observation_reconciliations(scope, observation.id)
@@ -229,9 +231,12 @@ defmodule Renga.InventoryReconciliationConcurrencyTest do
     end
 
     try do
+      results = Task.await_many(tasks, @timeout)
+      assert Enum.any?(results, &match?({:error, %{status: "failed"}}, &1))
+
       assert Enum.all?(
-               Task.await_many(tasks, @timeout),
-               &match?({:error, %{status: "failed"}}, &1)
+               results,
+               &(match?({:error, %{status: "failed"}}, &1) || &1 == {:error, :work_pending})
              )
 
       assert [%{attempt: 1, status: "failed"}] =
@@ -242,7 +247,7 @@ defmodule Renga.InventoryReconciliationConcurrencyTest do
     end
   end
 
-  test "concurrent unexpected failures retain distinct terminal attempts" do
+  test "concurrent maintenance calls share one failure without implicitly retrying quarantine" do
     :ok = Sandbox.checkout(Repo, sandbox: false)
     suffix = System.unique_integer([:positive])
 
@@ -300,15 +305,25 @@ defmodule Renga.InventoryReconciliationConcurrencyTest do
     end
 
     try do
+      results = Task.await_many(tasks, @timeout)
+      assert Enum.any?(results, &match?({:error, %{status: "failed"}}, &1))
+
       assert Enum.all?(
-               Task.await_many(tasks, @timeout),
-               &match?({:error, %{status: "failed"}}, &1)
+               results,
+               &(match?({:error, %{status: "failed"}}, &1) || &1 == {:error, :work_pending})
              )
 
-      assert [
-               %{attempt: 1, status: "failed"},
-               %{attempt: 2, status: "failed"}
-             ] = Inventory.list_observation_reconciliations(scope, observation.id)
+      assert [%{attempt: 1, status: "failed"}] =
+               Inventory.list_observation_reconciliations(scope, observation.id)
+
+      accepted = Renga.Inventory.ReconciliationWork.accepted(scope, observation)
+      assert accepted.work.status == "quarantined"
+      assert accepted.work.generation == 0
+
+      assert {:error, %{status: "failed", attempt: 1}} =
+               Inventory.reconcile_observation(scope, observation.id)
+
+      assert Renga.Inventory.ReconciliationWork.get(scope, accepted.work.id) == accepted.work
     after
       Repo.query!("DROP TRIGGER reconciliation_failure_barrier ON observation_reconciliations")
       Repo.query!("DROP FUNCTION reconciliation_failure_barrier()")

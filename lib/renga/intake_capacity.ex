@@ -1,8 +1,9 @@
 defmodule Renga.IntakeCapacity do
   @moduledoc """
   Fail-fast, per-node intake lanes. No admitted request waits for another
-  request's permit. Permits follow the request process through reconciliation
-  and are reclaimed if it crashes. Bulk and new leases cannot borrow the
+  request's permit. Intake permits end with the response and are reclaimed if
+  the request crashes; reconciliation owns a separate execution slot.
+  Bulk and new leases cannot borrow the
   maintenance reserve. Counters and pending contacts have bounded cardinality.
   """
   use GenServer

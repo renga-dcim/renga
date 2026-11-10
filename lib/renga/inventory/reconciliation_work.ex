@@ -1,19 +1,16 @@
 defmodule Renga.Inventory.ReconciliationWork do
   @moduledoc """
-  Isolated, intake-authorized durable obligations. Not connected to live intake
-  or supervision; this is not the asynchronous reconciliation cutover.
+  Intake-authorized durable obligations, ordered and fenced per organization.
 
-  Admission stores only a validated root payload and its ledger. Scoped reports
-  remain opaque barriers: no derived payloads, member coverage or finalization
-  are implemented. Reserved units are one for a host, or root + declared resources
-  + targets for a scoped report, not measured processing cost. Bytes count the
-  encoded root payload only. Future materialization must reserve its retained
-  expansion before writing it. Callers must supply both capacity limits.
+  Admission stores only a validated root payload and its ledger. Units cover
+  root + declared resources + targets; bytes cover the root and its bounded
+  derived payload expansion. The worker materializes and reconciles each report
+  in one transaction. Resumable member processing is deliberately separate.
 
   Accepted evidence belongs to the server: revoking/deleting its intake key or
   agent does not revoke processing. Their recorded IDs are immutable provenance.
   Only admission checks the current key/installation/source under SHARE locks.
-  Processing lock order is organization UPDATE → organization advisory → human
+  Processing lock order is organization NO KEY UPDATE → organization advisory → human
   membership for explicit retry → source SHARE → lane UPDATE → work UPDATE →
   canonical/resource/projection locks. Source edits serialize at our SHARE lock;
   the host core takes a compatible SHARE on the same source snapshot.
@@ -67,6 +64,7 @@ defmodule Renga.Inventory.ReconciliationWork do
     field :status, :string, default: "pending"
     field :checkpoint, :integer, default: 0
     field :generation, :integer, default: 0
+    field :origin, :string, default: "intake"
     field :original_key_id, Ecto.UUID
     field :installation_agent_id, Ecto.UUID
     field :installation_id, Ecto.UUID
@@ -132,6 +130,84 @@ defmodule Renga.Inventory.ReconciliationWork do
   def admit(%Scope{}, _key, _installation_id, _source_id, _params, _limits),
     do: {:error, :unsupported_authority}
 
+  @doc false
+  def acceptance_transaction(%Scope{} = scope, operation) do
+    transaction(fn ->
+      lock_organization!(scope.organization_id)
+      operation.()
+    end)
+  end
+
+  @doc false
+  # Registration, evidence, work and the lease share this caller-owned transaction.
+  def accept_in_transaction!(scope, key, agent, source, attrs) do
+    unless Repo.in_transaction?(), do: raise(ArgumentError, "acceptance requires a transaction")
+
+    authority =
+      require_authority!(
+        scope.organization_id,
+        key.id,
+        agent.id,
+        agent.installation_id,
+        source.id
+      )
+
+    if authority.key.token_hash != key.token_hash, do: Repo.rollback(:intake_credential_changed)
+    validated = validated_attrs!(attrs.payload, authority.source)
+    attrs = Map.merge(attrs, validated) |> Map.put(:intake_api_key_id, key.id)
+
+    case Inventory.accept_observation(scope, source.id, attrs) do
+      {:ok, observation, :created} ->
+        reserve!(
+          lock_lane!(scope.organization_id),
+          observation,
+          key.id,
+          agent.id,
+          agent.installation_id,
+          limits(scope.organization_id)
+        )
+
+        {observation, :created}
+
+      {:ok, observation, :duplicate} ->
+        first_work(scope.organization_id, observation.id) ||
+          Repo.rollback(:unsupported_existing_observation)
+
+        {observation, :duplicate}
+
+      {:error, :idempotency_conflict, observation} ->
+        Repo.rollback({:idempotency_conflict, observation})
+
+      {:error, reason} ->
+        Repo.rollback(reason)
+    end
+  end
+
+  def limits(organization_id) do
+    values = Renga.Limits.get_all(organization_id)
+    %{max_units: values.pending_work_units, max_bytes: values.pending_work_bytes}
+  end
+
+  def pending_units(organization_id), do: pending_usage(organization_id, :pending_units)
+  def pending_bytes(organization_id), do: pending_usage(organization_id, :pending_bytes)
+
+  defp pending_usage(organization_id, field) do
+    Repo.one(
+      from lane in ReconciliationLane,
+        where: lane.organization_id == ^organization_id,
+        select: field(lane, ^field)
+    ) || 0
+  end
+
+  @doc "Immutable first acceptance and current disposition, without changing any work."
+  def accepted(%Scope{} = scope, %Observation{} = observation) do
+    first = first_work(scope.organization_id, observation.id)
+
+    if first do
+      %{observation: observation, receipt: receipt_value(first), work: latest_work(first)}
+    end
+  end
+
   @doc "The immutable first receipt, not a mutable processing-status response."
   def receipt(%Scope{organization_id: organization_id}, observation_id) do
     case first_work(organization_id, observation_id) do
@@ -145,6 +221,140 @@ defmodule Renga.Inventory.ReconciliationWork do
     do: Repo.get_by(__MODULE__, organization_id: organization_id, id: work_id)
 
   @doc """
+  Internal maintenance/operator entry point. Even immediate execution must
+  reserve durable work and claim the organization head; it cannot jump a barrier.
+  Machine callers are internal, not intake-key authentication substitutes.
+  """
+  def reconcile(%Scope{} = scope, observation, opts \\ []) do
+    if Repo.in_transaction?(),
+      do: raise(ArgumentError, "post-commit dispatch requires top-level reconciliation")
+
+    prepared =
+      transaction(fn ->
+        lock_organization!(scope.organization_id)
+        if scope.user, do: Authorization.authorize!(scope, "inventory.reconcile")
+        Keyword.get(opts, :authorize, fn -> :ok end).()
+        requested = Inventory.get_observation!(scope, observation.id)
+
+        observation =
+          if requested.parent_observation_id,
+            do: Inventory.get_observation!(scope, requested.parent_observation_id),
+            else: requested
+
+        lock_source!(scope.organization_id, observation.source_id)
+        first = first_work(scope.organization_id, observation.id)
+        work = if first, do: latest_work(first)
+
+        legacy_result =
+          if is_nil(work),
+            do: List.last(Inventory.list_observation_reconciliations(scope, observation.id))
+
+        action =
+          cond do
+            (opts[:once] || is_nil(scope.user)) &&
+                ((work && work.status in ["succeeded", "quarantined"]) ||
+                   (legacy_result && legacy_result.status in ["succeeded", "failed"])) ->
+              {:stored, Reconciler.stored_result(scope, observation)}
+
+            is_nil(work) ->
+              work =
+                reserve!(
+                  lock_lane!(scope.organization_id),
+                  observation,
+                  observation.intake_api_key_id,
+                  nil,
+                  nil,
+                  limits(scope.organization_id),
+                  "maintenance"
+                )
+
+              if legacy_result do
+                audit!(
+                  scope,
+                  work,
+                  "reconciliation_legacy_retry",
+                  %{"attempt" => legacy_result.attempt, "status" => legacy_result.status},
+                  %{"work_id" => work.id, "status" => "pending"}
+                )
+              end
+
+              {:scheduled, work}
+
+            opts[:once] || is_nil(scope.user) ->
+              {:scheduled, work}
+
+            true ->
+              {:retry, work}
+          end
+
+        {requested, action}
+      end)
+
+    prepared =
+      case prepared do
+        {:ok, {requested, {:retry, work}}} ->
+          retried =
+            if work.status == "succeeded",
+              do: terminal_retry(scope, work.id, work.generation, limits(scope.organization_id)),
+              else: retry(scope, work.id, work.generation)
+
+          case retried do
+            {:ok, work} -> {:ok, {requested, {:scheduled, work}}}
+            error -> error
+          end
+
+        result ->
+          result
+      end
+
+    result =
+      case prepared do
+        {:ok, {_requested, {:stored, result}}} ->
+          result
+
+        {:ok, {_requested, {:scheduled, work}}} ->
+          case Renga.Inventory.ReconciliationWorker.run_once(
+                 organization_id: scope.organization_id,
+                 work_id: work.id
+               ) do
+            {:ok, idle} when idle in [:idle, :busy] ->
+              # Another bounded caller may have completed this exact obligation
+              # while we waited for the slot. Reading it grants no retry authority.
+              if get(scope, work.id).status in ["succeeded", "quarantined"],
+                do:
+                  Reconciler.stored_result(
+                    scope,
+                    Inventory.get_observation!(scope, work.observation_id)
+                  ),
+                else: {:error, :work_pending}
+
+            {:ok, result} ->
+              result
+
+            error ->
+              error
+          end
+
+        error ->
+          error
+      end
+
+    result =
+      case prepared do
+        {:ok, {%Observation{parent_observation_id: parent_id} = requested, _action}}
+        when not is_nil(parent_id) ->
+          if match?({:ok, _, _}, result),
+            do: Reconciler.stored_result(scope, requested),
+            else: result
+
+        _ ->
+          result
+      end
+
+    Keyword.get(opts, :after_commit, fn result, _owner -> result end).(result, :durable)
+  end
+
+  @doc """
   Rediscover and claim one ready organization head without notifications.
 
   Readiness is tested AFTER choosing the earliest of all unresolved work, so a
@@ -154,7 +364,7 @@ defmodule Renga.Inventory.ReconciliationWork do
   """
   def claim_next(opts \\ []) do
     transaction(fn ->
-      case candidate(opts[:organization_id]) do
+      case candidate(opts[:organization_id], opts[:work_id]) do
         nil -> :idle
         organization_id -> claim_locked!(organization_id, opts)
       end
@@ -179,13 +389,38 @@ defmodule Renga.Inventory.ReconciliationWork do
             id: work.observation_id
           )
 
-        require_host!(observation, source)
+        if opts[:host_only], do: require_host!(observation, source)
         scope = Accounts.scope_for(Repo.get!(Organization, work.organization_id))
 
         case operation.(scope, observation) do
-          {:progress, value} -> finish!(claim, lane, work, "pending", value)
-          {:complete, value} -> finish!(claim, lane, work, "succeeded", value)
-          {:error, reason} -> Repo.rollback(reason)
+          {:progress, value} ->
+            finish!(claim, lane, work, "pending", value)
+
+          {:complete, value} ->
+            finish!(claim, lane, work, "succeeded", value)
+
+          {:quarantine, value} ->
+            finish!(claim, lane, work, "quarantined", value)
+
+          {:error, reason} ->
+            Repo.rollback(reason)
+        end
+      end,
+      opts
+    )
+  end
+
+  @doc "Runs one complete report, including expansion and required DB effects, under its fence."
+  def execute_report(claim, opts \\ []) do
+    execute(
+      claim,
+      fn scope, observation ->
+        Inventory.materialize_observation_in_transaction!(scope, observation)
+
+        case Reconciler.reconcile_in_transaction(scope, observation) do
+          {:ok, _resources, _discovered?} = result -> {:complete, result}
+          {:error, %Renga.Inventory.ObservationReconciliation{}} = result -> {:quarantine, result}
+          {:error, reason} -> {:error, reason}
         end
       end,
       opts
@@ -202,7 +437,7 @@ defmodule Renga.Inventory.ReconciliationWork do
           {:error, reason} -> {:error, reason}
         end
       end,
-      opts
+      Keyword.put(opts, :host_only, true)
     )
   end
 
@@ -225,6 +460,12 @@ defmodule Renga.Inventory.ReconciliationWork do
           error: error,
           run_after: DateTime.add(database_now(), Keyword.get(opts, :backoff_ms, 0), :millisecond)
         ]
+
+        if opts[:record_attempt] do
+          scope = Accounts.scope_for(Repo.get!(Organization, work.organization_id))
+          observation = Repo.get!(Observation, work.observation_id)
+          Reconciler.record_failure_in_transaction(scope, observation, error)
+        end
 
         update_owned_work!(claim, changes)
         release_owned_lane!(claim, lane, 0, 0)
@@ -287,7 +528,8 @@ defmodule Renga.Inventory.ReconciliationWork do
           work.original_key_id,
           work.installation_agent_id,
           work.installation_id,
-          limits
+          limits,
+          work.origin
         )
 
       audit!(scope, next, "reconciliation_terminal_retry", %{"work_id" => work.id}, %{
@@ -331,7 +573,7 @@ defmodule Renga.Inventory.ReconciliationWork do
     do: raise(ArgumentError, "explicit max_units and max_bytes are required")
 
   defp lock_organization!(organization_id) do
-    Authorization.lock_active_organization!(organization_id)
+    Authorization.lock_active_organization!(organization_id, :no_key_update)
     Inventory.lock_organization!(organization_id)
   end
 
@@ -409,10 +651,11 @@ defmodule Renga.Inventory.ReconciliationWork do
          original_key_id,
          agent_id,
          installation_id,
-         limits
+         limits,
+         origin \\ "intake"
        ) do
     units = reserved_units(observation.payload)
-    bytes = byte_size(Jason.encode!(observation.payload))
+    bytes = reserved_bytes(observation.payload)
 
     if lane.pending_units + units > limits.max_units or
          lane.pending_bytes + bytes > limits.max_bytes,
@@ -428,6 +671,7 @@ defmodule Renga.Inventory.ReconciliationWork do
         position: lane.position + 1,
         units: units,
         bytes: bytes,
+        origin: origin,
         original_key_id: original_key_id,
         installation_agent_id: agent_id,
         installation_id: installation_id,
@@ -450,6 +694,21 @@ defmodule Renga.Inventory.ReconciliationWork do
         1 + length(Map.get(payload, "resources", [])) +
           length(AgentPayload.report_targets(payload)),
       else: 1
+  end
+
+  # Charge the actual bounded derived payload expansion before it can be written.
+  # Stage 1 materializes it in the worker's single report transaction.
+  defp reserved_bytes(payload) do
+    root = byte_size(Jason.encode!(payload))
+
+    if AgentPayload.scoped_report?(payload) do
+      Enum.reduce(AgentPayload.derived_resource_payloads(payload), root, fn {_index, child},
+                                                                            bytes ->
+        bytes + byte_size(Jason.encode!(child))
+      end)
+    else
+      root
+    end
   end
 
   defp first_work(organization_id, observation_id) do
@@ -482,7 +741,7 @@ defmodule Renga.Inventory.ReconciliationWork do
       accepted_at: work.inserted_at
     }
 
-  defp candidate(organization_id) do
+  defp candidate(organization_id, work_id) do
     # Take the head over ALL outstanding states before applying readiness.
     head =
       from work in __MODULE__,
@@ -508,6 +767,7 @@ defmodule Renga.Inventory.ReconciliationWork do
         lock: "FOR UPDATE OF o0, r1 SKIP LOCKED"
 
     query = if organization_id, do: where(query, [org], org.id == ^organization_id), else: query
+    query = if work_id, do: where(query, [org, lane, work], work.id == ^work_id), else: query
     Repo.one(query)
   end
 
@@ -658,7 +918,13 @@ defmodule Renga.Inventory.ReconciliationWork do
   end
 
   defp finish!(claim, lane, work, status, value) do
-    update_owned_work!(claim, status: status, checkpoint: work.checkpoint + 1, error: %{})
+    update_owned_work!(claim,
+      status: status,
+      quarantine_kind: if(status == "quarantined", do: "domain"),
+      checkpoint: work.checkpoint + 1,
+      error: %{}
+    )
+
     {units, bytes} = if status == "succeeded", do: {work.units, work.bytes}, else: {0, 0}
     release_owned_lane!(claim, lane, units, bytes)
     value

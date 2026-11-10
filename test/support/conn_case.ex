@@ -56,6 +56,47 @@ defmodule RengaWeb.ConnCase do
     |> then(&Oaskit.Test.valid_response(RengaWeb.ApiSpec, &1, status))
   end
 
+  @doc "Processes a domain fixture after HTTP acceptance, never inside the request."
+  def settle_observation(conn) do
+    if conn.status in [200, 202] do
+      response = valid_api_response(conn, conn.status)
+      scope = conn.assigns.current_scope
+
+      accepted =
+        Renga.Inventory.ReconciliationWork.accepted(
+          scope,
+          Renga.Inventory.get_observation!(scope, response["observation"]["id"])
+        )
+
+      if accepted.work.status == "pending" do
+        assert {:ok, _} =
+                 Renga.Inventory.ReconciliationWorker.run_once(
+                   organization_id: scope.organization_id,
+                   work_id: accepted.work.id
+                 )
+      end
+    end
+
+    conn
+  end
+
+  @doc "Returns validated acceptance plus persisted reconciliation for domain assertions, not HTTP response assertions."
+  def observation_result(conn, status) do
+    response = valid_api_response(conn, status)
+
+    [result | _] =
+      conn.assigns.current_scope
+      |> Renga.Inventory.list_observation_reconciliations(response["observation"]["id"])
+      |> Enum.reverse()
+
+    Map.put(response, "reconciliation", %{
+      "status" => result.status,
+      "matched_resource_id" => result.matched_resource_id,
+      "errors" => result.errors,
+      "resources" => result.metadata["resources"] || []
+    })
+  end
+
   # A request the API accepted must also satisfy its documented schema, or the
   # spec is stricter than the API and would mislead client authors. Tests post
   # some bodies as maps rather than JSON, so the content type is normalized.

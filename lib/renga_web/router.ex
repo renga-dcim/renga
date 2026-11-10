@@ -51,6 +51,7 @@ defmodule RengaWeb.Router do
     post "/agent/jobs/:id/claims", JobController, :claim
     post "/agent/jobs/:id/events", JobController, :create_event
     post "/observations", ObservationController, :create
+    get "/observations/receipt", ObservationController, :receipt
     post "/telemetry", TelemetryController, :create
   end
 

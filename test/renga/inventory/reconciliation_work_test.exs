@@ -67,6 +67,202 @@ defmodule Renga.Inventory.ReconciliationWorkTest do
     assert lane(context).pending_bytes == work.bytes
   end
 
+  test "live intake atomically reserves work, receipt lookup never renews, and a restarted worker drains it",
+       context do
+    params = host("live-intake")
+    source = Repo.get!(Inventory.Source, context.agent.source_id)
+    {:ok, attrs} = AgentPayload.validate_observation(params, source)
+
+    assert {:ok, {agent, lease, observation, :created}} =
+             Inventory.ingest_intake_observation(
+               context.scope,
+               context.key,
+               context.installation_id,
+               %{},
+               attrs
+             )
+
+    assert Inventory.list_resources(context.scope) == []
+
+    assert %{receipt: receipt, work: %{status: "pending"} = work} =
+             Work.accepted(context.scope, observation)
+
+    assert lane(context).pending_units == 1
+
+    {:ok, claim} = claim(context, claim_ms: 30)
+    await_expired!(context)
+    before_lane = lane(context)
+
+    assert {:ok, %{receipt: ^receipt}} =
+             Inventory.intake_observation_receipt(
+               context.scope,
+               context.key,
+               context.installation_id,
+               params["observation_id"],
+               nil
+             )
+
+    assert Repo.get!(Inventory.AgentLease, lease.id) == lease
+    assert Repo.get!(Inventory.Agent, agent.id) == agent
+    assert lane(context) == before_lane
+    assert {:error, :expired_claim} = Work.execute_host(claim)
+
+    # A supervised replacement needs no wakeup or acceptance-process state.
+    Sandbox.checkin(Repo)
+    Sandbox.mode(Repo, :auto)
+    {:ok, worker} = Renga.Inventory.ReconciliationWorker.start_link(name: nil, interval: 10)
+
+    try do
+      await_succeeded!(context, work.id)
+      assert [%{kind: "server"} = resource] = Inventory.list_resources(context.scope)
+      assert Inventory.get_host_by_resource!(context.scope, resource.id).hostname == "live-intake"
+      assert lane(context).pending_units == 0
+      assert lane(context).pending_bytes == 0
+      assert Work.receipt(context.scope, observation.id) == receipt
+    after
+      GenServer.stop(worker)
+      Sandbox.mode(Repo, :manual)
+      :ok = Sandbox.checkout(Repo, sandbox: false)
+    end
+  end
+
+  for status <- ["succeeded", "failed"] do
+    test "legacy #{status} evidence is read-only for machine and once entrypoints", context do
+      params = host("legacy-terminal")
+
+      {:ok, attrs} =
+        AgentPayload.validate_observation(
+          params,
+          Repo.get!(Inventory.Source, context.agent.source_id)
+        )
+
+      {:ok, observation} =
+        Inventory.create_observation(context.scope, context.agent.source_id, attrs)
+
+      {:ok, resource} =
+        Inventory.create_resource(context.scope, %{kind: "server", name: "Legacy host"})
+
+      now = Renga.Time.utc_now_ms()
+
+      {:ok, terminal} =
+        Inventory.create_observation_reconciliation(context.scope, observation.id, %{
+          status: unquote(status),
+          attempt: 1,
+          started_at: now,
+          completed_at: now,
+          matched_resource_id: if(unquote(status) == "succeeded", do: resource.id)
+        })
+
+      machine = Accounts.scope_for(context.scope.organization)
+      before_events = Repo.aggregate(ChangeEvent, :count)
+
+      for {scope, action} <- [
+            {machine, :reconcile_observation},
+            {machine, :reconcile_observation_once},
+            {context.scope, :reconcile_observation_once}
+          ] do
+        result = apply(Inventory, action, [scope, observation.id])
+
+        if unquote(status) == "succeeded" do
+          assert {:ok, %Inventory.Resource{id: id}, false} = result
+          assert id == resource.id
+        else
+          assert result == {:error, terminal}
+        end
+      end
+
+      assert Work.accepted(context.scope, observation) == nil
+      assert Repo.get(ReconciliationLane, context.scope.organization_id) == nil
+
+      assert Inventory.list_observation_reconciliations(context.scope, observation.id) == [
+               terminal
+             ]
+
+      assert Inventory.get_resource!(context.scope, resource.id) == resource
+      assert Repo.aggregate(ChangeEvent, :count) == before_events
+
+      assert {:ok, _, _} = Inventory.reconcile_observation(context.scope, observation.id)
+
+      assert %{work: %{origin: "maintenance", status: "succeeded"}} =
+               Work.accepted(context.scope, observation)
+
+      assert Repo.exists?(
+               from event in ChangeEvent,
+                 where:
+                   event.observation_id == ^observation.id and
+                     event.field == "reconciliation_legacy_retry"
+             )
+    end
+  end
+
+  test "maintenance and rediscovery share the execution slot, released on caller death",
+       context do
+    assert {:ok, %{work: work}} = admit(context, host("shared-slot"))
+    parent = self()
+
+    owner =
+      spawn(fn ->
+        {:ok, _permit} = Renga.IntakeCapacity.acquire(:reconciliation, 1)
+        send(parent, :slot_owned)
+
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    assert_receive :slot_owned
+    assert {:ok, :busy} = Renga.Inventory.ReconciliationWorker.run_once(wait_ms: 0)
+
+    caller =
+      concurrent(fn ->
+        Inventory.reconcile_observation_once(context.scope, work.observation_id)
+      end)
+
+    try do
+      assert Task.yield(caller, 100) == nil
+      assert lane(context).token == nil
+      assert Inventory.list_resources(context.scope) == []
+      assert Work.get(context.scope, work.id).generation == 0
+      send(owner, :stop)
+      assert {:ok, %Inventory.Resource{}, true} = Task.await(caller, 5_000)
+      assert Work.get(context.scope, work.id).status == "succeeded"
+      assert lane(context).pending_units == 0
+    after
+      send(owner, :stop)
+      if Process.alive?(caller.pid), do: Task.shutdown(caller, :brutal_kill)
+    end
+  end
+
+  test "rejected first-use intake rolls registration, leases, streams and evidence back",
+       context do
+    org = context.scope.organization_id
+
+    Repo.insert!(%Renga.Limits.OrganizationLimit{
+      organization_id: org,
+      name: "pending_work_units",
+      value: 0
+    })
+
+    installation_id = Ecto.UUID.generate()
+
+    {:ok, attrs} =
+      AgentPayload.validate_observation(host("no-room"), %Inventory.Source{kind: "host_agent"})
+
+    assert {:error, :capacity} =
+             Inventory.ingest_intake_observation(
+               context.scope,
+               context.key,
+               installation_id,
+               %{},
+               attrs
+             )
+
+    refute Repo.get_by(Inventory.Agent, organization_id: org, installation_id: installation_id)
+    assert Inventory.list_observations(context.scope) == []
+    refute Repo.get(ReconciliationLane, org)
+    assert length(Inventory.list_sources(context.scope)) == 1
+  end
+
   test "unsupported synchronous duplicates are not fabricated durable receipts", context do
     for {name, original_key} <- [{"no-key", nil}, {"same-key", context.key.id}] do
       params = host(name)
@@ -399,7 +595,7 @@ defmodule Renga.Inventory.ReconciliationWorkTest do
              )
 
     assert work.units == 6
-    assert work.bytes == byte_size(Jason.encode!(params))
+    assert work.bytes == 995
     assert lane(context).pending_units == 6
     assert Inventory.list_derived_observations(context.scope, work.observation_id) == []
     {:ok, claim} = claim(context)
@@ -1216,6 +1412,20 @@ defmodule Renga.Inventory.ReconciliationWorkTest do
       true ->
         Process.sleep(5)
         await_expired!(context, attempts - 1)
+    end
+  end
+
+  defp await_succeeded!(context, work_id, attempts \\ 500) do
+    cond do
+      Work.get(context.scope, work_id).status == "succeeded" ->
+        :ok
+
+      attempts == 0 ->
+        flunk("supervised worker did not rediscover accepted work")
+
+      true ->
+        Process.sleep(10)
+        await_succeeded!(context, work_id, attempts - 1)
     end
   end
 end

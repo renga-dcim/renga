@@ -10,6 +10,8 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
   alias Renga.Inventory.Agent
   alias Renga.Inventory.AgentPayload
   alias Renga.Inventory.Observation
+  alias Renga.Inventory.ReconciliationWork
+  alias Renga.Inventory.ReconciliationWorker
   alias Renga.Inventory.Source
   alias Renga.Repo
   alias Renga.Topology
@@ -99,7 +101,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert %{"errors" => [%{"path" => "authorization"}]} = valid_api_response(conn, 401)
     end
 
-    test "stores and reconciles accepted raw host observations", %{conn: conn} do
+    test "durably accepts raw host observations before independent reconciliation", %{conn: conn} do
       %{scope: scope, source: source, token: token} = source_fixture()
       payload = valid_observation_payload(source)
 
@@ -111,10 +113,8 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert %{
                "status" => "accepted",
                "duplicate" => false,
-               "reconciliation" => %{
-                 "status" => "succeeded",
-                 "matched_resource_id" => resource_id
-               },
+               "processing" => %{"status" => "pending"},
+               "receipt" => %{"id" => receipt_id, "position" => 1},
                "observation" => %{
                  "id" => observation_id,
                  "observation_id" => payload_observation_id,
@@ -132,7 +132,13 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert observation.idempotency_key == payload["observation_id"]
       assert Repo.get_by!(Agent, organization_id: scope.organization_id, source_id: source.id)
 
-      resource = Inventory.get_resource!(scope, resource_id)
+      assert Inventory.list_resources(scope) == []
+      assert Inventory.list_observation_reconciliations(scope, observation.id) == []
+      assert ReconciliationWork.get(scope, receipt_id).observation_id == observation.id
+
+      assert {:ok, {:ok, resource, true}} =
+               ReconciliationWorker.run_once(organization_id: scope.organization_id)
+
       assert resource.kind == "server"
       assert Inventory.get_host_by_resource!(scope, resource.id).hostname == "compute-01"
       assert [%{name: "eth0"}] = Inventory.list_interfaces(scope, resource.id)
@@ -152,15 +158,16 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
         |> post(~p"/api/v1/observations", payload)
 
       assert %{
-               "observation" => %{"id" => observation_id},
-               "reconciliation" => %{"matched_resource_id" => resource_id}
+               "observation" => %{"id" => observation_id}
              } = valid_api_response(conn, 202)
 
       observation = Repo.get!(Observation, observation_id) |> Repo.preload(:intake_api_key)
       assert observation.reported_from == %Postgrex.INET{address: {10, 20, 3, 44}, netmask: nil}
       assert observation.intake_api_key.name == "Rack B fleet"
 
-      resource = Inventory.get_resource!(scope, resource_id)
+      assert {:ok, {:ok, resource, true}} =
+               ReconciliationWorker.run_once(organization_id: scope.organization_id)
+
       assert [signal] = Renga.Inventory.ReportingSignals.for_resource(scope, resource)
       assert signal.source.id == source.id
       assert signal.reported_from == observation.reported_from
@@ -231,7 +238,11 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
         |> post(~p"/api/v1/observations", first)
         |> valid_api_response(202)
 
-      resource = Inventory.get_resource!(scope, response["reconciliation"]["matched_resource_id"])
+      assert response["processing"]["status"] == "pending"
+
+      assert {:ok, {:ok, resource, true}} =
+               ReconciliationWorker.run_once(organization_id: scope.organization_id)
+
       [interface] = Inventory.list_interfaces(scope, resource.id)
 
       assert [%{vlan_id: vlan_id}] =
@@ -262,6 +273,9 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
                |> post(~p"/api/v1/observations", partial)
                |> valid_api_response(202)
 
+      assert {:ok, {:ok, _, false}} =
+               ReconciliationWorker.run_once(organization_id: scope.organization_id)
+
       assert [_membership] =
                Topology.list_current_interface_vlan_memberships(scope, interface.id)
 
@@ -279,6 +293,9 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
                |> authorize(token)
                |> post(~p"/api/v1/observations", complete)
                |> valid_api_response(202)
+
+      assert {:ok, {:ok, _, false}} =
+               ReconciliationWorker.run_once(organization_id: scope.organization_id)
 
       assert Topology.list_current_interface_vlan_memberships(scope, interface.id) == []
     end
@@ -358,7 +375,7 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
     end
 
     test "accepts LLDP neighbor evidence through observation reconciliation" do
-      %{source: source, token: token} = source_fixture()
+      %{scope: scope, source: source, token: token} = source_fixture()
 
       payload =
         source
@@ -386,6 +403,11 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
         |> valid_api_response(202)
 
       assert response["status"] == "accepted"
+      refute Repo.exists?(InterfaceNeighborEvidence)
+
+      assert {:ok, {:ok, _, true}} =
+               ReconciliationWorker.run_once(organization_id: scope.organization_id)
+
       evidence = Repo.one!(InterfaceNeighborEvidence)
       assert evidence.protocol == "lldp"
       assert evidence.remote_system_name == "switch-01"
@@ -1270,12 +1292,12 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert %{
                "status" => "accepted",
                "duplicate" => true,
-               "reconciliation" => %{"status" => "succeeded"},
+               "processing" => %{"status" => "pending"},
                "observation" => %{"id" => ^observation_id}
              } = valid_api_response(retry_conn, 200)
     end
 
-    test "a duplicate request recovers a stored observation with no reconciliation attempt", %{
+    test "pre-ledger evidence cannot acquire a fabricated acceptance receipt", %{
       conn: conn
     } do
       %{scope: scope, source: source, token: token} = source_fixture()
@@ -1294,35 +1316,27 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
         |> authorize(token)
         |> post(~p"/api/v1/observations", payload)
 
-      assert %{
-               "duplicate" => true,
-               "reconciliation" => %{
-                 "status" => "succeeded",
-                 "matched_resource_id" => resource_id
-               }
-             } = valid_api_response(conn, 200)
-
-      assert resource_id
-
-      assert [%{status: "succeeded"}] =
-               Inventory.list_observation_reconciliations(scope, observation.id)
+      assert %{"status" => "rejected"} = valid_api_response(conn, 409)
+      assert Inventory.list_observation_reconciliations(scope, observation.id) == []
+      assert ReconciliationWork.receipt(scope, observation.id) == nil
     end
 
-    test "returns a stable failed reconciliation for a duplicate terminal result", %{conn: conn} do
+    test "replay keeps a quarantined receipt without retrying its failed attempt", %{conn: conn} do
       %{scope: scope, source: source, token: token} = source_fixture()
       payload = valid_observation_payload(source)
-      {:ok, attrs} = AgentPayload.validate_observation(payload, source)
-      {:ok, observation, :created} = Inventory.accept_observation(scope, source.id, attrs)
-      completed_at = Renga.Time.utc_now_ms()
 
-      {:ok, _result} =
-        Inventory.create_observation_reconciliation(scope, observation.id, %{
-          status: "failed",
-          attempt: 1,
-          errors: %{"processing" => "projection_failed"},
-          started_at: completed_at,
-          completed_at: completed_at
-        })
+      first =
+        conn
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", payload)
+        |> valid_api_response(202)
+
+      {:ok, claim} = ReconciliationWork.claim_next(organization_id: scope.organization_id)
+
+      assert {:ok, _} =
+               ReconciliationWork.fail(claim, :domain, %{"processing" => "projection_failed"},
+                 record_attempt: true
+               )
 
       duplicate_conn =
         conn
@@ -1332,18 +1346,16 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
       assert %{
                "status" => "accepted",
                "duplicate" => true,
-               "reconciliation" => %{
-                 "status" => "failed",
-                 "matched_resource_id" => nil,
-                 "errors" => %{"processing" => "projection_failed"}
-               },
+               "processing" => %{"status" => "quarantined"},
+               "receipt" => receipt,
                "observation" => %{"id" => observation_id}
              } = valid_api_response(duplicate_conn, 200)
 
-      assert observation_id == observation.id
+      assert observation_id == first["observation"]["id"]
+      assert receipt == first["receipt"]
 
       assert [%{attempt: 1, status: "failed"}] =
-               Inventory.list_observation_reconciliations(scope, observation.id)
+               Inventory.list_observation_reconciliations(scope, observation_id)
     end
 
     test "accepts identical reports when their idempotency keys differ", %{conn: conn} do

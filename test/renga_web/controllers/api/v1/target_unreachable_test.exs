@@ -269,7 +269,8 @@ defmodule RengaWeb.Api.V1.TargetUnreachableTest do
     |> put_req_header("authorization", "Bearer #{token}")
     |> put_req_header("x-renga-installation-id", @installation_id)
     |> post(~p"/api/v1/observations", payload)
-    |> valid_api_response(202)
+    |> settle_observation()
+    |> observation_result(202)
   end
 
   defp observed_at(opts) do

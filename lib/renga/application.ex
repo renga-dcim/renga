@@ -26,6 +26,7 @@ defmodule Renga.Application do
         {Phoenix.PubSub, name: Renga.PubSub},
         lifecycle_listener(),
         Renga.Accounts.OIDC.Discovery,
+        reconciliation_worker(),
         neighbor_expiry_worker(),
         same_machine_sweeper(),
         collector_findings_worker(),
@@ -62,6 +63,11 @@ defmodule Renga.Application do
   defp neighbor_expiry_worker do
     if Application.get_env(:renga, :neighbor_expiry_worker_enabled, true),
       do: Renga.Topology.NeighborExpiryWorker
+  end
+
+  defp reconciliation_worker do
+    if Application.get_env(:renga, :reconciliation_worker_enabled, true),
+      do: Renga.Inventory.ReconciliationWorker
   end
 
   defp same_machine_sweeper do
