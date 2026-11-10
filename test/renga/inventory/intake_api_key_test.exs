@@ -125,4 +125,41 @@ defmodule Renga.Inventory.IntakeApiKeyTest do
 
     assert %{token_hash: ["has already been taken"]} = errors_on(changeset)
   end
+
+  test "deleted key nulls only its live observation reference, never accepted evidence", %{
+    scope: scope
+  } do
+    {:ok, {key, _token}} = Inventory.create_intake_api_key(scope, %{name: "Retained evidence"})
+    {:ok, source} = Inventory.create_source(scope, %{kind: "host_agent", name: "host"})
+
+    {:ok, observation, :created} =
+      Inventory.accept_observation(scope, source.id, %{
+        idempotency_key: "key-deletion",
+        observed_at: Renga.Time.utc_now_ms(),
+        intake_api_key_id: key.id,
+        payload: %{"retained" => true}
+      })
+
+    id = Ecto.UUID.dump!(observation.id)
+
+    assert {:error, %Postgrex.Error{}} =
+             Repo.query(
+               "UPDATE observations SET intake_api_key_id = NULL WHERE id = $1",
+               [id],
+               mode: :savepoint
+             )
+
+    Repo.delete!(key)
+    retained = Repo.get!(Inventory.Observation, observation.id)
+    assert retained == %{observation | intake_api_key_id: nil}
+
+    assert {:error, %Postgrex.Error{}} =
+             Repo.query(
+               "UPDATE observations SET payload = '{}'::jsonb WHERE id = $1",
+               [id],
+               mode: :savepoint
+             )
+
+    assert Repo.get!(Inventory.Observation, observation.id) == retained
+  end
 end

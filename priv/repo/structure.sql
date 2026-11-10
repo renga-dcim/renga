@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict KUhmeZG03Ery0IXc0zBBRjvxACYdzNt5andq2VIsZyeYT5OeMbZtCLN7exdxEj0
+\restrict 8LvG0ho1WggcqgnSs04djr8SKiGAvma54FHxWgreWigurkrwa1Hpyc8vlnaIZ9k
 
 -- Dumped from database version 18.6
 -- Dumped by pg_dump version 18.6
@@ -175,8 +175,12 @@ CREATE FUNCTION public.enforce_cable_endpoints_immutable() RETURNS trigger
     AS $$
 BEGIN
   IF NEW.organization_id = OLD.organization_id AND
-     NEW.interface_a_id = OLD.interface_a_id AND
-     NEW.interface_b_id = OLD.interface_b_id THEN
+     NEW.cable_kind = OLD.cable_kind AND
+     NEW.interface_a_id IS NOT DISTINCT FROM OLD.interface_a_id AND
+     NEW.interface_b_id IS NOT DISTINCT FROM OLD.interface_b_id AND
+     NEW.power_port_id IS NOT DISTINCT FROM OLD.power_port_id AND
+     NEW.power_outlet_id IS NOT DISTINCT FROM OLD.power_outlet_id AND
+     NEW.power_feed_id IS NOT DISTINCT FROM OLD.power_feed_id THEN
     RETURN NEW;
   END IF;
 
@@ -196,7 +200,8 @@ CREATE FUNCTION public.enforce_cable_primary_assertion() RETURNS trigger
 DECLARE
   claim record;
 BEGIN
-  SELECT kind, action, interface_a_id, interface_b_id
+  SELECT kind, action, cable_kind, interface_a_id, interface_b_id,
+         power_port_id, power_outlet_id, power_feed_id
     INTO claim
     FROM cable_assertions
    WHERE id = NEW.primary_assertion_id
@@ -210,14 +215,18 @@ BEGIN
   -- The projection boundary is a database invariant, not only a
   -- reconciliation policy: a current cable must be backed by a confirmed
   -- claim for exactly these endpoints, never by a proposal, a retraction,
-  -- or a claim about different interfaces.
+  -- or a claim about different endpoints.
   IF claim.kind NOT IN ('operator', 'import') OR claim.action <> 'assert' THEN
     RAISE EXCEPTION 'cable primary assertion must be a confirmed cable claim'
       USING ERRCODE = 'integrity_constraint_violation';
   END IF;
 
-  IF claim.interface_a_id <> NEW.interface_a_id OR
-     claim.interface_b_id <> NEW.interface_b_id THEN
+  IF claim.cable_kind IS DISTINCT FROM NEW.cable_kind OR
+     claim.interface_a_id IS DISTINCT FROM NEW.interface_a_id OR
+     claim.interface_b_id IS DISTINCT FROM NEW.interface_b_id OR
+     claim.power_port_id IS DISTINCT FROM NEW.power_port_id OR
+     claim.power_outlet_id IS DISTINCT FROM NEW.power_outlet_id OR
+     claim.power_feed_id IS DISTINCT FROM NEW.power_feed_id THEN
     RAISE EXCEPTION 'cable endpoints must match its primary assertion'
       USING ERRCODE = 'integrity_constraint_violation';
   END IF;
@@ -236,13 +245,19 @@ CREATE FUNCTION public.enforce_catalog_type_revision_immutability() RETURNS trig
     AS $$
 BEGIN
   IF TG_OP = 'DELETE' THEN
-    IF NOT EXISTS (SELECT 1 FROM organizations WHERE id = OLD.organization_id) THEN
+    IF OLD.finalized_at IS NULL
+       OR NOT EXISTS (SELECT 1 FROM organizations WHERE id = OLD.organization_id) THEN
       RETURN OLD;
     END IF;
   ELSIF OLD.finalized_at IS NULL
-        AND NEW.finalized_at IS NOT NULL
-        AND (to_jsonb(NEW) - 'finalized_at') = (to_jsonb(OLD) - 'finalized_at') THEN
-    RETURN NEW;
+        AND NEW.organization_id = OLD.organization_id
+        AND NEW.hardware_type_id IS NOT DISTINCT FROM OLD.hardware_type_id
+        AND NEW.module_type_id IS NOT DISTINCT FROM OLD.module_type_id THEN
+    -- A draft may change freely; publishing changes nothing but finalized_at.
+    IF NEW.finalized_at IS NULL
+       OR (to_jsonb(NEW) - 'finalized_at') = (to_jsonb(OLD) - 'finalized_at') THEN
+      RETURN NEW;
+    END IF;
   END IF;
 
   RAISE EXCEPTION 'catalog revisions are immutable'
@@ -461,6 +476,44 @@ $$;
 
 
 --
+-- Name: guard_reconciliation_history(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.guard_reconciliation_history() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    IF EXISTS (SELECT 1 FROM organizations WHERE id = OLD.organization_id) THEN
+      RAISE EXCEPTION 'retained reconciliation history requires its organization'
+        USING ERRCODE = '23514', CONSTRAINT = 'reconciliation_history_retained';
+    END IF;
+    RETURN OLD;
+  END IF;
+
+  IF TG_TABLE_NAME = 'reconciliation_lanes' THEN
+    IF NEW.organization_id <> OLD.organization_id OR NEW.position < OLD.position
+       OR NEW.version < OLD.version
+       OR (OLD.last_turn_at IS NOT NULL AND
+           (NEW.last_turn_at IS NULL OR NEW.last_turn_at < OLD.last_turn_at)) THEN
+      RAISE EXCEPTION 'lane identity and scheduling history cannot regress'
+        USING ERRCODE = '23514', CONSTRAINT = 'reconciliation_lane_history';
+    END IF;
+  ELSE
+    IF (to_jsonb(NEW) - '{status,checkpoint,generation,run_after,quarantine_kind,error}'::text[])
+         <> (to_jsonb(OLD) - '{status,checkpoint,generation,run_after,quarantine_kind,error}'::text[])
+       OR NEW.generation < OLD.generation OR NEW.checkpoint < OLD.checkpoint
+       OR (OLD.status = 'succeeded' AND NEW IS DISTINCT FROM OLD) THEN
+      RAISE EXCEPTION 'work identity, provenance and terminal history are immutable'
+        USING ERRCODE = '23514', CONSTRAINT = 'reconciliation_work_history';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+
+--
 -- Name: occupy_cable_endpoints(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -468,6 +521,11 @@ CREATE FUNCTION public.occupy_cable_endpoints() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
+  -- Power endpoints are held by the partial unique indexes on cables.
+  IF NEW.cable_kind = 'power' THEN
+    RETURN NEW;
+  END IF;
+
   INSERT INTO cable_endpoint_terminations
     (organization_id, interface_id, cable_id)
   VALUES
@@ -499,6 +557,29 @@ $$;
 
 
 --
+-- Name: reject_imported_job_update(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.reject_imported_job_update() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF (to_jsonb(NEW) - '{resource_id,target_binding_id,requested_by_user_id}'::text[])
+       = (to_jsonb(OLD) - '{resource_id,target_binding_id,requested_by_user_id}'::text[])
+     AND (NEW.resource_id IS NULL OR NEW.resource_id = OLD.resource_id)
+     AND (NEW.target_binding_id IS NULL OR NEW.target_binding_id = OLD.target_binding_id)
+     AND (NEW.requested_by_user_id IS NULL
+          OR NEW.requested_by_user_id = OLD.requested_by_user_id) THEN
+    RETURN NEW;
+  END IF;
+
+  RAISE EXCEPTION 'imported jobs are history and cannot change'
+    USING ERRCODE = '23514', CONSTRAINT = 'jobs_imported_immutable';
+END;
+$$;
+
+
+--
 -- Name: reject_interface_vlan_mode_evidence_update(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -513,6 +594,30 @@ $$;
 
 
 --
+-- Name: reject_job_event_change(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.reject_job_event_change() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  -- Retention removes a finished job and organization teardown removes the
+  -- organization; both delete the parent row before cascading here, so a
+  -- delete that outlives its job or organization is the only one allowed.
+  IF TG_OP = 'DELETE' AND (
+    NOT EXISTS (SELECT 1 FROM organizations WHERE id = OLD.organization_id) OR
+    NOT EXISTS (SELECT 1 FROM jobs WHERE id = OLD.job_id)
+  ) THEN
+    RETURN OLD;
+  END IF;
+
+  RAISE EXCEPTION 'job events are append-only'
+    USING ERRCODE = 'integrity_constraint_violation';
+END;
+$$;
+
+
+--
 -- Name: reject_observation_update(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -520,19 +625,29 @@ CREATE FUNCTION public.reject_observation_update() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
-  IF NEW.sync_run_id IS NULL
-     AND OLD.sync_run_id IS NOT NULL
-     AND NOT EXISTS (SELECT 1 FROM sync_runs WHERE id = OLD.sync_run_id)
-     AND NEW.id IS NOT DISTINCT FROM OLD.id
-     AND NEW.organization_id IS NOT DISTINCT FROM OLD.organization_id
-     AND NEW.source_id IS NOT DISTINCT FROM OLD.source_id
-     AND NEW.idempotency_key IS NOT DISTINCT FROM OLD.idempotency_key
-     AND NEW.observed_at IS NOT DISTINCT FROM OLD.observed_at
-     AND NEW.payload_digest IS NOT DISTINCT FROM OLD.payload_digest
-     AND NEW.payload IS NOT DISTINCT FROM OLD.payload
-     AND NEW.inserted_at IS NOT DISTINCT FROM OLD.inserted_at THEN
-    RETURN NEW;
+  IF NEW.intake_api_key_id IS DISTINCT FROM OLD.intake_api_key_id THEN
+    IF NEW.intake_api_key_id IS NULL AND OLD.intake_api_key_id IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM intake_api_keys
+         WHERE id = OLD.intake_api_key_id AND organization_id = OLD.organization_id)
+       AND (to_jsonb(NEW) - 'intake_api_key_id') = (to_jsonb(OLD) - 'intake_api_key_id') THEN
+      RETURN NEW;
+    END IF;
+    RAISE EXCEPTION 'observations are immutable'
+      USING ERRCODE = 'integrity_constraint_violation';
   END IF;
+  IF NEW.sync_run_id IS NULL
+   AND OLD.sync_run_id IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sync_runs WHERE id = OLD.sync_run_id)
+   AND NEW.id IS NOT DISTINCT FROM OLD.id
+   AND NEW.organization_id IS NOT DISTINCT FROM OLD.organization_id
+   AND NEW.source_id IS NOT DISTINCT FROM OLD.source_id
+   AND NEW.idempotency_key IS NOT DISTINCT FROM OLD.idempotency_key
+   AND NEW.observed_at IS NOT DISTINCT FROM OLD.observed_at
+   AND NEW.payload_digest IS NOT DISTINCT FROM OLD.payload_digest
+   AND NEW.payload IS NOT DISTINCT FROM OLD.payload
+   AND NEW.inserted_at IS NOT DISTINCT FROM OLD.inserted_at THEN
+  RETURN NEW;
+END IF;
 
   RAISE EXCEPTION 'observations are immutable'
     USING ERRCODE = 'integrity_constraint_violation';
@@ -557,6 +672,51 @@ $$;
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
+
+--
+-- Name: account_authorizations; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.account_authorizations (
+    id uuid NOT NULL,
+    user_id uuid NOT NULL,
+    session_token_id uuid NOT NULL,
+    purpose character varying(255) NOT NULL,
+    expires_at timestamp(3) without time zone NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT account_authorizations_valid_purpose CHECK (((purpose)::text = ANY ((ARRAY['recheck'::character varying, 'bootstrap'::character varying, 'recovery'::character varying])::text[])))
+);
+
+
+--
+-- Name: account_challenges; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.account_challenges (
+    id uuid NOT NULL,
+    user_id uuid NOT NULL,
+    session_token_id uuid NOT NULL,
+    purpose character varying(255) NOT NULL,
+    code_hash bytea NOT NULL,
+    sent_to public.citext NOT NULL,
+    attempts integer DEFAULT 0 NOT NULL,
+    expires_at timestamp(3) without time zone NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL
+);
+
+
+--
+-- Name: account_security_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.account_security_events (
+    id uuid NOT NULL,
+    user_id uuid NOT NULL,
+    kind character varying(255) NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL
+);
+
 
 --
 -- Name: actual_component_evidence_matches; Type: TABLE; Schema: public; Owner: -
@@ -622,6 +782,28 @@ CREATE TABLE public.address_evidence (
 
 
 --
+-- Name: address_findings; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.address_findings (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    interface_id uuid NOT NULL,
+    kind character varying(255) NOT NULL,
+    resolution_key text NOT NULL,
+    status character varying(255) DEFAULT 'open'::character varying NOT NULL,
+    message text NOT NULL,
+    details jsonb DEFAULT '{}'::jsonb NOT NULL,
+    last_observed_at timestamp(3) without time zone NOT NULL,
+    resolved_at timestamp(3) without time zone,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT address_findings_resolution_state CHECK (((((status)::text = 'open'::text) AND (resolved_at IS NULL)) OR (((status)::text = 'resolved'::text) AND (resolved_at IS NOT NULL)))),
+    CONSTRAINT address_findings_valid_status CHECK (((status)::text = ANY ((ARRAY['open'::character varying, 'resolved'::character varying])::text[])))
+);
+
+
+--
 -- Name: addresses; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -636,6 +818,23 @@ CREATE TABLE public.addresses (
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL,
     updated_at timestamp(3) without time zone NOT NULL
+);
+
+
+--
+-- Name: addressing_plan_levels; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.addressing_plan_levels (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    family character varying(255) NOT NULL,
+    prefix_length integer NOT NULL,
+    name character varying(255) NOT NULL,
+    created_by_id uuid,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT addressing_plan_levels_valid_length CHECK (((((family)::text = 'ipv4'::text) AND ((prefix_length >= 1) AND (prefix_length <= 31))) OR (((family)::text = 'ipv6'::text) AND ((prefix_length >= 1) AND (prefix_length <= 127)))))
 );
 
 
@@ -672,6 +871,7 @@ CREATE TABLE public.agents (
     inserted_at timestamp(3) without time zone NOT NULL,
     updated_at timestamp(3) without time zone NOT NULL,
     installation_id uuid,
+    last_contacted_at timestamp without time zone,
     CONSTRAINT agents_metadata_size CHECK ((octet_length((metadata)::text) <= 16000))
 );
 
@@ -684,8 +884,8 @@ CREATE TABLE public.cable_assertions (
     id uuid NOT NULL,
     sequence bigint NOT NULL,
     organization_id uuid NOT NULL,
-    interface_a_id uuid NOT NULL,
-    interface_b_id uuid NOT NULL,
+    interface_a_id uuid,
+    interface_b_id uuid,
     kind character varying(255) NOT NULL,
     action character varying(255) NOT NULL,
     confirmation character varying(255) NOT NULL,
@@ -702,10 +902,17 @@ CREATE TABLE public.cable_assertions (
     description text,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL,
-    CONSTRAINT cable_assertions_attribution_shape CHECK ((((((kind)::text = 'operator'::text) AND (actor_user_id IS NOT NULL) AND (source_id IS NULL) AND (interface_neighbor_evidence_id IS NULL)) OR (((kind)::text = 'import'::text) AND (actor_user_id IS NULL) AND (source_id IS NOT NULL) AND (interface_neighbor_evidence_id IS NULL)) OR (((kind)::text = 'neighbor_evidence'::text) AND (actor_user_id IS NULL) AND (source_id IS NULL) AND (interface_neighbor_evidence_id IS NOT NULL))) IS TRUE)),
+    cable_kind character varying(255) DEFAULT 'data'::character varying NOT NULL,
+    power_port_id uuid,
+    power_outlet_id uuid,
+    power_feed_id uuid,
+    actor_principal_id uuid,
+    CONSTRAINT cable_assertions_attribution_shape CHECK ((((((kind)::text = 'operator'::text) AND ((actor_user_id IS NOT NULL) OR (actor_principal_id IS NOT NULL)) AND (source_id IS NULL) AND (interface_neighbor_evidence_id IS NULL)) OR (((kind)::text = 'import'::text) AND (actor_user_id IS NULL) AND (source_id IS NOT NULL) AND (interface_neighbor_evidence_id IS NULL)) OR (((kind)::text = 'neighbor_evidence'::text) AND (actor_user_id IS NULL) AND (source_id IS NULL) AND (interface_neighbor_evidence_id IS NOT NULL))) IS TRUE)),
     CONSTRAINT cable_assertions_canonical_order CHECK ((interface_a_id < interface_b_id)),
     CONSTRAINT cable_assertions_color_format CHECK (((color IS NULL) OR ((color)::text ~ '^#[0-9a-fA-F]{6}$'::text))),
     CONSTRAINT cable_assertions_confirmation_shape CHECK (((((kind)::text = 'neighbor_evidence'::text) AND ((confirmation)::text = 'proposed'::text)) OR (((kind)::text <> 'neighbor_evidence'::text) AND ((confirmation)::text = 'confirmed'::text)))),
+    CONSTRAINT cable_assertions_endpoint_shape CHECK (((((cable_kind)::text = 'data'::text) AND (interface_a_id IS NOT NULL) AND (interface_b_id IS NOT NULL) AND (power_port_id IS NULL) AND (power_outlet_id IS NULL) AND (power_feed_id IS NULL)) OR (((cable_kind)::text = 'power'::text) AND (interface_a_id IS NULL) AND (interface_b_id IS NULL) AND (power_port_id IS NOT NULL) AND (num_nonnulls(power_outlet_id, power_feed_id) = 1)))),
+    CONSTRAINT cable_assertions_evidence_is_data CHECK ((((kind)::text <> 'neighbor_evidence'::text) OR ((cable_kind)::text = 'data'::text))),
     CONSTRAINT cable_assertions_length_pair CHECK (((length_value IS NULL) = (length_unit IS NULL))),
     CONSTRAINT cable_assertions_positive_length CHECK (((length_value IS NULL) OR (length_value > (0)::numeric))),
     CONSTRAINT cable_assertions_retract_shape CHECK ((((action)::text = 'assert'::text) OR ((cable_type IS NULL) AND (status IS NULL) AND (label IS NULL) AND (color IS NULL) AND (length_value IS NULL) AND (length_unit IS NULL) AND (description IS NULL) AND (metadata = '{}'::jsonb)))),
@@ -756,6 +963,10 @@ CREATE TABLE public.cable_change_events (
     actor_user_id uuid,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL,
+    cable_kind character varying(255) DEFAULT 'data'::character varying NOT NULL,
+    power_port_id uuid,
+    power_outlet_id uuid,
+    power_feed_id uuid,
     CONSTRAINT cable_change_events_valid_action CHECK (((action)::text = ANY ((ARRAY['created'::character varying, 'updated'::character varying, 'removed'::character varying])::text[])))
 );
 
@@ -814,8 +1025,8 @@ CREATE TABLE public.cable_import_contracts (
 CREATE TABLE public.cable_plans (
     id uuid NOT NULL,
     organization_id uuid NOT NULL,
-    interface_a_id uuid NOT NULL,
-    interface_b_id uuid NOT NULL,
+    interface_a_id uuid,
+    interface_b_id uuid,
     cable_type character varying(255),
     status character varying(255) DEFAULT 'planned'::character varying NOT NULL,
     label character varying(255),
@@ -826,8 +1037,13 @@ CREATE TABLE public.cable_plans (
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL,
     updated_at timestamp(3) without time zone NOT NULL,
+    cable_kind character varying(255) DEFAULT 'data'::character varying NOT NULL,
+    power_port_id uuid,
+    power_outlet_id uuid,
+    power_feed_id uuid,
     CONSTRAINT cable_plans_canonical_order CHECK ((interface_a_id < interface_b_id)),
     CONSTRAINT cable_plans_color_format CHECK (((color IS NULL) OR ((color)::text ~ '^#[0-9a-fA-F]{6}$'::text))),
+    CONSTRAINT cable_plans_endpoint_shape CHECK (((((cable_kind)::text = 'data'::text) AND (interface_a_id IS NOT NULL) AND (interface_b_id IS NOT NULL) AND (power_port_id IS NULL) AND (power_outlet_id IS NULL) AND (power_feed_id IS NULL)) OR (((cable_kind)::text = 'power'::text) AND (interface_a_id IS NULL) AND (interface_b_id IS NULL) AND (power_port_id IS NOT NULL) AND (num_nonnulls(power_outlet_id, power_feed_id) = 1)))),
     CONSTRAINT cable_plans_length_pair CHECK (((length_value IS NULL) = (length_unit IS NULL))),
     CONSTRAINT cable_plans_positive_length CHECK (((length_value IS NULL) OR (length_value > (0)::numeric))),
     CONSTRAINT cable_plans_valid_length_unit CHECK (((length_unit IS NULL) OR ((length_unit)::text = ANY ((ARRAY['m'::character varying, 'cm'::character varying, 'ft'::character varying, 'in'::character varying])::text[])))),
@@ -842,8 +1058,8 @@ CREATE TABLE public.cable_plans (
 CREATE TABLE public.cables (
     id uuid NOT NULL,
     organization_id uuid NOT NULL,
-    interface_a_id uuid NOT NULL,
-    interface_b_id uuid NOT NULL,
+    interface_a_id uuid,
+    interface_b_id uuid,
     primary_assertion_id uuid NOT NULL,
     cable_type character varying(255),
     status character varying(255) DEFAULT 'connected'::character varying NOT NULL,
@@ -856,8 +1072,13 @@ CREATE TABLE public.cables (
     last_asserted_at timestamp(3) without time zone NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL,
     updated_at timestamp(3) without time zone NOT NULL,
+    cable_kind character varying(255) DEFAULT 'data'::character varying NOT NULL,
+    power_port_id uuid,
+    power_outlet_id uuid,
+    power_feed_id uuid,
     CONSTRAINT cables_canonical_order CHECK ((interface_a_id < interface_b_id)),
     CONSTRAINT cables_color_format CHECK (((color IS NULL) OR ((color)::text ~ '^#[0-9a-fA-F]{6}$'::text))),
+    CONSTRAINT cables_endpoint_shape CHECK (((((cable_kind)::text = 'data'::text) AND (interface_a_id IS NOT NULL) AND (interface_b_id IS NOT NULL) AND (power_port_id IS NULL) AND (power_outlet_id IS NULL) AND (power_feed_id IS NULL)) OR (((cable_kind)::text = 'power'::text) AND (interface_a_id IS NULL) AND (interface_b_id IS NULL) AND (power_port_id IS NOT NULL) AND (num_nonnulls(power_outlet_id, power_feed_id) = 1)))),
     CONSTRAINT cables_length_pair CHECK (((length_value IS NULL) = (length_unit IS NULL))),
     CONSTRAINT cables_positive_length CHECK (((length_value IS NULL) OR (length_value > (0)::numeric))),
     CONSTRAINT cables_valid_length_unit CHECK (((length_unit IS NULL) OR ((length_unit)::text = ANY ((ARRAY['m'::character varying, 'cm'::character varying, 'ft'::character varying, 'in'::character varying])::text[])))),
@@ -934,8 +1155,72 @@ CREATE TABLE public.change_requests (
     inserted_at timestamp without time zone NOT NULL,
     updated_at timestamp without time zone NOT NULL,
     CONSTRAINT change_requests_decision_state CHECK (((((status)::text = 'open'::text) AND (decided_at IS NULL)) OR (((status)::text <> 'open'::text) AND (decided_at IS NOT NULL)))),
-    CONSTRAINT change_requests_valid_kind CHECK (((kind)::text = ANY ((ARRAY['lifecycle'::character varying, 'field_override'::character varying, 'owner'::character varying])::text[]))),
+    CONSTRAINT change_requests_valid_kind CHECK (((kind)::text = ANY ((ARRAY['lifecycle'::character varying, 'field_override'::character varying, 'owner'::character varying, 'expectation'::character varying, 'adoption'::character varying])::text[]))),
     CONSTRAINT change_requests_valid_status CHECK (((status)::text = ANY ((ARRAY['open'::character varying, 'approved'::character varying, 'rejected'::character varying, 'withdrawn'::character varying])::text[])))
+);
+
+
+--
+-- Name: collector_findings; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.collector_findings (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    resource_id uuid NOT NULL,
+    agent_id uuid,
+    kind character varying(255) NOT NULL,
+    status character varying(255) DEFAULT 'open'::character varying NOT NULL,
+    message text NOT NULL,
+    details jsonb DEFAULT '{}'::jsonb NOT NULL,
+    last_observed_at timestamp(3) without time zone NOT NULL,
+    resolved_at timestamp(3) without time zone,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    target_id uuid,
+    CONSTRAINT collector_findings_valid CHECK ((((status)::text = ANY ((ARRAY['open'::character varying, 'resolved'::character varying])::text[])) AND (((status)::text = 'resolved'::text) = (resolved_at IS NOT NULL)) AND ((kind)::text = ANY ((ARRAY['installation_key_changed'::character varying, 'possible_same_machine'::character varying, 'target_unreachable'::character varying, 'vm_active_on_two_hypervisors'::character varying, 'guest_without_vm'::character varying])::text[])) AND (((kind)::text = 'target_unreachable'::text) = (target_id IS NOT NULL)) AND (((kind)::text = 'vm_active_on_two_hypervisors'::text) = (agent_id IS NULL))))
+);
+
+
+--
+-- Name: collector_target_resources; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.collector_target_resources (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    source_id uuid NOT NULL,
+    target_id uuid NOT NULL,
+    resource_id uuid NOT NULL,
+    first_reported_at timestamp(3) without time zone NOT NULL,
+    last_reported_at timestamp(3) without time zone NOT NULL,
+    withdrawn_at timestamp(3) without time zone,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    domain jsonb,
+    domain_reported_at timestamp(3) without time zone,
+    active_since timestamp(3) without time zone
+);
+
+
+--
+-- Name: collector_targets; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.collector_targets (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    source_id uuid NOT NULL,
+    key character varying(255) NOT NULL,
+    status character varying(255) NOT NULL,
+    error character varying(255),
+    last_reported_at timestamp(3) without time zone NOT NULL,
+    last_reachable_at timestamp(3) without time zone,
+    last_complete_at timestamp(3) without time zone,
+    last_observation_id uuid,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT collector_targets_status CHECK (((status)::text = ANY ((ARRAY['reachable'::character varying, 'unreachable'::character varying])::text[])))
 );
 
 
@@ -1006,6 +1291,29 @@ CREATE TABLE public.component_templates (
     required boolean DEFAULT true NOT NULL,
     attributes jsonb DEFAULT '{}'::jsonb NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL
+);
+
+
+--
+-- Name: confirmed_components; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.confirmed_components (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    hardware_assignment_id uuid NOT NULL,
+    component_template_id uuid,
+    exception_id uuid,
+    part_number character varying(255),
+    serial_number character varying(255),
+    model character varying(255),
+    note text,
+    confirmed_by_user_id uuid,
+    confirmed_at timestamp without time zone NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT confirmed_components_identifies_part CHECK ((num_nonnulls(part_number, serial_number, model) > 0)),
+    CONSTRAINT confirmed_components_one_expectation CHECK ((num_nonnulls(component_template_id, exception_id) = 1))
 );
 
 
@@ -1115,6 +1423,27 @@ CREATE TABLE public.current_placements (
 
 
 --
+-- Name: deployment_audit_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.deployment_audit_events (
+    id uuid NOT NULL,
+    operation character varying(255) NOT NULL,
+    outcome character varying(255) NOT NULL,
+    actor text NOT NULL,
+    actor_token_id uuid,
+    invocation_id character varying(255) NOT NULL,
+    target_id character varying(255),
+    organization_id uuid,
+    organization_name text,
+    changed character varying(255)[] DEFAULT ARRAY[]::character varying[] NOT NULL,
+    reason character varying(255),
+    inserted_at timestamp(3) without time zone NOT NULL,
+    actor_user_id uuid
+);
+
+
+--
 -- Name: desired_interface_vlan_assignments; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1156,10 +1485,12 @@ CREATE TABLE public.desired_module_assignments (
     organization_id uuid NOT NULL,
     module_bay_id uuid NOT NULL,
     module_type_id uuid NOT NULL,
-    confirmed_by_user_id uuid NOT NULL,
+    confirmed_by_user_id uuid,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL,
-    updated_at timestamp(3) without time zone NOT NULL
+    updated_at timestamp(3) without time zone NOT NULL,
+    confirmed_by_principal_id uuid,
+    CONSTRAINT confirmed_by_someone CHECK (((confirmed_by_user_id IS NOT NULL) OR (confirmed_by_principal_id IS NOT NULL)))
 );
 
 
@@ -1199,9 +1530,11 @@ CREATE TABLE public.expected_component_exceptions (
     kind character varying(255),
     name character varying(255),
     changes jsonb DEFAULT '{}'::jsonb NOT NULL,
-    confirmed_by_user_id uuid NOT NULL,
+    confirmed_by_user_id uuid,
     inserted_at timestamp(3) without time zone NOT NULL,
     updated_at timestamp(3) without time zone NOT NULL,
+    confirmed_by_principal_id uuid,
+    CONSTRAINT confirmed_by_someone CHECK (((confirmed_by_user_id IS NOT NULL) OR (confirmed_by_principal_id IS NOT NULL))),
     CONSTRAINT expected_component_exceptions_valid_shape CHECK (((((action)::text = 'add'::text) AND (component_template_id IS NULL) AND (kind IS NOT NULL) AND (name IS NOT NULL)) OR (((action)::text = ANY ((ARRAY['suppress'::character varying, 'alter'::character varying])::text[])) AND (component_template_id IS NOT NULL))))
 );
 
@@ -1241,7 +1574,7 @@ CREATE TABLE public.finding_workflows (
     domain character varying(255) NOT NULL,
     subject_id uuid NOT NULL,
     kind character varying(255) NOT NULL,
-    resolution_key character varying(255) DEFAULT ''::character varying NOT NULL,
+    resolution_key text DEFAULT ''::character varying NOT NULL,
     assignee_user_id uuid,
     snoozed_until timestamp without time zone,
     exception_reason text,
@@ -1251,7 +1584,7 @@ CREATE TABLE public.finding_workflows (
     inserted_at timestamp without time zone NOT NULL,
     updated_at timestamp without time zone NOT NULL,
     CONSTRAINT finding_workflows_exception_state CHECK ((((exception_reason IS NULL) AND (exception_at IS NULL) AND (exception_expires_at IS NULL)) OR ((exception_reason IS NOT NULL) AND (exception_at IS NOT NULL)))),
-    CONSTRAINT finding_workflows_valid_domain CHECK (((domain)::text = ANY ((ARRAY['component'::character varying, 'hardware_match'::character varying, 'placement'::character varying, 'topology'::character varying])::text[])))
+    CONSTRAINT finding_workflows_valid_domain CHECK (((domain)::text = ANY ((ARRAY['component'::character varying, 'hardware_match'::character varying, 'placement'::character varying, 'topology'::character varying, 'address'::character varying, 'collector'::character varying, 'power'::character varying])::text[])))
 );
 
 
@@ -1305,7 +1638,8 @@ CREATE TABLE public.hardware_types (
     description text,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL,
-    updated_at timestamp(3) without time zone NOT NULL
+    updated_at timestamp(3) without time zone NOT NULL,
+    auto_move boolean DEFAULT false NOT NULL
 );
 
 
@@ -1329,6 +1663,174 @@ CREATE TABLE public.hosts (
 
 
 --
+-- Name: identity_provider_attempts; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.identity_provider_attempts (
+    id uuid NOT NULL,
+    provider_id character varying(255) NOT NULL,
+    revision integer NOT NULL,
+    state_hash bytea NOT NULL,
+    expires_at timestamp(3) without time zone NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    purpose character varying(255) DEFAULT 'sign_in'::character varying NOT NULL,
+    user_id uuid,
+    session_token_id uuid,
+    CONSTRAINT purpose_binding CHECK (((((purpose)::text = 'sign_in'::text) AND (user_id IS NULL) AND (session_token_id IS NULL)) OR (((purpose)::text = ANY ((ARRAY['link'::character varying, 'recheck'::character varying])::text[])) AND (user_id IS NOT NULL) AND (session_token_id IS NOT NULL))))
+);
+
+
+--
+-- Name: identity_provider_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.identity_provider_events (
+    id uuid NOT NULL,
+    provider_id character varying(255) NOT NULL,
+    kind character varying(255) NOT NULL,
+    revision integer,
+    changed character varying(255)[] DEFAULT ARRAY[]::character varying[] NOT NULL,
+    actor character varying(255) NOT NULL,
+    actor_user_id uuid,
+    inserted_at timestamp(3) without time zone NOT NULL
+);
+
+
+--
+-- Name: identity_provider_revisions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.identity_provider_revisions (
+    id uuid NOT NULL,
+    provider_id character varying(255) NOT NULL,
+    number integer NOT NULL,
+    client_id character varying(255) NOT NULL,
+    client_secret_ciphertext bytea,
+    client_secret_key_id character varying(255),
+    client_secret_set_at timestamp(3) without time zone,
+    scopes character varying(255)[] DEFAULT ARRAY[]::character varying[] NOT NULL,
+    email_domains character varying(255)[] DEFAULT ARRAY[]::character varying[] NOT NULL,
+    allow_sign_up boolean DEFAULT false NOT NULL,
+    session_lifetime_seconds integer NOT NULL,
+    created_by character varying(255) NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL
+);
+
+
+--
+-- Name: identity_provider_tests; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.identity_provider_tests (
+    id uuid NOT NULL,
+    provider_id character varying(255) NOT NULL,
+    revision integer NOT NULL,
+    token_hash bytea NOT NULL,
+    state_hash bytea,
+    nonce character varying(255),
+    verifier character varying(255),
+    actor character varying(255) NOT NULL,
+    actor_user_id uuid,
+    expires_at timestamp(3) without time zone NOT NULL,
+    started_at timestamp(3) without time zone,
+    completed_at timestamp(3) without time zone,
+    inserted_at timestamp(3) without time zone NOT NULL
+);
+
+
+--
+-- Name: identity_providers; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.identity_providers (
+    id character varying(255) NOT NULL,
+    kind character varying(255) NOT NULL,
+    issuer character varying(255),
+    organization_id uuid,
+    display_name character varying(255) NOT NULL,
+    icon character varying(255),
+    hidden boolean DEFAULT false NOT NULL,
+    enabled boolean DEFAULT true NOT NULL,
+    active_revision integer,
+    pending_revision integer,
+    version bigint DEFAULT 1 NOT NULL,
+    removed_at timestamp(3) without time zone,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    enforces_mfa boolean DEFAULT false NOT NULL,
+    mfa_amr_combinations character varying(255)[] DEFAULT ARRAY[]::character varying[] NOT NULL,
+    CONSTRAINT github_never_enforces_mfa CHECK ((((kind)::text <> 'github'::text) OR (NOT enforces_mfa))),
+    CONSTRAINT kind_issuer CHECK (((((kind)::text = 'oidc'::text) AND (issuer IS NOT NULL)) OR (((kind)::text = 'github'::text) AND (issuer IS NULL))))
+);
+
+
+--
+-- Name: imported_attributions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.imported_attributions (
+    organization_id uuid NOT NULL,
+    record_type character varying(255) NOT NULL,
+    record_id uuid NOT NULL,
+    field character varying(255) NOT NULL,
+    principal_id uuid NOT NULL
+);
+
+
+--
+-- Name: imported_held_records; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.imported_held_records (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    principal_id uuid NOT NULL,
+    record_type character varying(255) NOT NULL,
+    record jsonb NOT NULL
+);
+
+
+--
+-- Name: imported_principals; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.imported_principals (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    organization_import_id uuid NOT NULL,
+    source_id uuid NOT NULL,
+    email public.citext,
+    user_id uuid,
+    linked_at timestamp(3) without time zone,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL
+);
+
+
+--
+-- Name: installation_keys; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.installation_keys (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    agent_id uuid NOT NULL,
+    algorithm character varying(255) NOT NULL,
+    public_key bytea NOT NULL,
+    fingerprint character varying(255) NOT NULL,
+    status character varying(255) DEFAULT 'pending'::character varying NOT NULL,
+    first_presented_at timestamp(3) without time zone NOT NULL,
+    last_presented_at timestamp(3) without time zone NOT NULL,
+    approved_at timestamp(3) without time zone,
+    approved_by_user_id uuid,
+    replaced_at timestamp(3) without time zone,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT installation_keys_valid CHECK ((((algorithm)::text = 'ed25519'::text) AND (octet_length(public_key) = 32) AND ((status)::text = ANY ((ARRAY['pending'::character varying, 'approved'::character varying, 'replaced'::character varying])::text[])) AND (((status)::text = 'approved'::text) = ((approved_at IS NOT NULL) AND (replaced_at IS NULL))) AND (((status)::text = 'replaced'::text) = (replaced_at IS NOT NULL))))
+);
+
+
+--
 -- Name: intake_api_keys; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1340,6 +1842,7 @@ CREATE TABLE public.intake_api_keys (
     status character varying(255) DEFAULT 'active'::character varying NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL,
     updated_at timestamp(3) without time zone NOT NULL,
+    deployment_id character varying(255),
     CONSTRAINT intake_api_keys_status CHECK (((status)::text = ANY ((ARRAY['active'::character varying, 'revoked'::character varying])::text[])))
 );
 
@@ -1461,6 +1964,47 @@ CREATE TABLE public.interface_relationships (
 
 
 --
+-- Name: interface_routing_domain_evidence; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.interface_routing_domain_evidence (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    interface_id uuid NOT NULL,
+    source_id uuid NOT NULL,
+    observation_id uuid NOT NULL,
+    source_local_key character varying(255),
+    route_distinguisher character varying(255),
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    observed_at timestamp(3) without time zone NOT NULL,
+    stale_at timestamp(3) without time zone,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT interface_routing_domain_evidence_withdrawal_inactive CHECK (((source_local_key IS NOT NULL) OR (stale_at IS NOT NULL)))
+);
+
+
+--
+-- Name: interface_routing_domains; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.interface_routing_domains (
+    interface_id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    evidence_id uuid NOT NULL,
+    source_id uuid NOT NULL,
+    source_local_key character varying(255) NOT NULL,
+    route_distinguisher character varying(255),
+    authoritative boolean NOT NULL,
+    resolution character varying(255) NOT NULL,
+    vrf_id uuid,
+    observed_at timestamp(3) without time zone NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT interface_routing_domains_valid_resolution CHECK ((((resolution)::text = ANY ((ARRAY['mapping'::character varying, 'route_distinguisher'::character varying, 'name'::character varying, 'default'::character varying, 'unmapped'::character varying])::text[])) AND (((resolution)::text <> 'unmapped'::text) OR (vrf_id IS NULL))))
+);
+
+
+--
 -- Name: interface_vlan_evidence; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1544,6 +2088,141 @@ CREATE TABLE public.inventory_items (
     updated_at timestamp(3) without time zone NOT NULL,
     promoted_module_id uuid,
     CONSTRAINT inventory_items_not_self_parent CHECK (((parent_id IS NULL) OR (parent_id <> id)))
+);
+
+
+--
+-- Name: ip_address_assignments; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.ip_address_assignments (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    ip_address_id uuid NOT NULL,
+    interface_id uuid NOT NULL,
+    assigned_by_id uuid,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL
+);
+
+
+--
+-- Name: ip_addresses; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.ip_addresses (
+    id uuid CONSTRAINT managed_addresses_id_not_null NOT NULL,
+    organization_id uuid CONSTRAINT managed_addresses_organization_id_not_null NOT NULL,
+    address inet CONSTRAINT managed_addresses_address_not_null NOT NULL,
+    description character varying(255),
+    adopted_by_id uuid,
+    inserted_at timestamp(3) without time zone CONSTRAINT managed_addresses_inserted_at_not_null NOT NULL,
+    updated_at timestamp(3) without time zone CONSTRAINT managed_addresses_updated_at_not_null NOT NULL,
+    resource_id uuid NOT NULL,
+    vrf_id uuid,
+    allocation_state character varying(255) DEFAULT 'allocated'::character varying NOT NULL,
+    management_mode character varying(255),
+    role character varying(255) DEFAULT 'ordinary'::character varying NOT NULL,
+    dns_name character varying(255),
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT ip_addresses_valid_allocation_state CHECK (((allocation_state)::text = ANY ((ARRAY['allocated'::character varying, 'reserved'::character varying])::text[]))),
+    CONSTRAINT ip_addresses_valid_management_mode CHECK (((management_mode IS NULL) OR ((management_mode)::text = ANY ((ARRAY['static'::character varying, 'dhcp'::character varying, 'slaac'::character varying])::text[])))),
+    CONSTRAINT ip_addresses_valid_role CHECK (((role)::text = ANY ((ARRAY['ordinary'::character varying, 'loopback'::character varying, 'secondary'::character varying, 'vip'::character varying, 'anycast'::character varying, 'vrrp'::character varying, 'hsrp'::character varying, 'glbp'::character varying, 'carp'::character varying])::text[])))
+);
+
+
+--
+-- Name: job_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.job_events (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    job_id uuid NOT NULL,
+    sequence integer NOT NULL,
+    attempt integer NOT NULL,
+    type character varying(255) NOT NULL,
+    actor_type character varying(255) NOT NULL,
+    actor_id uuid,
+    payload jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    report_sequence integer,
+    CONSTRAINT job_events_payload_size CHECK ((octet_length((payload)::text) <= 65536)),
+    CONSTRAINT job_events_valid_actor CHECK (((((actor_type)::text = 'system'::text) AND (actor_id IS NULL)) OR (((actor_type)::text = ANY ((ARRAY['user'::character varying, 'agent'::character varying])::text[])) AND (actor_id IS NOT NULL)))),
+    CONSTRAINT job_events_valid_position CHECK (((sequence > 0) AND (attempt >= 0))),
+    CONSTRAINT job_events_valid_report_sequence CHECK (((report_sequence IS NULL) OR ((report_sequence > 0) AND ((actor_type)::text = 'agent'::text)))),
+    CONSTRAINT job_events_valid_type CHECK (((type)::text = ANY ((ARRAY['created'::character varying, 'leased'::character varying, 'started'::character varying, 'progress'::character varying, 'output'::character varying, 'succeeded'::character varying, 'failed'::character varying, 'cancel_requested'::character varying, 'cancelled'::character varying, 'lease_lost'::character varying, 'expired'::character varying, 'uncertain'::character varying, 'resolved'::character varying])::text[])))
+);
+
+
+--
+-- Name: jobs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.jobs (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    agent_id uuid NOT NULL,
+    batch_id uuid,
+    capability character varying(255) NOT NULL,
+    capability_version integer NOT NULL,
+    risk_class character varying(255) NOT NULL,
+    retry_class character varying(255) NOT NULL,
+    parameters jsonb DEFAULT '{}'::jsonb NOT NULL,
+    requested_by_type character varying(255) NOT NULL,
+    requested_by_user_id uuid,
+    idempotency_key character varying(255),
+    state character varying(255) NOT NULL,
+    attempts integer DEFAULT 0 NOT NULL,
+    max_attempts integer NOT NULL,
+    not_after timestamp(3) without time zone NOT NULL,
+    lease_token_hash bytea,
+    leased_at timestamp(3) without time zone,
+    lease_expires_at timestamp(3) without time zone,
+    started_at timestamp(3) without time zone,
+    cancel_requested_at timestamp(3) without time zone,
+    finished_at timestamp(3) without time zone,
+    result jsonb,
+    failure_reason character varying(255),
+    output_bytes integer DEFAULT 0 NOT NULL,
+    output_limit_bytes integer NOT NULL,
+    timeout_ms integer NOT NULL,
+    last_sequence integer DEFAULT 0 NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    report_token_hash bytea,
+    resource_id uuid,
+    target_binding_id uuid,
+    target_binding_version integer,
+    offer_token_hash bytea,
+    offer_nonce character varying(255),
+    offer_expires_at timestamp(3) without time zone,
+    imported_at timestamp(3) without time zone,
+    CONSTRAINT jobs_finished_shape CHECK ((((state)::text = ANY ((ARRAY['succeeded'::character varying, 'failed'::character varying, 'cancelled'::character varying, 'expired'::character varying])::text[])) = (finished_at IS NOT NULL))),
+    CONSTRAINT jobs_lease_shape CHECK ((((state)::text = ANY ((ARRAY['leased'::character varying, 'running'::character varying])::text[])) = ((lease_token_hash IS NOT NULL) AND (leased_at IS NOT NULL) AND (lease_expires_at IS NOT NULL)))),
+    CONSTRAINT jobs_privileged_binding CHECK (((((risk_class)::text = 'observe'::text) = (target_binding_version IS NULL)) AND ((offer_token_hash IS NULL) = (offer_nonce IS NULL)) AND ((offer_token_hash IS NULL) = (offer_expires_at IS NULL)))),
+    CONSTRAINT jobs_started_shape CHECK ((((state)::text <> 'running'::text) OR (started_at IS NOT NULL))),
+    CONSTRAINT jobs_uncertain_only_imperative CHECK ((((state)::text <> 'uncertain'::text) OR ((retry_class)::text = 'imperative'::text))),
+    CONSTRAINT jobs_valid_attempts CHECK (((max_attempts >= 1) AND ((attempts >= 0) AND (attempts <= max_attempts)))),
+    CONSTRAINT jobs_valid_capability CHECK ((((capability)::text <> ''::text) AND (capability_version > 0) AND ((idempotency_key IS NULL) OR ((idempotency_key)::text <> ''::text)))),
+    CONSTRAINT jobs_valid_classes CHECK ((((risk_class)::text = ANY ((ARRAY['observe'::character varying, 'operate'::character varying, 'interactive'::character varying])::text[])) AND ((retry_class)::text = ANY ((ARRAY['idempotent'::character varying, 'convergent'::character varying, 'imperative'::character varying])::text[])))),
+    CONSTRAINT jobs_valid_limits CHECK (((timeout_ms > 0) AND (output_limit_bytes > 0) AND ((output_bytes >= 0) AND (output_bytes <= output_limit_bytes)) AND (last_sequence >= 0))),
+    CONSTRAINT jobs_valid_requester CHECK ((((requested_by_type)::text = ANY ((ARRAY['user'::character varying, 'system'::character varying])::text[])) AND (((requested_by_type)::text = 'user'::text) OR (requested_by_user_id IS NULL)))),
+    CONSTRAINT jobs_valid_state CHECK (((state)::text = ANY ((ARRAY['queued'::character varying, 'leased'::character varying, 'running'::character varying, 'succeeded'::character varying, 'failed'::character varying, 'cancelled'::character varying, 'expired'::character varying, 'uncertain'::character varying])::text[])))
+);
+
+
+--
+-- Name: local_sign_in_overrides; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.local_sign_in_overrides (
+    id uuid NOT NULL,
+    expires_at timestamp(3) without time zone NOT NULL,
+    created_by character varying(255) NOT NULL,
+    revoked_at timestamp(3) without time zone,
+    revoked_by character varying(255),
+    inserted_at timestamp(3) without time zone NOT NULL
 );
 
 
@@ -1727,7 +2406,197 @@ CREATE TABLE public.observations (
     payload jsonb NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL,
     reported_from inet,
-    intake_api_key_id uuid
+    intake_api_key_id uuid,
+    parent_observation_id uuid,
+    resource_index integer,
+    CONSTRAINT observations_derived_resource CHECK ((((parent_observation_id IS NULL) = (resource_index IS NULL)) AND ((resource_index IS NULL) OR (resource_index >= 0))))
+);
+
+
+--
+-- Name: operator_idempotency_keys; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.operator_idempotency_keys (
+    id uuid NOT NULL,
+    operator_token_id uuid NOT NULL,
+    method character varying(255) NOT NULL,
+    route character varying(255) NOT NULL,
+    key character varying(255) NOT NULL,
+    request_digest bytea NOT NULL,
+    response_status integer NOT NULL,
+    response_body jsonb NOT NULL,
+    expires_at timestamp(3) without time zone NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL
+);
+
+
+--
+-- Name: operator_invitation_deliveries; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.operator_invitation_deliveries (
+    id uuid NOT NULL,
+    invitation_id uuid NOT NULL,
+    url_ciphertext bytea NOT NULL,
+    url_key_id character varying(255) NOT NULL,
+    attempts integer DEFAULT 0 NOT NULL,
+    available_at timestamp(3) without time zone NOT NULL,
+    lease_id uuid,
+    lease_expires_at timestamp(3) without time zone,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT operator_invitation_deliveries_attempts CHECK ((attempts >= 0)),
+    CONSTRAINT operator_invitation_deliveries_lease CHECK ((((lease_id IS NULL) AND (lease_expires_at IS NULL)) OR ((lease_id IS NOT NULL) AND (lease_expires_at IS NOT NULL))))
+);
+
+
+--
+-- Name: operator_tokens; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.operator_tokens (
+    id uuid NOT NULL,
+    name public.citext NOT NULL,
+    token_hash bytea NOT NULL,
+    scopes character varying(255)[] NOT NULL,
+    allowed_sources cidr[] DEFAULT ARRAY[]::cidr[] NOT NULL,
+    expires_at timestamp(3) without time zone,
+    revoked_at timestamp(3) without time zone,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL
+);
+
+
+--
+-- Name: organization_domains; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.organization_domains (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    domain public.citext NOT NULL,
+    token character varying(255) NOT NULL,
+    verified_at timestamp without time zone,
+    checked_at timestamp without time zone,
+    inserted_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL
+);
+
+
+--
+-- Name: organization_export_chunks; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.organization_export_chunks (
+    export_id uuid NOT NULL,
+    "position" integer NOT NULL,
+    data bytea NOT NULL
+);
+
+
+--
+-- Name: organization_exports; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.organization_exports (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    requested_by_user_id uuid,
+    parts character varying(255)[] DEFAULT ARRAY[]::character varying[] NOT NULL,
+    readable_payloads character varying(255)[] DEFAULT ARRAY[]::character varying[] NOT NULL,
+    status character varying(255) NOT NULL,
+    snapshot_at timestamp(3) without time zone,
+    records bigint,
+    bytes bigint,
+    sha256 character varying(255),
+    finished_at timestamp(3) without time zone,
+    expires_at timestamp(3) without time zone,
+    revoked_at timestamp(3) without time zone,
+    revoked_by_user_id uuid,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT valid_status CHECK (((status)::text = ANY ((ARRAY['running'::character varying, 'ready'::character varying, 'failed'::character varying, 'revoked'::character varying, 'expired'::character varying])::text[])))
+);
+
+
+--
+-- Name: organization_imports; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.organization_imports (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    source_organization_id uuid NOT NULL,
+    source_slug character varying(255) NOT NULL,
+    source_name character varying(255) NOT NULL,
+    format_version integer NOT NULL,
+    renga_version character varying(255) NOT NULL,
+    snapshot_at timestamp(3) without time zone NOT NULL,
+    parts character varying(255)[] DEFAULT ARRAY[]::character varying[] NOT NULL,
+    records bigint NOT NULL,
+    sha256 character varying(255) NOT NULL,
+    source_settings jsonb DEFAULT '{}'::jsonb NOT NULL,
+    held_settings jsonb DEFAULT '{}'::jsonb NOT NULL,
+    imported_by_user_id uuid,
+    operator character varying(255),
+    inserted_at timestamp(3) without time zone NOT NULL,
+    copy boolean DEFAULT false NOT NULL
+);
+
+
+--
+-- Name: organization_invitations; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.organization_invitations (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    email public.citext NOT NULL,
+    role character varying(255) NOT NULL,
+    token_hash bytea NOT NULL,
+    expires_at timestamp without time zone NOT NULL,
+    invited_by_user_id uuid,
+    accepted_at timestamp without time zone,
+    accepted_by_user_id uuid,
+    revoked_at timestamp without time zone,
+    revoked_by_user_id uuid,
+    inserted_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL,
+    invited_by_operator text,
+    invited_by_operator_token_id uuid,
+    imported_principal_id uuid,
+    CONSTRAINT organization_invitations_role_check CHECK (((role)::text = ANY ((ARRAY['owner'::character varying, 'admin'::character varying, 'member'::character varying, 'viewer'::character varying])::text[])))
+);
+
+
+--
+-- Name: organization_lifecycle_notices; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.organization_lifecycle_notices (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    recipient character varying(255) NOT NULL,
+    organization_name character varying(255) NOT NULL,
+    operation character varying(255) NOT NULL,
+    deadline timestamp without time zone,
+    delivered_at timestamp without time zone
+);
+
+
+--
+-- Name: organization_limits; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.organization_limits (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    name character varying(255) NOT NULL,
+    value bigint NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT value_not_negative CHECK ((value >= 0))
 );
 
 
@@ -1742,6 +2611,23 @@ CREATE TABLE public.organization_memberships (
     role character varying(255) DEFAULT 'member'::character varying NOT NULL,
     status character varying(255) DEFAULT 'active'::character varying NOT NULL,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    scim_connection_id uuid
+);
+
+
+--
+-- Name: organization_security_settings; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.organization_security_settings (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    name character varying(255) NOT NULL,
+    value jsonb NOT NULL,
+    changed_by_user_id uuid,
+    changed_by character varying(255) NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL,
     updated_at timestamp(3) without time zone NOT NULL
 );
@@ -1758,7 +2644,15 @@ CREATE TABLE public.organizations (
     status character varying(255) DEFAULT 'active'::character varying NOT NULL,
     settings jsonb DEFAULT '{}'::jsonb NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL,
-    updated_at timestamp(3) without time zone NOT NULL
+    updated_at timestamp(3) without time zone NOT NULL,
+    default_accent text DEFAULT 'copper'::text NOT NULL,
+    default_power_factor numeric(4,3),
+    guest_without_vm_findings boolean DEFAULT false NOT NULL,
+    deletion_scheduled_at timestamp without time zone,
+    deletion_due_at timestamp without time zone,
+    CONSTRAINT organization_deletion_deadline CHECK ((((status)::text = ANY ((ARRAY['deletion_pending'::character varying, 'purging'::character varying])::text[])) = ((deletion_due_at IS NOT NULL) AND (deletion_scheduled_at IS NOT NULL)))),
+    CONSTRAINT organizations_default_power_factor CHECK (((default_power_factor IS NULL) OR ((default_power_factor > (0)::numeric) AND (default_power_factor <= (1)::numeric)))),
+    CONSTRAINT organizations_valid_default_accent CHECK ((default_accent = ANY (ARRAY['copper'::text, 'petrol'::text, 'cobalt'::text, 'iris'::text, 'mono'::text])))
 );
 
 
@@ -1805,6 +2699,174 @@ CREATE TABLE public.placement_findings (
 
 
 --
+-- Name: power_correlation_samples; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.power_correlation_samples (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    source_id uuid NOT NULL,
+    target character varying(255),
+    sensor character varying(255) NOT NULL,
+    boundary character varying(255) NOT NULL,
+    quantity character varying(255) NOT NULL,
+    component_kind character varying(255),
+    component_name character varying(255),
+    minute timestamp(0) without time zone NOT NULL,
+    event_at timestamp(3) without time zone NOT NULL,
+    value numeric,
+    state character varying(255),
+    CONSTRAINT power_correlation_samples_kind CHECK (((((boundary)::text = 'outlet'::text) AND ((component_kind)::text = 'power_outlet'::text) AND ((quantity)::text = ANY ((ARRAY['real_power'::character varying, 'current'::character varying, 'state'::character varying])::text[]))) OR (((boundary)::text = 'supply_input'::text) AND ((quantity)::text = ANY ((ARRAY['real_power'::character varying, 'state'::character varying])::text[]))))),
+    CONSTRAINT power_correlation_samples_value CHECK ((((quantity)::text = 'state'::text) = ((state IS NOT NULL) AND (value IS NULL))))
+);
+
+
+--
+-- Name: power_feeds; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.power_feeds (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    resource_id uuid NOT NULL,
+    site_id uuid NOT NULL,
+    panel_id uuid NOT NULL,
+    rack_id uuid,
+    name character varying(255) NOT NULL,
+    status character varying(255) DEFAULT 'active'::character varying NOT NULL,
+    supply character varying(255) NOT NULL,
+    phase character varying(255),
+    voltage numeric NOT NULL,
+    amperage numeric NOT NULL,
+    max_utilization integer DEFAULT 80 NOT NULL,
+    side character varying(255),
+    description text,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT power_feeds_electrical CHECK ((((supply)::text = ANY ((ARRAY['ac'::character varying, 'dc'::character varying])::text[])) AND ((((supply)::text = 'ac'::text) AND (phase IS NOT NULL) AND ((phase)::text = ANY ((ARRAY['single'::character varying, 'three'::character varying])::text[]))) OR (((supply)::text = 'dc'::text) AND (phase IS NULL))) AND (voltage > (0)::numeric) AND (amperage > (0)::numeric) AND ((max_utilization >= 1) AND (max_utilization <= 100)) AND ((side IS NULL) OR ((side)::text = ANY ((ARRAY['a'::character varying, 'b'::character varying])::text[]))) AND ((status)::text = ANY ((ARRAY['planned'::character varying, 'active'::character varying, 'offline'::character varying, 'decommissioning'::character varying])::text[]))))
+);
+
+
+--
+-- Name: power_findings; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.power_findings (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    resource_id uuid NOT NULL,
+    kind character varying(255) NOT NULL,
+    resolution_key character varying(255) DEFAULT ''::character varying NOT NULL,
+    status character varying(255) DEFAULT 'open'::character varying NOT NULL,
+    message text NOT NULL,
+    details jsonb DEFAULT '{}'::jsonb NOT NULL,
+    last_observed_at timestamp(3) without time zone NOT NULL,
+    resolved_at timestamp(3) without time zone,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT power_findings_valid CHECK ((((status)::text = ANY ((ARRAY['open'::character varying, 'resolved'::character varying])::text[])) AND (((status)::text = 'resolved'::text) = (resolved_at IS NOT NULL)) AND ((kind)::text = ANY ((ARRAY['not_redundant'::character varying, 'feed_near_capacity'::character varying, 'supply_failed'::character varying, 'unexpected_draw'::character varying, 'path_incomplete'::character varying, 'suggested_connection'::character varying])::text[]))))
+);
+
+
+--
+-- Name: power_outlets; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.power_outlets (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    resource_id uuid NOT NULL,
+    inlet_port_id uuid,
+    name character varying(255) NOT NULL,
+    label character varying(255),
+    connector text,
+    feed_leg character varying(255),
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    retired_at timestamp(3) without time zone,
+    CONSTRAINT power_outlets_feed_leg CHECK (((feed_leg IS NULL) OR ((feed_leg)::text = ANY ((ARRAY['a'::character varying, 'b'::character varying, 'c'::character varying])::text[]))))
+);
+
+
+--
+-- Name: power_panels; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.power_panels (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    resource_id uuid NOT NULL,
+    site_id uuid NOT NULL,
+    location_id uuid,
+    name character varying(255) NOT NULL,
+    description text,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL
+);
+
+
+--
+-- Name: power_ports; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.power_ports (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    resource_id uuid NOT NULL,
+    name character varying(255) NOT NULL,
+    label character varying(255),
+    connector text,
+    maximum_draw_w integer,
+    default_allocated_draw_w integer,
+    allocated_draw_w integer,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    retired_at timestamp(3) without time zone,
+    default_power_factor numeric(4,3),
+    power_factor numeric(4,3),
+    CONSTRAINT power_ports_draws CHECK ((((maximum_draw_w IS NULL) OR (maximum_draw_w > 0)) AND ((default_allocated_draw_w IS NULL) OR (default_allocated_draw_w > 0)) AND ((allocated_draw_w IS NULL) OR (allocated_draw_w > 0)))),
+    CONSTRAINT power_ports_power_factors CHECK ((((default_power_factor IS NULL) OR ((default_power_factor > (0)::numeric) AND (default_power_factor <= (1)::numeric))) AND ((power_factor IS NULL) OR ((power_factor > (0)::numeric) AND (power_factor <= (1)::numeric)))))
+);
+
+
+--
+-- Name: power_readings; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.power_readings (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    source_id uuid NOT NULL,
+    target character varying(255),
+    sensor character varying(255) NOT NULL,
+    boundary character varying(255) NOT NULL,
+    quantity character varying(255) NOT NULL,
+    unit character varying(255),
+    window_ms integer NOT NULL,
+    leg character varying(255),
+    component_kind character varying(255),
+    component_name character varying(255),
+    coverage character varying(255),
+    origin character varying(255) NOT NULL,
+    mapping_name character varying(255) NOT NULL,
+    mapping_version integer NOT NULL,
+    value numeric,
+    state character varying(255),
+    validity character varying(255) NOT NULL,
+    window_start timestamp(3) without time zone NOT NULL,
+    window_end timestamp(3) without time zone NOT NULL,
+    event_at timestamp(3) without time zone NOT NULL,
+    fresh_until timestamp(3) without time zone NOT NULL,
+    received_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT power_readings_value CHECK (((((validity)::text = 'valid'::text) = ((value IS NOT NULL) OR (state IS NOT NULL))) AND ((value IS NULL) OR ((quantity)::text <> 'state'::text)) AND ((state IS NULL) OR ((quantity)::text = 'state'::text)))),
+    CONSTRAINT power_readings_vocabulary CHECK ((((boundary)::text = ANY ((ARRAY['host_input'::character varying, 'supply_input'::character varying, 'supply_output'::character varying, 'outlet'::character varying, 'feed'::character varying, 'leg'::character varying])::text[])) AND ((quantity)::text = ANY ((ARRAY['real_power'::character varying, 'apparent_power'::character varying, 'current'::character varying, 'voltage'::character varying, 'power_factor'::character varying, 'state'::character varying])::text[])) AND ((validity)::text = ANY ((ARRAY['valid'::character varying, 'missing'::character varying, 'failed'::character varying, 'invalid'::character varying])::text[])) AND ((origin)::text = ANY ((ARRAY['native'::character varying, 'exporter'::character varying])::text[])) AND ((coverage IS NULL) OR ((coverage)::text = ANY ((ARRAY['complete'::character varying, 'partial'::character varying])::text[]))) AND ((leg IS NULL) OR ((leg)::text = ANY ((ARRAY['a'::character varying, 'b'::character varying, 'c'::character varying])::text[]))) AND ((component_kind IS NULL) OR ((component_kind)::text = ANY ((ARRAY['power_port'::character varying, 'power_outlet'::character varying])::text[]))) AND ((component_kind IS NULL) = (component_name IS NULL)))),
+    CONSTRAINT power_readings_window CHECK (((window_start <= window_end) AND (window_ms >= 0) AND (fresh_until > event_at)))
+);
+
+
+--
 -- Name: prefix_vlan_relationships; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1827,12 +2889,14 @@ CREATE TABLE public.prefixes (
     organization_id uuid NOT NULL,
     resource_id uuid NOT NULL,
     prefix cidr NOT NULL,
-    vrf character varying(255),
     status character varying(255) DEFAULT 'active'::character varying NOT NULL,
     description text,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL,
-    updated_at timestamp(3) without time zone NOT NULL
+    updated_at timestamp(3) without time zone NOT NULL,
+    vrf_id uuid,
+    strict boolean DEFAULT false NOT NULL,
+    CONSTRAINT prefixes_valid_status CHECK (((status)::text = ANY ((ARRAY['container'::character varying, 'active'::character varying, 'reserved'::character varying, 'deprecated'::character varying])::text[])))
 );
 
 
@@ -1878,6 +2942,52 @@ CREATE TABLE public.racks (
 
 
 --
+-- Name: reconciliation_lanes; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.reconciliation_lanes (
+    organization_id uuid NOT NULL,
+    "position" bigint DEFAULT 0 NOT NULL,
+    pending_units bigint DEFAULT 0 NOT NULL,
+    pending_bytes bigint DEFAULT 0 NOT NULL,
+    last_turn_at timestamp without time zone,
+    token uuid,
+    work_id uuid,
+    version bigint DEFAULT 0 NOT NULL,
+    expires_at timestamp without time zone,
+    CONSTRAINT reconciliation_lane_lease CHECK ((((token IS NULL) AND (work_id IS NULL) AND (expires_at IS NULL)) OR ((token IS NOT NULL) AND (work_id IS NOT NULL) AND (expires_at IS NOT NULL)))),
+    CONSTRAINT reconciliation_lane_values CHECK ((("position" >= 0) AND (pending_units >= 0) AND (pending_bytes >= 0) AND (version >= 0)))
+);
+
+
+--
+-- Name: reconciliation_work; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.reconciliation_work (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    observation_id uuid NOT NULL,
+    source_id uuid NOT NULL,
+    "position" bigint NOT NULL,
+    units bigint NOT NULL,
+    bytes bigint NOT NULL,
+    status character varying(255) DEFAULT 'pending'::character varying NOT NULL,
+    checkpoint bigint DEFAULT 0 NOT NULL,
+    generation bigint DEFAULT 0 NOT NULL,
+    original_key_id uuid NOT NULL,
+    installation_agent_id uuid NOT NULL,
+    installation_id uuid NOT NULL,
+    run_after timestamp without time zone NOT NULL,
+    quarantine_kind character varying(255),
+    error jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp without time zone NOT NULL,
+    CONSTRAINT reconciliation_work_status CHECK (((((status)::text = ANY ((ARRAY['pending'::character varying, 'succeeded'::character varying])::text[])) AND (quarantine_kind IS NULL)) OR (((status)::text = 'quarantined'::text) AND ((quarantine_kind)::text = 'domain'::text)))),
+    CONSTRAINT reconciliation_work_values CHECK ((("position" > 0) AND (units > 0) AND (bytes >= 0) AND (generation >= 0) AND (checkpoint >= 0)))
+);
+
+
+--
 -- Name: resource_conditions; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1894,6 +3004,100 @@ CREATE TABLE public.resource_conditions (
     details jsonb DEFAULT '{}'::jsonb NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL,
     updated_at timestamp(3) without time zone NOT NULL
+);
+
+
+--
+-- Name: resource_group_members; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.resource_group_members (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    group_id uuid NOT NULL,
+    resource_id uuid NOT NULL,
+    added_by_user_id uuid,
+    inserted_at timestamp without time zone NOT NULL
+);
+
+
+--
+-- Name: resource_group_memberships; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.resource_group_memberships (
+    organization_id uuid NOT NULL,
+    resource_id uuid NOT NULL,
+    view character varying(255) NOT NULL,
+    group_id uuid NOT NULL,
+    group_set_id uuid,
+    CONSTRAINT resource_group_memberships_view CHECK (((view)::text = ANY ((ARRAY['inventory'::character varying, 'trusted'::character varying])::text[])))
+);
+
+
+--
+-- Name: resource_group_sets; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.resource_group_sets (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    name character varying(255) NOT NULL,
+    description text,
+    exclusive boolean DEFAULT false NOT NULL,
+    inserted_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL
+);
+
+
+--
+-- Name: resource_group_suggestion_dismissals; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.resource_group_suggestion_dismissals (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    suggestion_id uuid NOT NULL,
+    rule_id uuid NOT NULL,
+    rule_updated_at timestamp without time zone NOT NULL,
+    inserted_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL
+);
+
+
+--
+-- Name: resource_group_suggestions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.resource_group_suggestions (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    resource_id uuid NOT NULL,
+    group_id uuid NOT NULL,
+    rule_id uuid,
+    rule_name character varying(255) NOT NULL,
+    rule_updated_at timestamp without time zone NOT NULL,
+    status character varying(255) DEFAULT 'open'::character varying NOT NULL,
+    decided_by_user_id uuid,
+    decided_at timestamp without time zone,
+    inserted_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL,
+    CONSTRAINT resource_group_suggestions_status CHECK (((status)::text = ANY ((ARRAY['open'::character varying, 'accepted'::character varying, 'dismissed'::character varying])::text[])))
+);
+
+
+--
+-- Name: resource_groups; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.resource_groups (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    group_set_id uuid,
+    name character varying(255) NOT NULL,
+    description text,
+    inserted_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL
 );
 
 
@@ -2049,6 +3253,42 @@ CREATE TABLE public.resources (
 
 
 --
+-- Name: role_assignments; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.role_assignments (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    membership_id uuid NOT NULL,
+    built_in_role character varying(255),
+    role_id uuid,
+    valid_until timestamp without time zone,
+    expired_at timestamp without time zone,
+    source character varying(255) DEFAULT 'manual'::character varying NOT NULL,
+    reason text,
+    created_by_user_id uuid,
+    inserted_at timestamp without time zone NOT NULL,
+    CONSTRAINT role_assignments_built_in_role CHECK (((built_in_role)::text = ANY ((ARRAY['owner'::character varying, 'admin'::character varying, 'member'::character varying, 'viewer'::character varying])::text[]))),
+    CONSTRAINT role_assignments_one_role CHECK ((num_nonnulls(built_in_role, role_id) = 1))
+);
+
+
+--
+-- Name: roles; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.roles (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    name character varying(255) NOT NULL,
+    description text,
+    permissions character varying(255)[] DEFAULT ARRAY[]::character varying[] NOT NULL,
+    inserted_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL
+);
+
+
+--
 -- Name: saved_views; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2073,6 +3313,92 @@ CREATE TABLE public.saved_views (
 CREATE TABLE public.schema_migrations (
     version bigint NOT NULL,
     inserted_at timestamp(0) without time zone
+);
+
+
+--
+-- Name: scim_connections; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.scim_connections (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    provider_id character varying(255) NOT NULL,
+    correlation_claim character varying(255) NOT NULL,
+    default_role character varying(255),
+    disabled_at timestamp without time zone,
+    created_by_user_id uuid,
+    inserted_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL,
+    CONSTRAINT scim_connections_default_role CHECK (((default_role)::text = ANY ((ARRAY['owner'::character varying, 'admin'::character varying, 'member'::character varying, 'viewer'::character varying])::text[])))
+);
+
+
+--
+-- Name: scim_group_members; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.scim_group_members (
+    connection_id uuid NOT NULL,
+    group_id uuid NOT NULL,
+    user_id uuid NOT NULL
+);
+
+
+--
+-- Name: scim_groups; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.scim_groups (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    connection_id uuid NOT NULL,
+    display_name character varying(255) NOT NULL,
+    external_id character varying(255),
+    inserted_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL,
+    role character varying(255),
+    CONSTRAINT scim_groups_role CHECK (((role)::text = ANY ((ARRAY['owner'::character varying, 'admin'::character varying, 'member'::character varying, 'viewer'::character varying])::text[])))
+);
+
+
+--
+-- Name: scim_tokens; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.scim_tokens (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    connection_id uuid NOT NULL,
+    name character varying(255) NOT NULL,
+    token_hash bytea NOT NULL,
+    last_used_at timestamp without time zone,
+    revoked_at timestamp without time zone,
+    created_by_user_id uuid,
+    revoked_by_user_id uuid,
+    inserted_at timestamp without time zone NOT NULL
+);
+
+
+--
+-- Name: scim_users; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.scim_users (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    connection_id uuid NOT NULL,
+    user_name public.citext NOT NULL,
+    external_id character varying(255),
+    display_name character varying(255),
+    formatted_name character varying(255),
+    given_name character varying(255),
+    family_name character varying(255),
+    email character varying(255),
+    active boolean DEFAULT true NOT NULL,
+    user_identity_id uuid,
+    inserted_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL
 );
 
 
@@ -2114,6 +3440,22 @@ CREATE TABLE public.sites (
 
 
 --
+-- Name: source_routing_domain_mappings; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.source_routing_domain_mappings (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    source_id uuid NOT NULL,
+    source_local_key character varying(255) NOT NULL,
+    vrf_id uuid,
+    created_by_id uuid,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL
+);
+
+
+--
 -- Name: source_vlan_group_mappings; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2141,7 +3483,11 @@ CREATE TABLE public.sources (
     status character varying(255) DEFAULT 'active'::character varying NOT NULL,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     inserted_at timestamp(3) without time zone NOT NULL,
-    updated_at timestamp(3) without time zone NOT NULL
+    updated_at timestamp(3) without time zone NOT NULL,
+    authoritative_routing_domains boolean DEFAULT false NOT NULL,
+    agent_id uuid,
+    collector_id character varying(255),
+    CONSTRAINT sources_collector_stream CHECK ((((collector_id IS NULL) AND (agent_id IS NULL)) OR ((collector_id IS NOT NULL) AND (agent_id IS NOT NULL) AND ((kind)::text = ANY ((ARRAY['switch_poller'::character varying, 'vm_provider'::character varying, 'power_poller'::character varying, 'bmc_power'::character varying])::text[])))))
 );
 
 
@@ -2166,6 +3512,43 @@ CREATE TABLE public.sync_runs (
 
 
 --
+-- Name: target_bindings; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.target_bindings (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    resource_id uuid NOT NULL,
+    agent_id uuid NOT NULL,
+    installation_key_id uuid NOT NULL,
+    version integer NOT NULL,
+    status character varying(255) DEFAULT 'active'::character varying NOT NULL,
+    approved_by_user_id uuid,
+    approved_at timestamp(3) without time zone NOT NULL,
+    revoked_at timestamp(3) without time zone,
+    revoked_reason character varying(255),
+    revoked_by_user_id uuid,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT target_bindings_valid CHECK (((version > 0) AND ((status)::text = ANY ((ARRAY['active'::character varying, 'revoked'::character varying])::text[])) AND (((status)::text = 'revoked'::text) = ((revoked_at IS NOT NULL) AND (revoked_reason IS NOT NULL))) AND ((revoked_reason IS NULL) OR ((revoked_reason)::text = ANY ((ARRAY['replaced'::character varying, 'revoked'::character varying, 'key_replaced'::character varying, 'imported'::character varying])::text[])))))
+);
+
+
+--
+-- Name: team_memberships; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.team_memberships (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    team_id uuid NOT NULL,
+    membership_id uuid NOT NULL,
+    added_by_user_id uuid,
+    inserted_at timestamp without time zone NOT NULL
+);
+
+
+--
 -- Name: teams; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2176,6 +3559,52 @@ CREATE TABLE public.teams (
     description text,
     inserted_at timestamp without time zone NOT NULL,
     updated_at timestamp without time zone NOT NULL
+);
+
+
+--
+-- Name: telemetry_batches; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.telemetry_batches (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    source_id uuid NOT NULL,
+    replay_id character varying(255) NOT NULL,
+    version integer NOT NULL,
+    payload_digest character varying(255) NOT NULL,
+    sample_count integer NOT NULL,
+    received_at timestamp(3) without time zone NOT NULL
+);
+
+
+--
+-- Name: telemetry_buckets; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.telemetry_buckets (
+    organization_id uuid NOT NULL,
+    series character varying(255) NOT NULL,
+    bucket_start timestamp(0) without time zone NOT NULL,
+    count integer NOT NULL,
+    sum double precision NOT NULL,
+    minimum double precision NOT NULL,
+    maximum double precision NOT NULL,
+    last_value double precision NOT NULL,
+    last_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT telemetry_buckets_aligned CHECK ((mod((EXTRACT(epoch FROM bucket_start))::bigint, (300)::bigint) = 0)),
+    CONSTRAINT telemetry_buckets_count CHECK ((count > 0))
+);
+
+
+--
+-- Name: telemetry_marks; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.telemetry_marks (
+    organization_id uuid NOT NULL,
+    name character varying(255) NOT NULL,
+    recorded_at timestamp(0) without time zone NOT NULL
 );
 
 
@@ -2239,7 +3668,73 @@ CREATE TABLE public.triage_rules (
     created_by_user_id uuid,
     inserted_at timestamp without time zone NOT NULL,
     updated_at timestamp without time zone NOT NULL,
-    CONSTRAINT triage_rules_valid_shape CHECK (((((kind)::text = 'network_location'::text) AND (site_id IS NOT NULL) AND (team_id IS NULL) AND (hostname_pattern IS NULL) AND (label_key IS NULL) AND (label_value IS NULL) AND ((subnet IS NOT NULL) <> (intake_api_key_id IS NOT NULL))) OR (((kind)::text = 'top_of_rack'::text) AND (site_id IS NULL) AND (location_id IS NULL) AND (team_id IS NULL) AND (subnet IS NULL) AND (intake_api_key_id IS NULL) AND (hostname_pattern IS NULL) AND (label_key IS NULL) AND (label_value IS NULL)) OR (((kind)::text = 'ownership'::text) AND (team_id IS NOT NULL) AND (site_id IS NULL) AND (location_id IS NULL) AND (subnet IS NULL) AND (intake_api_key_id IS NULL) AND ((hostname_pattern IS NOT NULL) <> (label_key IS NOT NULL)) AND ((label_key IS NULL) = (label_value IS NULL)))))
+    resource_group_id uuid,
+    CONSTRAINT triage_rules_valid_shape CHECK (((((kind)::text <> 'group'::text) AND (resource_group_id IS NULL) AND ((((kind)::text = 'network_location'::text) AND (site_id IS NOT NULL) AND (team_id IS NULL) AND (hostname_pattern IS NULL) AND (label_key IS NULL) AND (label_value IS NULL) AND ((subnet IS NOT NULL) <> (intake_api_key_id IS NOT NULL))) OR (((kind)::text = 'top_of_rack'::text) AND (site_id IS NULL) AND (location_id IS NULL) AND (team_id IS NULL) AND (subnet IS NULL) AND (intake_api_key_id IS NULL) AND (hostname_pattern IS NULL) AND (label_key IS NULL) AND (label_value IS NULL)) OR (((kind)::text = 'ownership'::text) AND (team_id IS NOT NULL) AND (site_id IS NULL) AND (location_id IS NULL) AND (subnet IS NULL) AND (intake_api_key_id IS NULL) AND ((hostname_pattern IS NOT NULL) <> (label_key IS NOT NULL)) AND ((label_key IS NULL) = (label_value IS NULL))))) OR (((kind)::text = 'group'::text) AND (resource_group_id IS NOT NULL) AND (team_id IS NULL) AND (site_id IS NULL) AND (location_id IS NULL) AND (subnet IS NULL) AND (intake_api_key_id IS NULL) AND ((hostname_pattern IS NOT NULL) <> (label_key IS NOT NULL)) AND ((label_key IS NULL) = (label_value IS NULL)))))
+);
+
+
+--
+-- Name: user_identities; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.user_identities (
+    id uuid NOT NULL,
+    user_id uuid NOT NULL,
+    provider_id character varying(255) NOT NULL,
+    subject character varying(255) NOT NULL,
+    email character varying(255),
+    last_signed_in_at timestamp(3) without time zone,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    email_verified boolean DEFAULT false NOT NULL
+);
+
+
+--
+-- Name: user_passkeys; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.user_passkeys (
+    id uuid NOT NULL,
+    user_id uuid NOT NULL,
+    credential_id bytea NOT NULL,
+    public_key bytea NOT NULL,
+    sign_count bigint DEFAULT 0 NOT NULL,
+    transports character varying(255)[] DEFAULT ARRAY[]::character varying[] NOT NULL,
+    backup_eligible boolean DEFAULT false NOT NULL,
+    backed_up boolean DEFAULT false NOT NULL,
+    name character varying(255) NOT NULL,
+    last_used_at timestamp(3) without time zone,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL
+);
+
+
+--
+-- Name: user_recovery_codes; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.user_recovery_codes (
+    id uuid NOT NULL,
+    user_id uuid NOT NULL,
+    code_hash bytea NOT NULL,
+    used_at timestamp(3) without time zone,
+    inserted_at timestamp(3) without time zone NOT NULL
+);
+
+
+--
+-- Name: user_totps; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.user_totps (
+    id uuid NOT NULL,
+    user_id uuid NOT NULL,
+    secret_ciphertext bytea NOT NULL,
+    secret_key_id character varying(255) NOT NULL,
+    last_used_step bigint,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL
 );
 
 
@@ -2249,11 +3744,17 @@ CREATE TABLE public.triage_rules (
 
 CREATE TABLE public.users (
     id uuid NOT NULL,
-    email public.citext NOT NULL,
+    email public.citext,
     hashed_password character varying(255),
     confirmed_at timestamp(3) without time zone,
     inserted_at timestamp(3) without time zone NOT NULL,
-    updated_at timestamp(3) without time zone NOT NULL
+    updated_at timestamp(3) without time zone NOT NULL,
+    theme text DEFAULT 'system'::text NOT NULL,
+    accent text,
+    density text DEFAULT 'comfortable'::text NOT NULL,
+    CONSTRAINT users_valid_accent CHECK (((accent IS NULL) OR (accent = ANY (ARRAY['copper'::text, 'petrol'::text, 'cobalt'::text, 'iris'::text, 'mono'::text])))),
+    CONSTRAINT users_valid_density CHECK ((density = ANY (ARRAY['comfortable'::text, 'compact'::text]))),
+    CONSTRAINT users_valid_theme CHECK ((theme = ANY (ARRAY['system'::text, 'light'::text, 'dark'::text])))
 );
 
 
@@ -2268,7 +3769,14 @@ CREATE TABLE public.users_tokens (
     context character varying(255) NOT NULL,
     sent_to character varying(255),
     authenticated_at timestamp(3) without time zone,
-    inserted_at timestamp(3) without time zone NOT NULL
+    inserted_at timestamp(3) without time zone NOT NULL,
+    browser_session_id uuid,
+    expires_at timestamp(3) without time zone,
+    second_factor_at timestamp(3) without time zone,
+    provider_id character varying(255),
+    provider_organization_id uuid,
+    provider_amr character varying(255)[],
+    scoped_organization_id uuid
 );
 
 
@@ -2331,6 +3839,39 @@ CREATE TABLE public.vlans (
 
 
 --
+-- Name: vrfs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.vrfs (
+    id uuid NOT NULL,
+    organization_id uuid NOT NULL,
+    resource_id uuid NOT NULL,
+    name character varying(255) NOT NULL,
+    route_distinguisher character varying(255),
+    status character varying(255) DEFAULT 'active'::character varying NOT NULL,
+    description text,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL,
+    updated_at timestamp(3) without time zone NOT NULL,
+    CONSTRAINT vrfs_valid_status CHECK (((status)::text = ANY ((ARRAY['active'::character varying, 'deprecated'::character varying])::text[])))
+);
+
+
+--
+-- Name: webauthn_challenges; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.webauthn_challenges (
+    id uuid NOT NULL,
+    bytes bytea NOT NULL,
+    purpose character varying(255) NOT NULL,
+    user_id uuid,
+    expires_at timestamp(3) without time zone NOT NULL,
+    inserted_at timestamp(3) without time zone NOT NULL
+);
+
+
+--
 -- Name: cable_assertions sequence; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -2349,6 +3890,30 @@ ALTER TABLE ONLY public.cable_change_events ALTER COLUMN sequence SET DEFAULT ne
 --
 
 ALTER TABLE ONLY public.module_installation_events ALTER COLUMN sequence SET DEFAULT nextval('public.module_installation_events_sequence_seq'::regclass);
+
+
+--
+-- Name: account_authorizations account_authorizations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.account_authorizations
+    ADD CONSTRAINT account_authorizations_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: account_challenges account_challenges_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.account_challenges
+    ADD CONSTRAINT account_challenges_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: account_security_events account_security_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.account_security_events
+    ADD CONSTRAINT account_security_events_pkey PRIMARY KEY (id);
 
 
 --
@@ -2376,11 +3941,27 @@ ALTER TABLE ONLY public.address_evidence
 
 
 --
+-- Name: address_findings address_findings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.address_findings
+    ADD CONSTRAINT address_findings_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: addresses addresses_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.addresses
     ADD CONSTRAINT addresses_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: addressing_plan_levels addressing_plan_levels_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.addressing_plan_levels
+    ADD CONSTRAINT addressing_plan_levels_pkey PRIMARY KEY (id);
 
 
 --
@@ -2472,6 +4053,30 @@ ALTER TABLE ONLY public.change_requests
 
 
 --
+-- Name: collector_findings collector_findings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.collector_findings
+    ADD CONSTRAINT collector_findings_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: collector_target_resources collector_target_resources_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.collector_target_resources
+    ADD CONSTRAINT collector_target_resources_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: collector_targets collector_targets_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.collector_targets
+    ADD CONSTRAINT collector_targets_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: component_evidence component_evidence_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2493,6 +4098,14 @@ ALTER TABLE ONLY public.component_findings
 
 ALTER TABLE ONLY public.component_templates
     ADD CONSTRAINT component_templates_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: confirmed_components confirmed_components_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.confirmed_components
+    ADD CONSTRAINT confirmed_components_pkey PRIMARY KEY (id);
 
 
 --
@@ -2541,6 +4154,14 @@ ALTER TABLE ONLY public.current_module_installations
 
 ALTER TABLE ONLY public.current_placements
     ADD CONSTRAINT current_placements_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: deployment_audit_events deployment_audit_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.deployment_audit_events
+    ADD CONSTRAINT deployment_audit_events_pkey PRIMARY KEY (id);
 
 
 --
@@ -2632,6 +4253,78 @@ ALTER TABLE ONLY public.hosts
 
 
 --
+-- Name: identity_provider_attempts identity_provider_attempts_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.identity_provider_attempts
+    ADD CONSTRAINT identity_provider_attempts_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: identity_provider_events identity_provider_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.identity_provider_events
+    ADD CONSTRAINT identity_provider_events_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: identity_provider_revisions identity_provider_revisions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.identity_provider_revisions
+    ADD CONSTRAINT identity_provider_revisions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: identity_provider_tests identity_provider_tests_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.identity_provider_tests
+    ADD CONSTRAINT identity_provider_tests_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: identity_providers identity_providers_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.identity_providers
+    ADD CONSTRAINT identity_providers_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: imported_attributions imported_attributions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.imported_attributions
+    ADD CONSTRAINT imported_attributions_pkey PRIMARY KEY (record_type, record_id, field);
+
+
+--
+-- Name: imported_held_records imported_held_records_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.imported_held_records
+    ADD CONSTRAINT imported_held_records_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: imported_principals imported_principals_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.imported_principals
+    ADD CONSTRAINT imported_principals_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: installation_keys installation_keys_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.installation_keys
+    ADD CONSTRAINT installation_keys_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: intake_api_keys intake_api_keys_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2680,6 +4373,22 @@ ALTER TABLE ONLY public.interface_relationships
 
 
 --
+-- Name: interface_routing_domain_evidence interface_routing_domain_evidence_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_routing_domain_evidence
+    ADD CONSTRAINT interface_routing_domain_evidence_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: interface_routing_domains interface_routing_domains_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_routing_domains
+    ADD CONSTRAINT interface_routing_domains_pkey PRIMARY KEY (interface_id);
+
+
+--
 -- Name: interface_vlan_evidence interface_vlan_evidence_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2709,6 +4418,46 @@ ALTER TABLE ONLY public.interfaces
 
 ALTER TABLE ONLY public.inventory_items
     ADD CONSTRAINT inventory_items_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: ip_address_assignments ip_address_assignments_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.ip_address_assignments
+    ADD CONSTRAINT ip_address_assignments_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: ip_addresses ip_addresses_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.ip_addresses
+    ADD CONSTRAINT ip_addresses_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: job_events job_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.job_events
+    ADD CONSTRAINT job_events_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: jobs jobs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.jobs
+    ADD CONSTRAINT jobs_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: local_sign_in_overrides local_sign_in_overrides_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.local_sign_in_overrides
+    ADD CONSTRAINT local_sign_in_overrides_pkey PRIMARY KEY (id);
 
 
 --
@@ -2784,11 +4533,99 @@ ALTER TABLE ONLY public.observations
 
 
 --
+-- Name: operator_idempotency_keys operator_idempotency_keys_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.operator_idempotency_keys
+    ADD CONSTRAINT operator_idempotency_keys_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: operator_invitation_deliveries operator_invitation_deliveries_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.operator_invitation_deliveries
+    ADD CONSTRAINT operator_invitation_deliveries_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: operator_tokens operator_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.operator_tokens
+    ADD CONSTRAINT operator_tokens_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: organization_domains organization_domains_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_domains
+    ADD CONSTRAINT organization_domains_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: organization_export_chunks organization_export_chunks_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_export_chunks
+    ADD CONSTRAINT organization_export_chunks_pkey PRIMARY KEY (export_id, "position");
+
+
+--
+-- Name: organization_exports organization_exports_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_exports
+    ADD CONSTRAINT organization_exports_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: organization_imports organization_imports_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_imports
+    ADD CONSTRAINT organization_imports_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: organization_invitations organization_invitations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_invitations
+    ADD CONSTRAINT organization_invitations_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: organization_lifecycle_notices organization_lifecycle_notices_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_lifecycle_notices
+    ADD CONSTRAINT organization_lifecycle_notices_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: organization_limits organization_limits_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_limits
+    ADD CONSTRAINT organization_limits_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: organization_memberships organization_memberships_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.organization_memberships
     ADD CONSTRAINT organization_memberships_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: organization_security_settings organization_security_settings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_security_settings
+    ADD CONSTRAINT organization_security_settings_pkey PRIMARY KEY (id);
 
 
 --
@@ -2813,6 +4650,62 @@ ALTER TABLE ONLY public.placement_evidence
 
 ALTER TABLE ONLY public.placement_findings
     ADD CONSTRAINT placement_findings_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: power_correlation_samples power_correlation_samples_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.power_correlation_samples
+    ADD CONSTRAINT power_correlation_samples_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: power_feeds power_feeds_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.power_feeds
+    ADD CONSTRAINT power_feeds_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: power_findings power_findings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.power_findings
+    ADD CONSTRAINT power_findings_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: power_outlets power_outlets_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.power_outlets
+    ADD CONSTRAINT power_outlets_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: power_panels power_panels_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.power_panels
+    ADD CONSTRAINT power_panels_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: power_ports power_ports_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.power_ports
+    ADD CONSTRAINT power_ports_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: power_readings power_readings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.power_readings
+    ADD CONSTRAINT power_readings_pkey PRIMARY KEY (id);
 
 
 --
@@ -2856,11 +4749,75 @@ ALTER TABLE ONLY public.racks
 
 
 --
+-- Name: reconciliation_lanes reconciliation_lanes_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.reconciliation_lanes
+    ADD CONSTRAINT reconciliation_lanes_pkey PRIMARY KEY (organization_id);
+
+
+--
+-- Name: reconciliation_work reconciliation_work_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.reconciliation_work
+    ADD CONSTRAINT reconciliation_work_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: resource_conditions resource_conditions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.resource_conditions
     ADD CONSTRAINT resource_conditions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: resource_group_members resource_group_members_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.resource_group_members
+    ADD CONSTRAINT resource_group_members_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: resource_group_memberships resource_group_memberships_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.resource_group_memberships
+    ADD CONSTRAINT resource_group_memberships_pkey PRIMARY KEY (organization_id, resource_id, view, group_id);
+
+
+--
+-- Name: resource_group_sets resource_group_sets_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.resource_group_sets
+    ADD CONSTRAINT resource_group_sets_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: resource_group_suggestion_dismissals resource_group_suggestion_dismissals_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.resource_group_suggestion_dismissals
+    ADD CONSTRAINT resource_group_suggestion_dismissals_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: resource_group_suggestions resource_group_suggestions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.resource_group_suggestions
+    ADD CONSTRAINT resource_group_suggestions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: resource_groups resource_groups_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.resource_groups
+    ADD CONSTRAINT resource_groups_pkey PRIMARY KEY (id);
 
 
 --
@@ -2920,6 +4877,22 @@ ALTER TABLE ONLY public.resources
 
 
 --
+-- Name: role_assignments role_assignments_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.role_assignments
+    ADD CONSTRAINT role_assignments_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: roles roles_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.roles
+    ADD CONSTRAINT roles_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: saved_views saved_views_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2936,6 +4909,46 @@ ALTER TABLE ONLY public.schema_migrations
 
 
 --
+-- Name: scim_connections scim_connections_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scim_connections
+    ADD CONSTRAINT scim_connections_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: scim_group_members scim_group_members_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scim_group_members
+    ADD CONSTRAINT scim_group_members_pkey PRIMARY KEY (group_id, user_id);
+
+
+--
+-- Name: scim_groups scim_groups_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scim_groups
+    ADD CONSTRAINT scim_groups_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: scim_tokens scim_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scim_tokens
+    ADD CONSTRAINT scim_tokens_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: scim_users scim_users_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scim_users
+    ADD CONSTRAINT scim_users_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: site_groups site_groups_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2949,6 +4962,14 @@ ALTER TABLE ONLY public.site_groups
 
 ALTER TABLE ONLY public.sites
     ADD CONSTRAINT sites_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: source_routing_domain_mappings source_routing_domain_mappings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.source_routing_domain_mappings
+    ADD CONSTRAINT source_routing_domain_mappings_pkey PRIMARY KEY (id);
 
 
 --
@@ -2976,11 +4997,51 @@ ALTER TABLE ONLY public.sync_runs
 
 
 --
+-- Name: target_bindings target_bindings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.target_bindings
+    ADD CONSTRAINT target_bindings_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: team_memberships team_memberships_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.team_memberships
+    ADD CONSTRAINT team_memberships_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: teams teams_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.teams
     ADD CONSTRAINT teams_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: telemetry_batches telemetry_batches_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.telemetry_batches
+    ADD CONSTRAINT telemetry_batches_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: telemetry_buckets telemetry_buckets_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.telemetry_buckets
+    ADD CONSTRAINT telemetry_buckets_pkey PRIMARY KEY (organization_id, series, bucket_start);
+
+
+--
+-- Name: telemetry_marks telemetry_marks_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.telemetry_marks
+    ADD CONSTRAINT telemetry_marks_pkey PRIMARY KEY (organization_id, name);
 
 
 --
@@ -3005,6 +5066,38 @@ ALTER TABLE ONLY public.topology_snapshot_events
 
 ALTER TABLE ONLY public.triage_rules
     ADD CONSTRAINT triage_rules_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: user_identities user_identities_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_identities
+    ADD CONSTRAINT user_identities_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: user_passkeys user_passkeys_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_passkeys
+    ADD CONSTRAINT user_passkeys_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: user_recovery_codes user_recovery_codes_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_recovery_codes
+    ADD CONSTRAINT user_recovery_codes_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: user_totps user_totps_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_totps
+    ADD CONSTRAINT user_totps_pkey PRIMARY KEY (id);
 
 
 --
@@ -3056,6 +5149,57 @@ ALTER TABLE ONLY public.vlans
 
 
 --
+-- Name: vrfs vrfs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.vrfs
+    ADD CONSTRAINT vrfs_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: webauthn_challenges webauthn_challenges_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.webauthn_challenges
+    ADD CONSTRAINT webauthn_challenges_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: account_authorizations_session_token_id_purpose_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX account_authorizations_session_token_id_purpose_index ON public.account_authorizations USING btree (session_token_id, purpose);
+
+
+--
+-- Name: account_authorizations_user_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX account_authorizations_user_id_index ON public.account_authorizations USING btree (user_id);
+
+
+--
+-- Name: account_challenges_session_token_id_purpose_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX account_challenges_session_token_id_purpose_index ON public.account_challenges USING btree (session_token_id, purpose);
+
+
+--
+-- Name: account_challenges_user_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX account_challenges_user_id_index ON public.account_challenges USING btree (user_id);
+
+
+--
+-- Name: account_security_events_user_id_kind_inserted_at_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX account_security_events_user_id_kind_inserted_at_index ON public.account_security_events USING btree (user_id, kind, inserted_at);
+
+
+--
 -- Name: actual_component_evidence_matches_component_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3101,7 +5245,7 @@ CREATE UNIQUE INDEX actual_components_serial_identity_index ON public.actual_com
 -- Name: address_evidence_observation_link_index; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX address_evidence_observation_link_index ON public.address_evidence USING btree (organization_id, observation_id, address_id);
+CREATE UNIQUE INDEX address_evidence_observation_link_index ON public.address_evidence USING btree (organization_id, observation_id, address_id, address);
 
 
 --
@@ -3112,6 +5256,27 @@ CREATE INDEX address_evidence_organization_id_source_id_address_id_index ON publ
 
 
 --
+-- Name: address_findings_open_resolution_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX address_findings_open_resolution_index ON public.address_findings USING btree (organization_id, interface_id, kind, resolution_key) WHERE ((status)::text = 'open'::text);
+
+
+--
+-- Name: address_findings_organization_id_interface_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX address_findings_organization_id_interface_id_index ON public.address_findings USING btree (organization_id, interface_id);
+
+
+--
+-- Name: address_findings_organization_id_status_kind_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX address_findings_organization_id_status_kind_index ON public.address_findings USING btree (organization_id, status, kind);
+
+
+--
 -- Name: addresses_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3119,10 +5284,10 @@ CREATE UNIQUE INDEX addresses_id_organization_id_index ON public.addresses USING
 
 
 --
--- Name: addresses_organization_id_interface_id_address_index; Type: INDEX; Schema: public; Owner: -
+-- Name: addresses_interface_host_index; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX addresses_organization_id_interface_id_address_index ON public.addresses USING btree (organization_id, interface_id, address);
+CREATE UNIQUE INDEX addresses_interface_host_index ON public.addresses USING btree (organization_id, interface_id, ((host(address))::inet));
 
 
 --
@@ -3137,6 +5302,13 @@ CREATE INDEX addresses_organization_id_interface_id_index ON public.addresses US
 --
 
 CREATE INDEX addresses_organization_id_resource_id_index ON public.addresses USING btree (organization_id, resource_id);
+
+
+--
+-- Name: addressing_plan_levels_family_length_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX addressing_plan_levels_family_length_index ON public.addressing_plan_levels USING btree (organization_id, family, prefix_length);
 
 
 --
@@ -3210,6 +5382,13 @@ CREATE INDEX cable_assertions_kind_index ON public.cable_assertions USING btree 
 
 
 --
+-- Name: cable_assertions_organization_id_power_port_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX cable_assertions_organization_id_power_port_id_index ON public.cable_assertions USING btree (organization_id, power_port_id) WHERE (power_port_id IS NOT NULL);
+
+
+--
 -- Name: cable_change_events_cable_sequence_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3266,6 +5445,20 @@ CREATE UNIQUE INDEX cable_plans_id_organization_id_index ON public.cable_plans U
 
 
 --
+-- Name: cable_plans_power_feed_pair_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX cable_plans_power_feed_pair_index ON public.cable_plans USING btree (organization_id, power_port_id, power_feed_id) WHERE (power_feed_id IS NOT NULL);
+
+
+--
+-- Name: cable_plans_power_outlet_pair_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX cable_plans_power_outlet_pair_index ON public.cable_plans USING btree (organization_id, power_port_id, power_outlet_id) WHERE (power_outlet_id IS NOT NULL);
+
+
+--
 -- Name: cables_a_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3291,6 +5484,27 @@ CREATE UNIQUE INDEX cables_endpoints_index ON public.cables USING btree (organiz
 --
 
 CREATE UNIQUE INDEX cables_id_organization_id_index ON public.cables USING btree (id, organization_id);
+
+
+--
+-- Name: cables_power_feed_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX cables_power_feed_index ON public.cables USING btree (organization_id, power_feed_id) WHERE (power_feed_id IS NOT NULL);
+
+
+--
+-- Name: cables_power_outlet_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX cables_power_outlet_index ON public.cables USING btree (organization_id, power_outlet_id) WHERE (power_outlet_id IS NOT NULL);
+
+
+--
+-- Name: cables_power_port_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX cables_power_port_index ON public.cables USING btree (organization_id, power_port_id) WHERE (power_port_id IS NOT NULL);
 
 
 --
@@ -3326,6 +5540,20 @@ CREATE UNIQUE INDEX catalog_type_revisions_module_assignment_index ON public.cat
 --
 
 CREATE UNIQUE INDEX catalog_type_revisions_module_revision_index ON public.catalog_type_revisions USING btree (organization_id, module_type_id, revision) WHERE (module_type_id IS NOT NULL);
+
+
+--
+-- Name: catalog_type_revisions_one_hardware_draft_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX catalog_type_revisions_one_hardware_draft_index ON public.catalog_type_revisions USING btree (organization_id, hardware_type_id) WHERE ((hardware_type_id IS NOT NULL) AND (finalized_at IS NULL));
+
+
+--
+-- Name: catalog_type_revisions_one_module_draft_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX catalog_type_revisions_one_module_draft_index ON public.catalog_type_revisions USING btree (organization_id, module_type_id) WHERE ((module_type_id IS NOT NULL) AND (finalized_at IS NULL));
 
 
 --
@@ -3392,6 +5620,62 @@ CREATE INDEX change_requests_organization_id_status_inserted_at_index ON public.
 
 
 --
+-- Name: collector_findings_open_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX collector_findings_open_index ON public.collector_findings USING btree (organization_id, resource_id, agent_id, kind, target_id) NULLS NOT DISTINCT WHERE ((status)::text = 'open'::text);
+
+
+--
+-- Name: collector_findings_organization_id_agent_id_status_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX collector_findings_organization_id_agent_id_status_index ON public.collector_findings USING btree (organization_id, agent_id, status);
+
+
+--
+-- Name: collector_findings_organization_id_status_kind_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX collector_findings_organization_id_status_kind_index ON public.collector_findings USING btree (organization_id, status, kind);
+
+
+--
+-- Name: collector_target_resources_organization_id_resource_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX collector_target_resources_organization_id_resource_id_index ON public.collector_target_resources USING btree (organization_id, resource_id);
+
+
+--
+-- Name: collector_target_resources_organization_id_target_id_resource_i; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX collector_target_resources_organization_id_target_id_resource_i ON public.collector_target_resources USING btree (organization_id, target_id, resource_id);
+
+
+--
+-- Name: collector_targets_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX collector_targets_id_organization_id_index ON public.collector_targets USING btree (id, organization_id);
+
+
+--
+-- Name: collector_targets_id_organization_id_source_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX collector_targets_id_organization_id_source_id_index ON public.collector_targets USING btree (id, organization_id, source_id);
+
+
+--
+-- Name: collector_targets_organization_id_source_id_key_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX collector_targets_organization_id_source_id_key_index ON public.collector_targets USING btree (organization_id, source_id, key);
+
+
+--
 -- Name: component_evidence_actual_component_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3452,6 +5736,20 @@ CREATE UNIQUE INDEX component_templates_identity_index ON public.component_templ
 --
 
 CREATE INDEX component_templates_organization_id_kind_index ON public.component_templates USING btree (organization_id, kind);
+
+
+--
+-- Name: confirmed_components_exception_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX confirmed_components_exception_index ON public.confirmed_components USING btree (hardware_assignment_id, exception_id) WHERE (exception_id IS NOT NULL);
+
+
+--
+-- Name: confirmed_components_template_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX confirmed_components_template_index ON public.confirmed_components USING btree (hardware_assignment_id, component_template_id) WHERE (component_template_id IS NOT NULL);
 
 
 --
@@ -3543,6 +5841,20 @@ CREATE UNIQUE INDEX current_placements_id_organization_id_index ON public.curren
 --
 
 CREATE UNIQUE INDEX current_placements_organization_id_resource_id_index ON public.current_placements USING btree (organization_id, resource_id);
+
+
+--
+-- Name: deployment_audit_events_inserted_at_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX deployment_audit_events_inserted_at_index ON public.deployment_audit_events USING btree (inserted_at);
+
+
+--
+-- Name: deployment_audit_events_organization_id_inserted_at_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX deployment_audit_events_organization_id_inserted_at_index ON public.deployment_audit_events USING btree (organization_id, inserted_at);
 
 
 --
@@ -3735,6 +6047,111 @@ CREATE UNIQUE INDEX hosts_organization_id_resource_id_index ON public.hosts USIN
 
 
 --
+-- Name: identity_provider_attempts_expires_at_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX identity_provider_attempts_expires_at_index ON public.identity_provider_attempts USING btree (expires_at);
+
+
+--
+-- Name: identity_provider_attempts_state_hash_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX identity_provider_attempts_state_hash_index ON public.identity_provider_attempts USING btree (state_hash);
+
+
+--
+-- Name: identity_provider_events_provider_id_inserted_at_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX identity_provider_events_provider_id_inserted_at_index ON public.identity_provider_events USING btree (provider_id, inserted_at);
+
+
+--
+-- Name: identity_provider_revisions_provider_id_number_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX identity_provider_revisions_provider_id_number_index ON public.identity_provider_revisions USING btree (provider_id, number);
+
+
+--
+-- Name: identity_provider_tests_provider_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX identity_provider_tests_provider_id_index ON public.identity_provider_tests USING btree (provider_id);
+
+
+--
+-- Name: identity_provider_tests_state_hash_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX identity_provider_tests_state_hash_index ON public.identity_provider_tests USING btree (state_hash);
+
+
+--
+-- Name: identity_provider_tests_token_hash_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX identity_provider_tests_token_hash_index ON public.identity_provider_tests USING btree (token_hash);
+
+
+--
+-- Name: identity_providers_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX identity_providers_organization_id_index ON public.identity_providers USING btree (organization_id);
+
+
+--
+-- Name: imported_attributions_principal_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX imported_attributions_principal_id_index ON public.imported_attributions USING btree (principal_id);
+
+
+--
+-- Name: imported_held_records_principal_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX imported_held_records_principal_id_index ON public.imported_held_records USING btree (principal_id);
+
+
+--
+-- Name: imported_principals_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX imported_principals_id_organization_id_index ON public.imported_principals USING btree (id, organization_id);
+
+
+--
+-- Name: imported_principals_organization_id_source_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX imported_principals_organization_id_source_id_index ON public.imported_principals USING btree (organization_id, source_id);
+
+
+--
+-- Name: installation_keys_current_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX installation_keys_current_index ON public.installation_keys USING btree (organization_id, agent_id) WHERE ((status)::text = ANY ((ARRAY['pending'::character varying, 'approved'::character varying])::text[]));
+
+
+--
+-- Name: installation_keys_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX installation_keys_id_organization_id_index ON public.installation_keys USING btree (id, organization_id);
+
+
+--
+-- Name: installation_keys_organization_id_agent_id_inserted_at_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX installation_keys_organization_id_agent_id_inserted_at_index ON public.installation_keys USING btree (organization_id, agent_id, inserted_at);
+
+
+--
 -- Name: intake_api_keys_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3875,6 +6292,27 @@ CREATE UNIQUE INDEX interface_relationships_source_target_kind_index ON public.i
 
 
 --
+-- Name: interface_routing_domain_evidence_active_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX interface_routing_domain_evidence_active_index ON public.interface_routing_domain_evidence USING btree (organization_id, interface_id) WHERE (stale_at IS NULL);
+
+
+--
+-- Name: interface_routing_domain_evidence_observation_link_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX interface_routing_domain_evidence_observation_link_index ON public.interface_routing_domain_evidence USING btree (organization_id, observation_id, interface_id);
+
+
+--
+-- Name: interface_routing_domains_organization_id_resolution_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX interface_routing_domains_organization_id_resolution_index ON public.interface_routing_domains USING btree (organization_id, resolution);
+
+
+--
 -- Name: interface_vlan_evidence_active_interface_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4005,6 +6443,132 @@ CREATE INDEX inventory_items_owner_parent_index ON public.inventory_items USING 
 --
 
 CREATE UNIQUE INDEX inventory_items_promoted_module_index ON public.inventory_items USING btree (organization_id, promoted_module_id) WHERE (promoted_module_id IS NOT NULL);
+
+
+--
+-- Name: ip_address_assignments_address_interface_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX ip_address_assignments_address_interface_index ON public.ip_address_assignments USING btree (ip_address_id, interface_id);
+
+
+--
+-- Name: ip_address_assignments_organization_id_interface_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX ip_address_assignments_organization_id_interface_id_index ON public.ip_address_assignments USING btree (organization_id, interface_id);
+
+
+--
+-- Name: ip_addresses_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX ip_addresses_id_organization_id_index ON public.ip_addresses USING btree (id, organization_id);
+
+
+--
+-- Name: ip_addresses_namespace_host_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX ip_addresses_namespace_host_index ON public.ip_addresses USING btree (organization_id, vrf_id, ((host(address))::inet)) NULLS NOT DISTINCT;
+
+
+--
+-- Name: ip_addresses_organization_id_resource_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX ip_addresses_organization_id_resource_id_index ON public.ip_addresses USING btree (organization_id, resource_id);
+
+
+--
+-- Name: job_events_job_id_sequence_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX job_events_job_id_sequence_index ON public.job_events USING btree (job_id, sequence);
+
+
+--
+-- Name: job_events_organization_id_inserted_at_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX job_events_organization_id_inserted_at_index ON public.job_events USING btree (organization_id, inserted_at);
+
+
+--
+-- Name: job_events_report_sequence_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX job_events_report_sequence_index ON public.job_events USING btree (job_id, attempt, report_sequence) WHERE (report_sequence IS NOT NULL);
+
+
+--
+-- Name: jobs_active_lease_expiry_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX jobs_active_lease_expiry_index ON public.jobs USING btree (lease_expires_at) WHERE ((state)::text = ANY ((ARRAY['leased'::character varying, 'running'::character varying])::text[]));
+
+
+--
+-- Name: jobs_finished_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX jobs_finished_index ON public.jobs USING btree (organization_id, finished_at) WHERE (finished_at IS NOT NULL);
+
+
+--
+-- Name: jobs_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX jobs_id_organization_id_index ON public.jobs USING btree (id, organization_id);
+
+
+--
+-- Name: jobs_organization_id_batch_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX jobs_organization_id_batch_id_index ON public.jobs USING btree (organization_id, batch_id) WHERE (batch_id IS NOT NULL);
+
+
+--
+-- Name: jobs_organization_id_inserted_at_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX jobs_organization_id_inserted_at_index ON public.jobs USING btree (organization_id, inserted_at);
+
+
+--
+-- Name: jobs_organization_idempotency_key_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX jobs_organization_idempotency_key_index ON public.jobs USING btree (organization_id, idempotency_key) WHERE (idempotency_key IS NOT NULL);
+
+
+--
+-- Name: jobs_queued_agent_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX jobs_queued_agent_index ON public.jobs USING btree (organization_id, agent_id, inserted_at) WHERE ((state)::text = 'queued'::text);
+
+
+--
+-- Name: jobs_queued_deadline_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX jobs_queued_deadline_index ON public.jobs USING btree (not_after) WHERE ((state)::text = 'queued'::text);
+
+
+--
+-- Name: jobs_resource_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX jobs_resource_index ON public.jobs USING btree (organization_id, resource_id, inserted_at) WHERE (resource_id IS NOT NULL);
+
+
+--
+-- Name: local_sign_in_overrides_expires_at_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX local_sign_in_overrides_expires_at_index ON public.local_sign_in_overrides USING btree (expires_at);
 
 
 --
@@ -4211,6 +6775,132 @@ CREATE INDEX observations_organization_id_sync_run_id_index ON public.observatio
 
 
 --
+-- Name: observations_parent_resource_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX observations_parent_resource_index ON public.observations USING btree (parent_observation_id, resource_index) WHERE (parent_observation_id IS NOT NULL);
+
+
+--
+-- Name: operator_idempotency_keys_expires_at_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX operator_idempotency_keys_expires_at_index ON public.operator_idempotency_keys USING btree (expires_at);
+
+
+--
+-- Name: operator_idempotency_keys_namespace_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX operator_idempotency_keys_namespace_index ON public.operator_idempotency_keys USING btree (operator_token_id, method, route, key);
+
+
+--
+-- Name: operator_invitation_deliveries_available_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX operator_invitation_deliveries_available_index ON public.operator_invitation_deliveries USING btree (available_at, lease_expires_at);
+
+
+--
+-- Name: operator_invitation_deliveries_invitation_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX operator_invitation_deliveries_invitation_id_index ON public.operator_invitation_deliveries USING btree (invitation_id);
+
+
+--
+-- Name: operator_tokens_name_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX operator_tokens_name_index ON public.operator_tokens USING btree (name);
+
+
+--
+-- Name: operator_tokens_token_hash_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX operator_tokens_token_hash_index ON public.operator_tokens USING btree (token_hash);
+
+
+--
+-- Name: organization_domains_one_verified_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX organization_domains_one_verified_index ON public.organization_domains USING btree (domain) WHERE (verified_at IS NOT NULL);
+
+
+--
+-- Name: organization_domains_organization_id_domain_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX organization_domains_organization_id_domain_index ON public.organization_domains USING btree (organization_id, domain);
+
+
+--
+-- Name: organization_exports_one_running; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX organization_exports_one_running ON public.organization_exports USING btree (organization_id) WHERE ((status)::text = 'running'::text);
+
+
+--
+-- Name: organization_exports_organization_id_inserted_at_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX organization_exports_organization_id_inserted_at_index ON public.organization_exports USING btree (organization_id, inserted_at);
+
+
+--
+-- Name: organization_exports_status_expires_at_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX organization_exports_status_expires_at_index ON public.organization_exports USING btree (status, expires_at);
+
+
+--
+-- Name: organization_imports_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX organization_imports_organization_id_index ON public.organization_imports USING btree (organization_id);
+
+
+--
+-- Name: organization_invitations_imported_principal_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX organization_invitations_imported_principal_id_index ON public.organization_invitations USING btree (imported_principal_id);
+
+
+--
+-- Name: organization_invitations_open_email_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX organization_invitations_open_email_index ON public.organization_invitations USING btree (organization_id, email) WHERE ((accepted_at IS NULL) AND (revoked_at IS NULL));
+
+
+--
+-- Name: organization_invitations_token_hash_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX organization_invitations_token_hash_index ON public.organization_invitations USING btree (token_hash);
+
+
+--
+-- Name: organization_limits_organization_id_name_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX organization_limits_organization_id_name_index ON public.organization_limits USING btree (organization_id, name);
+
+
+--
+-- Name: organization_memberships_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX organization_memberships_id_organization_id_index ON public.organization_memberships USING btree (id, organization_id);
+
+
+--
 -- Name: organization_memberships_organization_id_status_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4225,10 +6915,31 @@ CREATE UNIQUE INDEX organization_memberships_organization_id_user_id_index ON pu
 
 
 --
+-- Name: organization_memberships_scim_connection_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX organization_memberships_scim_connection_id_index ON public.organization_memberships USING btree (scim_connection_id) WHERE (scim_connection_id IS NOT NULL);
+
+
+--
 -- Name: organization_memberships_user_id_index; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX organization_memberships_user_id_index ON public.organization_memberships USING btree (user_id);
+
+
+--
+-- Name: organization_security_settings_changed_by_user_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX organization_security_settings_changed_by_user_id_index ON public.organization_security_settings USING btree (changed_by_user_id);
+
+
+--
+-- Name: organization_security_settings_organization_id_name_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX organization_security_settings_organization_id_name_index ON public.organization_security_settings USING btree (organization_id, name);
 
 
 --
@@ -4274,6 +6985,139 @@ CREATE INDEX placement_findings_organization_id_status_kind_index ON public.plac
 
 
 --
+-- Name: power_correlation_samples_organization_id_source_id_target_minu; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX power_correlation_samples_organization_id_source_id_target_minu ON public.power_correlation_samples USING btree (organization_id, source_id, target, minute);
+
+
+--
+-- Name: power_correlation_samples_series_minute_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX power_correlation_samples_series_minute_index ON public.power_correlation_samples USING btree (source_id, target, sensor, boundary, quantity, minute) NULLS NOT DISTINCT;
+
+
+--
+-- Name: power_feeds_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX power_feeds_id_organization_id_index ON public.power_feeds USING btree (id, organization_id);
+
+
+--
+-- Name: power_feeds_organization_id_panel_id_name_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX power_feeds_organization_id_panel_id_name_index ON public.power_feeds USING btree (organization_id, panel_id, name);
+
+
+--
+-- Name: power_feeds_organization_id_rack_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX power_feeds_organization_id_rack_id_index ON public.power_feeds USING btree (organization_id, rack_id) WHERE (rack_id IS NOT NULL);
+
+
+--
+-- Name: power_feeds_organization_id_resource_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX power_feeds_organization_id_resource_id_index ON public.power_feeds USING btree (organization_id, resource_id);
+
+
+--
+-- Name: power_findings_open_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX power_findings_open_index ON public.power_findings USING btree (organization_id, resource_id, kind, resolution_key) WHERE ((status)::text = 'open'::text);
+
+
+--
+-- Name: power_findings_organization_id_status_kind_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX power_findings_organization_id_status_kind_index ON public.power_findings USING btree (organization_id, status, kind);
+
+
+--
+-- Name: power_outlets_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX power_outlets_id_organization_id_index ON public.power_outlets USING btree (id, organization_id);
+
+
+--
+-- Name: power_outlets_organization_id_resource_id_name_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX power_outlets_organization_id_resource_id_name_index ON public.power_outlets USING btree (organization_id, resource_id, name);
+
+
+--
+-- Name: power_panels_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX power_panels_id_organization_id_index ON public.power_panels USING btree (id, organization_id);
+
+
+--
+-- Name: power_panels_id_organization_id_site_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX power_panels_id_organization_id_site_id_index ON public.power_panels USING btree (id, organization_id, site_id);
+
+
+--
+-- Name: power_panels_organization_id_resource_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX power_panels_organization_id_resource_id_index ON public.power_panels USING btree (organization_id, resource_id);
+
+
+--
+-- Name: power_panels_organization_id_site_id_name_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX power_panels_organization_id_site_id_name_index ON public.power_panels USING btree (organization_id, site_id, name);
+
+
+--
+-- Name: power_ports_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX power_ports_id_organization_id_index ON public.power_ports USING btree (id, organization_id);
+
+
+--
+-- Name: power_ports_id_organization_id_resource_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX power_ports_id_organization_id_resource_id_index ON public.power_ports USING btree (id, organization_id, resource_id);
+
+
+--
+-- Name: power_ports_organization_id_resource_id_name_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX power_ports_organization_id_resource_id_name_index ON public.power_ports USING btree (organization_id, resource_id, name);
+
+
+--
+-- Name: power_readings_organization_id_source_id_target_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX power_readings_organization_id_source_id_target_index ON public.power_readings USING btree (organization_id, source_id, target);
+
+
+--
+-- Name: power_readings_series_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX power_readings_series_index ON public.power_readings USING btree (source_id, target, sensor, boundary, quantity, window_ms) NULLS NOT DISTINCT;
+
+
+--
 -- Name: prefix_vlan_relationships_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4306,6 +7150,13 @@ CREATE UNIQUE INDEX prefixes_id_organization_id_index ON public.prefixes USING b
 --
 
 CREATE UNIQUE INDEX prefixes_organization_id_resource_id_index ON public.prefixes USING btree (organization_id, resource_id);
+
+
+--
+-- Name: prefixes_organization_vrf_prefix_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX prefixes_organization_vrf_prefix_index ON public.prefixes USING btree (organization_id, vrf_id, prefix) NULLS NOT DISTINCT;
 
 
 --
@@ -4358,6 +7209,55 @@ CREATE INDEX racks_organization_id_site_id_location_id_index ON public.racks USI
 
 
 --
+-- Name: reconciliation_lanes_last_turn_at_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX reconciliation_lanes_last_turn_at_organization_id_index ON public.reconciliation_lanes USING btree (last_turn_at, organization_id);
+
+
+--
+-- Name: reconciliation_lanes_work_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX reconciliation_lanes_work_id_organization_id_index ON public.reconciliation_lanes USING btree (work_id, organization_id);
+
+
+--
+-- Name: reconciliation_work_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX reconciliation_work_id_organization_id_index ON public.reconciliation_work USING btree (id, organization_id);
+
+
+--
+-- Name: reconciliation_work_observation_id_organization_id_source_id_in; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX reconciliation_work_observation_id_organization_id_source_id_in ON public.reconciliation_work USING btree (observation_id, organization_id, source_id);
+
+
+--
+-- Name: reconciliation_work_organization_id_observation_id_position_ind; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX reconciliation_work_organization_id_observation_id_position_ind ON public.reconciliation_work USING btree (organization_id, observation_id, "position");
+
+
+--
+-- Name: reconciliation_work_organization_id_position_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX reconciliation_work_organization_id_position_index ON public.reconciliation_work USING btree (organization_id, "position");
+
+
+--
+-- Name: reconciliation_work_outstanding; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX reconciliation_work_outstanding ON public.reconciliation_work USING btree (organization_id, "position") WHERE ((status)::text <> 'succeeded'::text);
+
+
+--
 -- Name: resource_conditions_organization_id_resource_id_type_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4369,6 +7269,104 @@ CREATE UNIQUE INDEX resource_conditions_organization_id_resource_id_type_index O
 --
 
 CREATE INDEX resource_conditions_organization_id_type_status_index ON public.resource_conditions USING btree (organization_id, type, status);
+
+
+--
+-- Name: resource_group_members_group_id_resource_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX resource_group_members_group_id_resource_id_index ON public.resource_group_members USING btree (group_id, resource_id);
+
+
+--
+-- Name: resource_group_members_organization_id_resource_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX resource_group_members_organization_id_resource_id_index ON public.resource_group_members USING btree (organization_id, resource_id);
+
+
+--
+-- Name: resource_group_memberships_exclusive_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX resource_group_memberships_exclusive_index ON public.resource_group_memberships USING btree (organization_id, resource_id, view, group_set_id) WHERE (group_set_id IS NOT NULL);
+
+
+--
+-- Name: resource_group_memberships_group_id_view_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX resource_group_memberships_group_id_view_index ON public.resource_group_memberships USING btree (group_id, view);
+
+
+--
+-- Name: resource_group_sets_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX resource_group_sets_id_organization_id_index ON public.resource_group_sets USING btree (id, organization_id);
+
+
+--
+-- Name: resource_group_sets_organization_name_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX resource_group_sets_organization_name_index ON public.resource_group_sets USING btree (organization_id, lower((name)::text));
+
+
+--
+-- Name: resource_group_suggestion_dismissals_organization_id_rule_id_in; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX resource_group_suggestion_dismissals_organization_id_rule_id_in ON public.resource_group_suggestion_dismissals USING btree (organization_id, rule_id);
+
+
+--
+-- Name: resource_group_suggestion_dismissals_suggestion_id_rule_id_inde; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX resource_group_suggestion_dismissals_suggestion_id_rule_id_inde ON public.resource_group_suggestion_dismissals USING btree (suggestion_id, rule_id);
+
+
+--
+-- Name: resource_group_suggestions_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX resource_group_suggestions_id_organization_id_index ON public.resource_group_suggestions USING btree (id, organization_id);
+
+
+--
+-- Name: resource_group_suggestions_organization_id_resource_id_group_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX resource_group_suggestions_organization_id_resource_id_group_id ON public.resource_group_suggestions USING btree (organization_id, resource_id, group_id);
+
+
+--
+-- Name: resource_group_suggestions_organization_id_status_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX resource_group_suggestions_organization_id_status_index ON public.resource_group_suggestions USING btree (organization_id, status);
+
+
+--
+-- Name: resource_groups_group_set_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX resource_groups_group_set_id_index ON public.resource_groups USING btree (group_set_id);
+
+
+--
+-- Name: resource_groups_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX resource_groups_id_organization_id_index ON public.resource_groups USING btree (id, organization_id);
+
+
+--
+-- Name: resource_groups_organization_name_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX resource_groups_organization_name_index ON public.resource_groups USING btree (organization_id, lower((name)::text));
 
 
 --
@@ -4575,6 +7573,41 @@ CREATE INDEX resources_organization_id_resource_version_index ON public.resource
 
 
 --
+-- Name: role_assignments_organization_id_membership_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX role_assignments_organization_id_membership_id_index ON public.role_assignments USING btree (organization_id, membership_id);
+
+
+--
+-- Name: role_assignments_role_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX role_assignments_role_id_index ON public.role_assignments USING btree (role_id);
+
+
+--
+-- Name: role_assignments_valid_until_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX role_assignments_valid_until_index ON public.role_assignments USING btree (valid_until) WHERE ((valid_until IS NOT NULL) AND (expired_at IS NULL));
+
+
+--
+-- Name: roles_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX roles_id_organization_id_index ON public.roles USING btree (id, organization_id);
+
+
+--
+-- Name: roles_organization_name_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX roles_organization_name_index ON public.roles USING btree (organization_id, lower((name)::text));
+
+
+--
 -- Name: saved_views_organization_id_area_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4600,6 +7633,97 @@ CREATE UNIQUE INDEX saved_views_organization_name_index ON public.saved_views US
 --
 
 CREATE UNIQUE INDEX saved_views_personal_name_index ON public.saved_views USING btree (organization_id, user_id, area, lower((name)::text)) WHERE (user_id IS NOT NULL);
+
+
+--
+-- Name: scim_connections_one_enabled; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX scim_connections_one_enabled ON public.scim_connections USING btree (organization_id) WHERE (disabled_at IS NULL);
+
+
+--
+-- Name: scim_connections_organization_id_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX scim_connections_organization_id_id_index ON public.scim_connections USING btree (organization_id, id);
+
+
+--
+-- Name: scim_connections_provider_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX scim_connections_provider_id_index ON public.scim_connections USING btree (provider_id);
+
+
+--
+-- Name: scim_group_members_user_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX scim_group_members_user_id_index ON public.scim_group_members USING btree (user_id);
+
+
+--
+-- Name: scim_groups_connection_id_display_name_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX scim_groups_connection_id_display_name_index ON public.scim_groups USING btree (connection_id, lower((display_name)::text));
+
+
+--
+-- Name: scim_groups_connection_id_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX scim_groups_connection_id_id_index ON public.scim_groups USING btree (connection_id, id);
+
+
+--
+-- Name: scim_tokens_connection_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX scim_tokens_connection_id_index ON public.scim_tokens USING btree (connection_id) WHERE (revoked_at IS NULL);
+
+
+--
+-- Name: scim_tokens_token_hash_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX scim_tokens_token_hash_index ON public.scim_tokens USING btree (token_hash);
+
+
+--
+-- Name: scim_users_connection_id_external_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX scim_users_connection_id_external_id_index ON public.scim_users USING btree (connection_id, external_id) WHERE (external_id IS NOT NULL);
+
+
+--
+-- Name: scim_users_connection_id_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX scim_users_connection_id_id_index ON public.scim_users USING btree (connection_id, id);
+
+
+--
+-- Name: scim_users_connection_id_user_name_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX scim_users_connection_id_user_name_index ON public.scim_users USING btree (connection_id, user_name);
+
+
+--
+-- Name: scim_users_organization_id_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX scim_users_organization_id_id_index ON public.scim_users USING btree (organization_id, id);
+
+
+--
+-- Name: scim_users_user_identity_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX scim_users_user_identity_id_index ON public.scim_users USING btree (user_identity_id);
 
 
 --
@@ -4652,6 +7776,13 @@ CREATE UNIQUE INDEX sites_organization_id_slug_index ON public.sites USING btree
 
 
 --
+-- Name: source_routing_domain_mappings_source_key_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX source_routing_domain_mappings_source_key_index ON public.source_routing_domain_mappings USING btree (organization_id, source_id, lower((source_local_key)::text));
+
+
+--
 -- Name: source_vlan_group_mappings_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4663,6 +7794,13 @@ CREATE UNIQUE INDEX source_vlan_group_mappings_id_organization_id_index ON publi
 --
 
 CREATE UNIQUE INDEX source_vlan_group_mappings_source_scope_index ON public.source_vlan_group_mappings USING btree (organization_id, source_id, source_local_scope);
+
+
+--
+-- Name: sources_agent_collector_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX sources_agent_collector_index ON public.sources USING btree (organization_id, agent_id, collector_id) WHERE (collector_id IS NOT NULL);
 
 
 --
@@ -4729,6 +7867,55 @@ CREATE INDEX sync_runs_organization_id_status_index ON public.sync_runs USING bt
 
 
 --
+-- Name: target_bindings_active_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX target_bindings_active_index ON public.target_bindings USING btree (organization_id, resource_id) WHERE ((status)::text = 'active'::text);
+
+
+--
+-- Name: target_bindings_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX target_bindings_id_organization_id_index ON public.target_bindings USING btree (id, organization_id);
+
+
+--
+-- Name: target_bindings_organization_id_agent_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX target_bindings_organization_id_agent_id_index ON public.target_bindings USING btree (organization_id, agent_id);
+
+
+--
+-- Name: target_bindings_organization_id_installation_key_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX target_bindings_organization_id_installation_key_id_index ON public.target_bindings USING btree (organization_id, installation_key_id);
+
+
+--
+-- Name: target_bindings_organization_id_resource_id_version_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX target_bindings_organization_id_resource_id_version_index ON public.target_bindings USING btree (organization_id, resource_id, version);
+
+
+--
+-- Name: team_memberships_organization_id_membership_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX team_memberships_organization_id_membership_id_index ON public.team_memberships USING btree (organization_id, membership_id);
+
+
+--
+-- Name: team_memberships_team_id_membership_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX team_memberships_team_id_membership_id_index ON public.team_memberships USING btree (team_id, membership_id);
+
+
+--
 -- Name: teams_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4740,6 +7927,27 @@ CREATE UNIQUE INDEX teams_id_organization_id_index ON public.teams USING btree (
 --
 
 CREATE UNIQUE INDEX teams_organization_name_index ON public.teams USING btree (organization_id, lower((name)::text));
+
+
+--
+-- Name: telemetry_batches_received_at_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX telemetry_batches_received_at_index ON public.telemetry_batches USING btree (received_at);
+
+
+--
+-- Name: telemetry_batches_source_id_replay_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX telemetry_batches_source_id_replay_id_index ON public.telemetry_batches USING btree (source_id, replay_id);
+
+
+--
+-- Name: telemetry_buckets_bucket_start_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX telemetry_buckets_bucket_start_index ON public.telemetry_buckets USING btree (bucket_start);
 
 
 --
@@ -4799,6 +8007,48 @@ CREATE UNIQUE INDEX triage_rules_organization_name_index ON public.triage_rules 
 
 
 --
+-- Name: user_identities_provider_id_subject_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX user_identities_provider_id_subject_index ON public.user_identities USING btree (provider_id, subject);
+
+
+--
+-- Name: user_identities_user_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX user_identities_user_id_index ON public.user_identities USING btree (user_id);
+
+
+--
+-- Name: user_passkeys_credential_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX user_passkeys_credential_id_index ON public.user_passkeys USING btree (credential_id);
+
+
+--
+-- Name: user_passkeys_user_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX user_passkeys_user_id_index ON public.user_passkeys USING btree (user_id);
+
+
+--
+-- Name: user_recovery_codes_user_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX user_recovery_codes_user_id_index ON public.user_recovery_codes USING btree (user_id);
+
+
+--
+-- Name: user_totps_user_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX user_totps_user_id_index ON public.user_totps USING btree (user_id);
+
+
+--
 -- Name: users_email_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4806,10 +8056,24 @@ CREATE UNIQUE INDEX users_email_index ON public.users USING btree (email);
 
 
 --
+-- Name: users_tokens_browser_session_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX users_tokens_browser_session_id_index ON public.users_tokens USING btree (browser_session_id);
+
+
+--
 -- Name: users_tokens_context_token_index; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE UNIQUE INDEX users_tokens_context_token_index ON public.users_tokens USING btree (context, token);
+
+
+--
+-- Name: users_tokens_scoped_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX users_tokens_scoped_organization_id_index ON public.users_tokens USING btree (scoped_organization_id) WHERE (scoped_organization_id IS NOT NULL);
 
 
 --
@@ -4880,6 +8144,48 @@ CREATE UNIQUE INDEX vlans_organization_id_resource_id_index ON public.vlans USIN
 --
 
 CREATE INDEX vlans_organization_id_vlan_group_id_index ON public.vlans USING btree (organization_id, vlan_group_id);
+
+
+--
+-- Name: vrfs_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX vrfs_id_organization_id_index ON public.vrfs USING btree (id, organization_id);
+
+
+--
+-- Name: vrfs_organization_id_resource_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX vrfs_organization_id_resource_id_index ON public.vrfs USING btree (organization_id, resource_id);
+
+
+--
+-- Name: vrfs_organization_name_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX vrfs_organization_name_index ON public.vrfs USING btree (organization_id, lower((name)::text));
+
+
+--
+-- Name: vrfs_organization_route_distinguisher_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX vrfs_organization_route_distinguisher_index ON public.vrfs USING btree (organization_id, route_distinguisher) WHERE (route_distinguisher IS NOT NULL);
+
+
+--
+-- Name: webauthn_challenges_bytes_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX webauthn_challenges_bytes_index ON public.webauthn_challenges USING btree (bytes);
+
+
+--
+-- Name: webauthn_challenges_expires_at_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX webauthn_challenges_expires_at_index ON public.webauthn_challenges USING btree (expires_at);
 
 
 --
@@ -4981,10 +8287,38 @@ CREATE TRIGGER interface_vlan_mode_evidence_reject_update BEFORE UPDATE ON publi
 
 
 --
+-- Name: job_events job_events_append_only; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER job_events_append_only BEFORE DELETE OR UPDATE ON public.job_events FOR EACH ROW EXECUTE FUNCTION public.reject_job_event_change();
+
+
+--
+-- Name: jobs jobs_reject_imported_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER jobs_reject_imported_update BEFORE UPDATE ON public.jobs FOR EACH ROW WHEN ((old.imported_at IS NOT NULL)) EXECUTE FUNCTION public.reject_imported_job_update();
+
+
+--
 -- Name: observations observations_reject_update; Type: TRIGGER; Schema: public; Owner: -
 --
 
 CREATE TRIGGER observations_reject_update BEFORE UPDATE ON public.observations FOR EACH ROW EXECUTE FUNCTION public.reject_observation_update();
+
+
+--
+-- Name: reconciliation_lanes reconciliation_lanes_history; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER reconciliation_lanes_history BEFORE DELETE OR UPDATE ON public.reconciliation_lanes FOR EACH ROW EXECUTE FUNCTION public.guard_reconciliation_history();
+
+
+--
+-- Name: reconciliation_work reconciliation_work_history; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER reconciliation_work_history BEFORE DELETE OR UPDATE ON public.reconciliation_work FOR EACH ROW EXECUTE FUNCTION public.guard_reconciliation_history();
 
 
 --
@@ -4999,6 +8333,46 @@ CREATE TRIGGER resources_enforce_kind_immutability BEFORE UPDATE OF kind ON publ
 --
 
 CREATE TRIGGER topology_snapshot_events_reject_update BEFORE UPDATE ON public.topology_snapshot_events FOR EACH ROW EXECUTE FUNCTION public.reject_topology_snapshot_event_update();
+
+
+--
+-- Name: account_authorizations account_authorizations_session_token_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.account_authorizations
+    ADD CONSTRAINT account_authorizations_session_token_id_fkey FOREIGN KEY (session_token_id) REFERENCES public.users_tokens(id) ON DELETE CASCADE;
+
+
+--
+-- Name: account_authorizations account_authorizations_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.account_authorizations
+    ADD CONSTRAINT account_authorizations_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
+-- Name: account_challenges account_challenges_session_token_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.account_challenges
+    ADD CONSTRAINT account_challenges_session_token_id_fkey FOREIGN KEY (session_token_id) REFERENCES public.users_tokens(id) ON DELETE CASCADE;
+
+
+--
+-- Name: account_challenges account_challenges_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.account_challenges
+    ADD CONSTRAINT account_challenges_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
+-- Name: account_security_events account_security_events_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.account_security_events
+    ADD CONSTRAINT account_security_events_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 
 
 --
@@ -5058,6 +8432,22 @@ ALTER TABLE ONLY public.address_evidence
 
 
 --
+-- Name: address_findings address_findings_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.address_findings
+    ADD CONSTRAINT address_findings_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: address_findings address_findings_tenant_interface_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.address_findings
+    ADD CONSTRAINT address_findings_tenant_interface_fkey FOREIGN KEY (interface_id, organization_id) REFERENCES public.interfaces(id, organization_id) ON DELETE CASCADE;
+
+
+--
 -- Name: addresses addresses_interface_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -5079,6 +8469,22 @@ ALTER TABLE ONLY public.addresses
 
 ALTER TABLE ONLY public.addresses
     ADD CONSTRAINT addresses_organization_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: addressing_plan_levels addressing_plan_levels_created_by_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.addressing_plan_levels
+    ADD CONSTRAINT addressing_plan_levels_created_by_id_fkey FOREIGN KEY (created_by_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: addressing_plan_levels addressing_plan_levels_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.addressing_plan_levels
+    ADD CONSTRAINT addressing_plan_levels_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
 
 
 --
@@ -5111,6 +8517,14 @@ ALTER TABLE ONLY public.agents
 
 ALTER TABLE ONLY public.agents
     ADD CONSTRAINT agents_organization_source_fkey FOREIGN KEY (source_id, organization_id) REFERENCES public.sources(id, organization_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: cable_assertions cable_assertions_actor_principal_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cable_assertions
+    ADD CONSTRAINT cable_assertions_actor_principal_id_fkey FOREIGN KEY (actor_principal_id, organization_id) REFERENCES public.imported_principals(id, organization_id) ON DELETE RESTRICT;
 
 
 --
@@ -5151,6 +8565,30 @@ ALTER TABLE ONLY public.cable_assertions
 
 ALTER TABLE ONLY public.cable_assertions
     ADD CONSTRAINT cable_assertions_tenant_evidence_fkey FOREIGN KEY (interface_neighbor_evidence_id, organization_id) REFERENCES public.interface_neighbor_evidence(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: cable_assertions cable_assertions_tenant_power_feed_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cable_assertions
+    ADD CONSTRAINT cable_assertions_tenant_power_feed_fkey FOREIGN KEY (power_feed_id, organization_id) REFERENCES public.power_feeds(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: cable_assertions cable_assertions_tenant_power_outlet_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cable_assertions
+    ADD CONSTRAINT cable_assertions_tenant_power_outlet_fkey FOREIGN KEY (power_outlet_id, organization_id) REFERENCES public.power_outlets(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: cable_assertions cable_assertions_tenant_power_port_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cable_assertions
+    ADD CONSTRAINT cable_assertions_tenant_power_port_fkey FOREIGN KEY (power_port_id, organization_id) REFERENCES public.power_ports(id, organization_id) ON DELETE CASCADE;
 
 
 --
@@ -5282,6 +8720,30 @@ ALTER TABLE ONLY public.cable_plans
 
 
 --
+-- Name: cable_plans cable_plans_tenant_power_feed_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cable_plans
+    ADD CONSTRAINT cable_plans_tenant_power_feed_fkey FOREIGN KEY (power_feed_id, organization_id) REFERENCES public.power_feeds(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: cable_plans cable_plans_tenant_power_outlet_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cable_plans
+    ADD CONSTRAINT cable_plans_tenant_power_outlet_fkey FOREIGN KEY (power_outlet_id, organization_id) REFERENCES public.power_outlets(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: cable_plans cable_plans_tenant_power_port_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cable_plans
+    ADD CONSTRAINT cable_plans_tenant_power_port_fkey FOREIGN KEY (power_port_id, organization_id) REFERENCES public.power_ports(id, organization_id) ON DELETE CASCADE;
+
+
+--
 -- Name: cables cables_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -5311,6 +8773,30 @@ ALTER TABLE ONLY public.cables
 
 ALTER TABLE ONLY public.cables
     ADD CONSTRAINT cables_tenant_b_fkey FOREIGN KEY (interface_b_id, organization_id) REFERENCES public.interfaces(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: cables cables_tenant_power_feed_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cables
+    ADD CONSTRAINT cables_tenant_power_feed_fkey FOREIGN KEY (power_feed_id, organization_id) REFERENCES public.power_feeds(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: cables cables_tenant_power_outlet_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cables
+    ADD CONSTRAINT cables_tenant_power_outlet_fkey FOREIGN KEY (power_outlet_id, organization_id) REFERENCES public.power_outlets(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: cables cables_tenant_power_port_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cables
+    ADD CONSTRAINT cables_tenant_power_port_fkey FOREIGN KEY (power_port_id, organization_id) REFERENCES public.power_ports(id, organization_id) ON DELETE CASCADE;
 
 
 --
@@ -5410,6 +8896,78 @@ ALTER TABLE ONLY public.change_requests
 
 
 --
+-- Name: collector_findings collector_findings_organization_agent_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.collector_findings
+    ADD CONSTRAINT collector_findings_organization_agent_fkey FOREIGN KEY (agent_id, organization_id) REFERENCES public.agents(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: collector_findings collector_findings_organization_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.collector_findings
+    ADD CONSTRAINT collector_findings_organization_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: collector_findings collector_findings_organization_target_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.collector_findings
+    ADD CONSTRAINT collector_findings_organization_target_fkey FOREIGN KEY (target_id, organization_id) REFERENCES public.collector_targets(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: collector_target_resources collector_target_resources_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.collector_target_resources
+    ADD CONSTRAINT collector_target_resources_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: collector_target_resources collector_target_resources_tenant_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.collector_target_resources
+    ADD CONSTRAINT collector_target_resources_tenant_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: collector_target_resources collector_target_resources_tenant_target_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.collector_target_resources
+    ADD CONSTRAINT collector_target_resources_tenant_target_fkey FOREIGN KEY (target_id, organization_id, source_id) REFERENCES public.collector_targets(id, organization_id, source_id) ON DELETE CASCADE;
+
+
+--
+-- Name: collector_targets collector_targets_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.collector_targets
+    ADD CONSTRAINT collector_targets_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: collector_targets collector_targets_tenant_observation_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.collector_targets
+    ADD CONSTRAINT collector_targets_tenant_observation_fkey FOREIGN KEY (last_observation_id, organization_id) REFERENCES public.observations(id, organization_id) ON DELETE SET NULL;
+
+
+--
+-- Name: collector_targets collector_targets_tenant_source_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.collector_targets
+    ADD CONSTRAINT collector_targets_tenant_source_fkey FOREIGN KEY (source_id, organization_id) REFERENCES public.sources(id, organization_id) ON DELETE CASCADE;
+
+
+--
 -- Name: component_evidence component_evidence_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -5455,6 +9013,46 @@ ALTER TABLE ONLY public.component_findings
 
 ALTER TABLE ONLY public.component_templates
     ADD CONSTRAINT component_templates_revision_fkey FOREIGN KEY (catalog_type_revision_id, organization_id) REFERENCES public.catalog_type_revisions(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: confirmed_components confirmed_components_confirmed_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.confirmed_components
+    ADD CONSTRAINT confirmed_components_confirmed_by_user_id_fkey FOREIGN KEY (confirmed_by_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: confirmed_components confirmed_components_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.confirmed_components
+    ADD CONSTRAINT confirmed_components_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: confirmed_components confirmed_components_tenant_assignment_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.confirmed_components
+    ADD CONSTRAINT confirmed_components_tenant_assignment_fkey FOREIGN KEY (hardware_assignment_id, organization_id) REFERENCES public.hardware_assignments(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: confirmed_components confirmed_components_tenant_exception_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.confirmed_components
+    ADD CONSTRAINT confirmed_components_tenant_exception_fkey FOREIGN KEY (exception_id, organization_id) REFERENCES public.expected_component_exceptions(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: confirmed_components confirmed_components_tenant_template_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.confirmed_components
+    ADD CONSTRAINT confirmed_components_tenant_template_fkey FOREIGN KEY (component_template_id, organization_id) REFERENCES public.component_templates(id, organization_id) ON DELETE RESTRICT;
 
 
 --
@@ -5682,6 +9280,14 @@ ALTER TABLE ONLY public.desired_module_assignments
 
 
 --
+-- Name: desired_module_assignments desired_module_assignments_confirmed_by_principal_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.desired_module_assignments
+    ADD CONSTRAINT desired_module_assignments_confirmed_by_principal_id_fkey FOREIGN KEY (confirmed_by_principal_id, organization_id) REFERENCES public.imported_principals(id, organization_id) ON DELETE RESTRICT;
+
+
+--
 -- Name: desired_module_assignments desired_module_assignments_confirmed_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -5735,6 +9341,14 @@ ALTER TABLE ONLY public.expected_component_exceptions
 
 ALTER TABLE ONLY public.expected_component_exceptions
     ADD CONSTRAINT expected_component_exceptions_assignment_revision_fkey FOREIGN KEY (hardware_assignment_id, organization_id, catalog_type_revision_id) REFERENCES public.hardware_assignments(id, organization_id, catalog_type_revision_id) ON DELETE CASCADE;
+
+
+--
+-- Name: expected_component_exceptions expected_component_exceptions_confirmed_by_principal_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.expected_component_exceptions
+    ADD CONSTRAINT expected_component_exceptions_confirmed_by_principal_id_fkey FOREIGN KEY (confirmed_by_principal_id, organization_id) REFERENCES public.imported_principals(id, organization_id) ON DELETE RESTRICT;
 
 
 --
@@ -5879,6 +9493,142 @@ ALTER TABLE ONLY public.hosts
 
 ALTER TABLE ONLY public.hosts
     ADD CONSTRAINT hosts_organization_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: identity_provider_attempts identity_provider_attempts_provider_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.identity_provider_attempts
+    ADD CONSTRAINT identity_provider_attempts_provider_id_fkey FOREIGN KEY (provider_id) REFERENCES public.identity_providers(id) ON DELETE CASCADE;
+
+
+--
+-- Name: identity_provider_attempts identity_provider_attempts_session_token_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.identity_provider_attempts
+    ADD CONSTRAINT identity_provider_attempts_session_token_id_fkey FOREIGN KEY (session_token_id) REFERENCES public.users_tokens(id) ON DELETE CASCADE;
+
+
+--
+-- Name: identity_provider_attempts identity_provider_attempts_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.identity_provider_attempts
+    ADD CONSTRAINT identity_provider_attempts_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
+-- Name: identity_provider_events identity_provider_events_actor_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.identity_provider_events
+    ADD CONSTRAINT identity_provider_events_actor_user_id_fkey FOREIGN KEY (actor_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: identity_provider_events identity_provider_events_provider_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.identity_provider_events
+    ADD CONSTRAINT identity_provider_events_provider_id_fkey FOREIGN KEY (provider_id) REFERENCES public.identity_providers(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: identity_provider_revisions identity_provider_revisions_provider_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.identity_provider_revisions
+    ADD CONSTRAINT identity_provider_revisions_provider_id_fkey FOREIGN KEY (provider_id) REFERENCES public.identity_providers(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: identity_provider_tests identity_provider_tests_actor_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.identity_provider_tests
+    ADD CONSTRAINT identity_provider_tests_actor_user_id_fkey FOREIGN KEY (actor_user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
+-- Name: identity_provider_tests identity_provider_tests_provider_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.identity_provider_tests
+    ADD CONSTRAINT identity_provider_tests_provider_id_fkey FOREIGN KEY (provider_id) REFERENCES public.identity_providers(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: imported_attributions imported_attributions_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.imported_attributions
+    ADD CONSTRAINT imported_attributions_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: imported_attributions imported_attributions_principal_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.imported_attributions
+    ADD CONSTRAINT imported_attributions_principal_id_fkey FOREIGN KEY (principal_id, organization_id) REFERENCES public.imported_principals(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: imported_held_records imported_held_records_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.imported_held_records
+    ADD CONSTRAINT imported_held_records_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: imported_held_records imported_held_records_principal_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.imported_held_records
+    ADD CONSTRAINT imported_held_records_principal_id_fkey FOREIGN KEY (principal_id, organization_id) REFERENCES public.imported_principals(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: imported_principals imported_principals_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.imported_principals
+    ADD CONSTRAINT imported_principals_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: imported_principals imported_principals_organization_import_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.imported_principals
+    ADD CONSTRAINT imported_principals_organization_import_id_fkey FOREIGN KEY (organization_import_id) REFERENCES public.organization_imports(id) ON DELETE CASCADE;
+
+
+--
+-- Name: imported_principals imported_principals_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.imported_principals
+    ADD CONSTRAINT imported_principals_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: installation_keys installation_keys_approved_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.installation_keys
+    ADD CONSTRAINT installation_keys_approved_by_user_id_fkey FOREIGN KEY (approved_by_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: installation_keys installation_keys_organization_agent_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.installation_keys
+    ADD CONSTRAINT installation_keys_organization_agent_fkey FOREIGN KEY (agent_id, organization_id) REFERENCES public.agents(id, organization_id) ON DELETE CASCADE;
 
 
 --
@@ -6042,6 +9792,70 @@ ALTER TABLE ONLY public.interface_relationships
 
 
 --
+-- Name: interface_routing_domain_evidence interface_routing_domain_evidence_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_routing_domain_evidence
+    ADD CONSTRAINT interface_routing_domain_evidence_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: interface_routing_domain_evidence interface_routing_domain_evidence_tenant_interface_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_routing_domain_evidence
+    ADD CONSTRAINT interface_routing_domain_evidence_tenant_interface_fkey FOREIGN KEY (interface_id, organization_id) REFERENCES public.interfaces(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: interface_routing_domain_evidence interface_routing_domain_evidence_tenant_observation_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_routing_domain_evidence
+    ADD CONSTRAINT interface_routing_domain_evidence_tenant_observation_fkey FOREIGN KEY (observation_id, organization_id, source_id) REFERENCES public.observations(id, organization_id, source_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: interface_routing_domain_evidence interface_routing_domain_evidence_tenant_source_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_routing_domain_evidence
+    ADD CONSTRAINT interface_routing_domain_evidence_tenant_source_fkey FOREIGN KEY (source_id, organization_id) REFERENCES public.sources(id, organization_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: interface_routing_domains interface_routing_domains_evidence_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_routing_domains
+    ADD CONSTRAINT interface_routing_domains_evidence_id_fkey FOREIGN KEY (evidence_id) REFERENCES public.interface_routing_domain_evidence(id) ON DELETE CASCADE;
+
+
+--
+-- Name: interface_routing_domains interface_routing_domains_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_routing_domains
+    ADD CONSTRAINT interface_routing_domains_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: interface_routing_domains interface_routing_domains_tenant_interface_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_routing_domains
+    ADD CONSTRAINT interface_routing_domains_tenant_interface_fkey FOREIGN KEY (interface_id, organization_id) REFERENCES public.interfaces(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: interface_routing_domains interface_routing_domains_tenant_vrf_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.interface_routing_domains
+    ADD CONSTRAINT interface_routing_domains_tenant_vrf_fkey FOREIGN KEY (vrf_id, organization_id) REFERENCES public.vrfs(id, organization_id) ON DELETE CASCADE;
+
+
+--
 -- Name: interface_vlan_evidence interface_vlan_evidence_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -6151,6 +9965,126 @@ ALTER TABLE ONLY public.inventory_items
 
 ALTER TABLE ONLY public.inventory_items
     ADD CONSTRAINT inventory_items_promoted_module_fkey FOREIGN KEY (promoted_module_id, organization_id) REFERENCES public.modules(id, organization_id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: ip_address_assignments ip_address_assignments_assigned_by_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.ip_address_assignments
+    ADD CONSTRAINT ip_address_assignments_assigned_by_id_fkey FOREIGN KEY (assigned_by_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: ip_address_assignments ip_address_assignments_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.ip_address_assignments
+    ADD CONSTRAINT ip_address_assignments_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: ip_address_assignments ip_address_assignments_tenant_interface_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.ip_address_assignments
+    ADD CONSTRAINT ip_address_assignments_tenant_interface_fkey FOREIGN KEY (interface_id, organization_id) REFERENCES public.interfaces(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: ip_address_assignments ip_address_assignments_tenant_ip_address_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.ip_address_assignments
+    ADD CONSTRAINT ip_address_assignments_tenant_ip_address_fkey FOREIGN KEY (ip_address_id, organization_id) REFERENCES public.ip_addresses(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: ip_addresses ip_addresses_adopted_by_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.ip_addresses
+    ADD CONSTRAINT ip_addresses_adopted_by_id_fkey FOREIGN KEY (adopted_by_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: ip_addresses ip_addresses_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.ip_addresses
+    ADD CONSTRAINT ip_addresses_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: ip_addresses ip_addresses_organization_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.ip_addresses
+    ADD CONSTRAINT ip_addresses_organization_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: ip_addresses ip_addresses_tenant_vrf_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.ip_addresses
+    ADD CONSTRAINT ip_addresses_tenant_vrf_fkey FOREIGN KEY (vrf_id, organization_id) REFERENCES public.vrfs(id, organization_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: job_events job_events_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.job_events
+    ADD CONSTRAINT job_events_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: job_events job_events_tenant_job_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.job_events
+    ADD CONSTRAINT job_events_tenant_job_fkey FOREIGN KEY (job_id, organization_id) REFERENCES public.jobs(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: jobs jobs_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.jobs
+    ADD CONSTRAINT jobs_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: jobs jobs_organization_target_binding_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.jobs
+    ADD CONSTRAINT jobs_organization_target_binding_fkey FOREIGN KEY (target_binding_id, organization_id) REFERENCES public.target_bindings(id, organization_id) ON DELETE SET NULL (target_binding_id);
+
+
+--
+-- Name: jobs jobs_requested_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.jobs
+    ADD CONSTRAINT jobs_requested_by_user_id_fkey FOREIGN KEY (requested_by_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: jobs jobs_tenant_agent_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.jobs
+    ADD CONSTRAINT jobs_tenant_agent_fkey FOREIGN KEY (agent_id, organization_id) REFERENCES public.agents(id, organization_id);
+
+
+--
+-- Name: jobs jobs_tenant_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.jobs
+    ADD CONSTRAINT jobs_tenant_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE SET NULL (resource_id);
 
 
 --
@@ -6322,11 +10256,155 @@ ALTER TABLE ONLY public.observations
 
 
 --
+-- Name: observations observations_parent_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.observations
+    ADD CONSTRAINT observations_parent_fkey FOREIGN KEY (parent_observation_id, organization_id, source_id) REFERENCES public.observations(id, organization_id, source_id) ON DELETE RESTRICT;
+
+
+--
 -- Name: observations observations_source_sync_run_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.observations
     ADD CONSTRAINT observations_source_sync_run_fkey FOREIGN KEY (sync_run_id, organization_id, source_id) REFERENCES public.sync_runs(id, organization_id, source_id) ON DELETE SET NULL (sync_run_id);
+
+
+--
+-- Name: operator_idempotency_keys operator_idempotency_keys_operator_token_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.operator_idempotency_keys
+    ADD CONSTRAINT operator_idempotency_keys_operator_token_id_fkey FOREIGN KEY (operator_token_id) REFERENCES public.operator_tokens(id) ON DELETE CASCADE;
+
+
+--
+-- Name: operator_invitation_deliveries operator_invitation_deliveries_invitation_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.operator_invitation_deliveries
+    ADD CONSTRAINT operator_invitation_deliveries_invitation_id_fkey FOREIGN KEY (invitation_id) REFERENCES public.organization_invitations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: organization_domains organization_domains_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_domains
+    ADD CONSTRAINT organization_domains_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: organization_export_chunks organization_export_chunks_export_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_export_chunks
+    ADD CONSTRAINT organization_export_chunks_export_id_fkey FOREIGN KEY (export_id) REFERENCES public.organization_exports(id) ON DELETE CASCADE;
+
+
+--
+-- Name: organization_exports organization_exports_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_exports
+    ADD CONSTRAINT organization_exports_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: organization_exports organization_exports_requested_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_exports
+    ADD CONSTRAINT organization_exports_requested_by_user_id_fkey FOREIGN KEY (requested_by_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: organization_exports organization_exports_revoked_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_exports
+    ADD CONSTRAINT organization_exports_revoked_by_user_id_fkey FOREIGN KEY (revoked_by_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: organization_imports organization_imports_imported_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_imports
+    ADD CONSTRAINT organization_imports_imported_by_user_id_fkey FOREIGN KEY (imported_by_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: organization_imports organization_imports_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_imports
+    ADD CONSTRAINT organization_imports_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: organization_invitations organization_invitations_accepted_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_invitations
+    ADD CONSTRAINT organization_invitations_accepted_by_user_id_fkey FOREIGN KEY (accepted_by_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: organization_invitations organization_invitations_imported_principal_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_invitations
+    ADD CONSTRAINT organization_invitations_imported_principal_id_fkey FOREIGN KEY (imported_principal_id, organization_id) REFERENCES public.imported_principals(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: organization_invitations organization_invitations_invited_by_operator_token_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_invitations
+    ADD CONSTRAINT organization_invitations_invited_by_operator_token_id_fkey FOREIGN KEY (invited_by_operator_token_id) REFERENCES public.operator_tokens(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: organization_invitations organization_invitations_invited_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_invitations
+    ADD CONSTRAINT organization_invitations_invited_by_user_id_fkey FOREIGN KEY (invited_by_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: organization_invitations organization_invitations_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_invitations
+    ADD CONSTRAINT organization_invitations_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: organization_invitations organization_invitations_revoked_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_invitations
+    ADD CONSTRAINT organization_invitations_revoked_by_user_id_fkey FOREIGN KEY (revoked_by_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: organization_lifecycle_notices organization_lifecycle_notices_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_lifecycle_notices
+    ADD CONSTRAINT organization_lifecycle_notices_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: organization_limits organization_limits_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_limits
+    ADD CONSTRAINT organization_limits_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
 
 
 --
@@ -6338,11 +10416,35 @@ ALTER TABLE ONLY public.organization_memberships
 
 
 --
+-- Name: organization_memberships organization_memberships_scim_connection_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_memberships
+    ADD CONSTRAINT organization_memberships_scim_connection_id_fkey FOREIGN KEY (scim_connection_id) REFERENCES public.scim_connections(id);
+
+
+--
 -- Name: organization_memberships organization_memberships_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.organization_memberships
     ADD CONSTRAINT organization_memberships_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
+-- Name: organization_security_settings organization_security_settings_changed_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_security_settings
+    ADD CONSTRAINT organization_security_settings_changed_by_user_id_fkey FOREIGN KEY (changed_by_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: organization_security_settings organization_security_settings_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_security_settings
+    ADD CONSTRAINT organization_security_settings_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
 
 
 --
@@ -6367,6 +10469,118 @@ ALTER TABLE ONLY public.placement_evidence
 
 ALTER TABLE ONLY public.placement_findings
     ADD CONSTRAINT placement_findings_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: power_correlation_samples power_correlation_samples_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.power_correlation_samples
+    ADD CONSTRAINT power_correlation_samples_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: power_correlation_samples power_correlation_samples_tenant_source_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.power_correlation_samples
+    ADD CONSTRAINT power_correlation_samples_tenant_source_fkey FOREIGN KEY (source_id, organization_id) REFERENCES public.sources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: power_feeds power_feeds_organization_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.power_feeds
+    ADD CONSTRAINT power_feeds_organization_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: power_feeds power_feeds_site_panel_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.power_feeds
+    ADD CONSTRAINT power_feeds_site_panel_fkey FOREIGN KEY (panel_id, organization_id, site_id) REFERENCES public.power_panels(id, organization_id, site_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: power_feeds power_feeds_site_rack_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.power_feeds
+    ADD CONSTRAINT power_feeds_site_rack_fkey FOREIGN KEY (rack_id, organization_id, site_id) REFERENCES public.racks(id, organization_id, site_id) ON DELETE SET NULL (rack_id);
+
+
+--
+-- Name: power_findings power_findings_organization_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.power_findings
+    ADD CONSTRAINT power_findings_organization_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: power_outlets power_outlets_device_inlet_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.power_outlets
+    ADD CONSTRAINT power_outlets_device_inlet_fkey FOREIGN KEY (inlet_port_id, organization_id, resource_id) REFERENCES public.power_ports(id, organization_id, resource_id) ON DELETE SET NULL (inlet_port_id);
+
+
+--
+-- Name: power_outlets power_outlets_organization_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.power_outlets
+    ADD CONSTRAINT power_outlets_organization_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: power_panels power_panels_organization_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.power_panels
+    ADD CONSTRAINT power_panels_organization_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: power_panels power_panels_organization_site_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.power_panels
+    ADD CONSTRAINT power_panels_organization_site_fkey FOREIGN KEY (site_id, organization_id) REFERENCES public.sites(id, organization_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: power_panels power_panels_site_location_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.power_panels
+    ADD CONSTRAINT power_panels_site_location_fkey FOREIGN KEY (location_id, organization_id, site_id) REFERENCES public.locations(id, organization_id, site_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: power_ports power_ports_organization_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.power_ports
+    ADD CONSTRAINT power_ports_organization_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: power_readings power_readings_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.power_readings
+    ADD CONSTRAINT power_readings_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: power_readings power_readings_tenant_source_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.power_readings
+    ADD CONSTRAINT power_readings_tenant_source_fkey FOREIGN KEY (source_id, organization_id) REFERENCES public.sources(id, organization_id) ON DELETE CASCADE;
 
 
 --
@@ -6410,6 +10624,14 @@ ALTER TABLE ONLY public.prefixes
 
 
 --
+-- Name: prefixes prefixes_tenant_vrf_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.prefixes
+    ADD CONSTRAINT prefixes_tenant_vrf_fkey FOREIGN KEY (vrf_id, organization_id) REFERENCES public.vrfs(id, organization_id) ON DELETE RESTRICT;
+
+
+--
 -- Name: rack_occupancies rack_occupancies_placement_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -6450,6 +10672,38 @@ ALTER TABLE ONLY public.racks
 
 
 --
+-- Name: reconciliation_lanes reconciliation_lane_work_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.reconciliation_lanes
+    ADD CONSTRAINT reconciliation_lane_work_fkey FOREIGN KEY (work_id, organization_id) REFERENCES public.reconciliation_work(id, organization_id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: reconciliation_lanes reconciliation_lanes_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.reconciliation_lanes
+    ADD CONSTRAINT reconciliation_lanes_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: reconciliation_work reconciliation_work_evidence_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.reconciliation_work
+    ADD CONSTRAINT reconciliation_work_evidence_fkey FOREIGN KEY (observation_id, organization_id, source_id) REFERENCES public.observations(id, organization_id, source_id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: reconciliation_work reconciliation_work_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.reconciliation_work
+    ADD CONSTRAINT reconciliation_work_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
 -- Name: resource_conditions resource_conditions_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -6463,6 +10717,158 @@ ALTER TABLE ONLY public.resource_conditions
 
 ALTER TABLE ONLY public.resource_conditions
     ADD CONSTRAINT resource_conditions_organization_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: resource_group_members resource_group_members_added_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.resource_group_members
+    ADD CONSTRAINT resource_group_members_added_by_user_id_fkey FOREIGN KEY (added_by_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: resource_group_members resource_group_members_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.resource_group_members
+    ADD CONSTRAINT resource_group_members_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: resource_group_members resource_group_members_tenant_group_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.resource_group_members
+    ADD CONSTRAINT resource_group_members_tenant_group_fkey FOREIGN KEY (group_id, organization_id) REFERENCES public.resource_groups(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: resource_group_members resource_group_members_tenant_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.resource_group_members
+    ADD CONSTRAINT resource_group_members_tenant_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: resource_group_memberships resource_group_memberships_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.resource_group_memberships
+    ADD CONSTRAINT resource_group_memberships_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: resource_group_memberships resource_group_memberships_tenant_group_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.resource_group_memberships
+    ADD CONSTRAINT resource_group_memberships_tenant_group_fkey FOREIGN KEY (group_id, organization_id) REFERENCES public.resource_groups(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: resource_group_memberships resource_group_memberships_tenant_group_set_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.resource_group_memberships
+    ADD CONSTRAINT resource_group_memberships_tenant_group_set_fkey FOREIGN KEY (group_set_id, organization_id) REFERENCES public.resource_group_sets(id, organization_id) ON DELETE SET NULL (group_set_id);
+
+
+--
+-- Name: resource_group_memberships resource_group_memberships_tenant_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.resource_group_memberships
+    ADD CONSTRAINT resource_group_memberships_tenant_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: resource_group_sets resource_group_sets_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.resource_group_sets
+    ADD CONSTRAINT resource_group_sets_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: resource_group_suggestion_dismissals resource_group_suggestion_dismissals_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.resource_group_suggestion_dismissals
+    ADD CONSTRAINT resource_group_suggestion_dismissals_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: resource_group_suggestion_dismissals resource_group_suggestion_dismissals_tenant_rule_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.resource_group_suggestion_dismissals
+    ADD CONSTRAINT resource_group_suggestion_dismissals_tenant_rule_fkey FOREIGN KEY (rule_id, organization_id) REFERENCES public.triage_rules(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: resource_group_suggestion_dismissals resource_group_suggestion_dismissals_tenant_suggestion_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.resource_group_suggestion_dismissals
+    ADD CONSTRAINT resource_group_suggestion_dismissals_tenant_suggestion_fkey FOREIGN KEY (suggestion_id, organization_id) REFERENCES public.resource_group_suggestions(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: resource_group_suggestions resource_group_suggestions_decided_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.resource_group_suggestions
+    ADD CONSTRAINT resource_group_suggestions_decided_by_user_id_fkey FOREIGN KEY (decided_by_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: resource_group_suggestions resource_group_suggestions_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.resource_group_suggestions
+    ADD CONSTRAINT resource_group_suggestions_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: resource_group_suggestions resource_group_suggestions_tenant_group_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.resource_group_suggestions
+    ADD CONSTRAINT resource_group_suggestions_tenant_group_fkey FOREIGN KEY (group_id, organization_id) REFERENCES public.resource_groups(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: resource_group_suggestions resource_group_suggestions_tenant_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.resource_group_suggestions
+    ADD CONSTRAINT resource_group_suggestions_tenant_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: resource_group_suggestions resource_group_suggestions_tenant_rule_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.resource_group_suggestions
+    ADD CONSTRAINT resource_group_suggestions_tenant_rule_fkey FOREIGN KEY (rule_id, organization_id) REFERENCES public.triage_rules(id, organization_id) ON DELETE SET NULL (rule_id);
+
+
+--
+-- Name: resource_groups resource_groups_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.resource_groups
+    ADD CONSTRAINT resource_groups_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: resource_groups resource_groups_tenant_group_set_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.resource_groups
+    ADD CONSTRAINT resource_groups_tenant_group_set_fkey FOREIGN KEY (group_set_id, organization_id) REFERENCES public.resource_group_sets(id, organization_id) ON DELETE SET NULL (group_set_id);
 
 
 --
@@ -6642,6 +11048,46 @@ ALTER TABLE ONLY public.resources
 
 
 --
+-- Name: role_assignments role_assignments_created_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.role_assignments
+    ADD CONSTRAINT role_assignments_created_by_user_id_fkey FOREIGN KEY (created_by_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: role_assignments role_assignments_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.role_assignments
+    ADD CONSTRAINT role_assignments_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: role_assignments role_assignments_tenant_membership_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.role_assignments
+    ADD CONSTRAINT role_assignments_tenant_membership_fkey FOREIGN KEY (membership_id, organization_id) REFERENCES public.organization_memberships(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: role_assignments role_assignments_tenant_role_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.role_assignments
+    ADD CONSTRAINT role_assignments_tenant_role_fkey FOREIGN KEY (role_id, organization_id) REFERENCES public.roles(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: roles roles_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.roles
+    ADD CONSTRAINT roles_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
 -- Name: saved_views saved_views_created_by_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -6663,6 +11109,94 @@ ALTER TABLE ONLY public.saved_views
 
 ALTER TABLE ONLY public.saved_views
     ADD CONSTRAINT saved_views_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
+-- Name: scim_connections scim_connections_created_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scim_connections
+    ADD CONSTRAINT scim_connections_created_by_user_id_fkey FOREIGN KEY (created_by_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: scim_connections scim_connections_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scim_connections
+    ADD CONSTRAINT scim_connections_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: scim_connections scim_connections_provider_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scim_connections
+    ADD CONSTRAINT scim_connections_provider_id_fkey FOREIGN KEY (provider_id) REFERENCES public.identity_providers(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: scim_group_members scim_group_members_group_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scim_group_members
+    ADD CONSTRAINT scim_group_members_group_fkey FOREIGN KEY (group_id, connection_id) REFERENCES public.scim_groups(id, connection_id) ON DELETE CASCADE;
+
+
+--
+-- Name: scim_group_members scim_group_members_user_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scim_group_members
+    ADD CONSTRAINT scim_group_members_user_fkey FOREIGN KEY (user_id, connection_id) REFERENCES public.scim_users(id, connection_id) ON DELETE CASCADE;
+
+
+--
+-- Name: scim_groups scim_groups_tenant_connection_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scim_groups
+    ADD CONSTRAINT scim_groups_tenant_connection_fkey FOREIGN KEY (connection_id, organization_id) REFERENCES public.scim_connections(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: scim_tokens scim_tokens_created_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scim_tokens
+    ADD CONSTRAINT scim_tokens_created_by_user_id_fkey FOREIGN KEY (created_by_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: scim_tokens scim_tokens_revoked_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scim_tokens
+    ADD CONSTRAINT scim_tokens_revoked_by_user_id_fkey FOREIGN KEY (revoked_by_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: scim_tokens scim_tokens_tenant_connection_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scim_tokens
+    ADD CONSTRAINT scim_tokens_tenant_connection_fkey FOREIGN KEY (connection_id, organization_id) REFERENCES public.scim_connections(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: scim_users scim_users_tenant_connection_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scim_users
+    ADD CONSTRAINT scim_users_tenant_connection_fkey FOREIGN KEY (connection_id, organization_id) REFERENCES public.scim_connections(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: scim_users scim_users_user_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scim_users
+    ADD CONSTRAINT scim_users_user_identity_id_fkey FOREIGN KEY (user_identity_id) REFERENCES public.user_identities(id) ON DELETE SET NULL;
 
 
 --
@@ -6698,6 +11232,38 @@ ALTER TABLE ONLY public.sites
 
 
 --
+-- Name: source_routing_domain_mappings source_routing_domain_mappings_created_by_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.source_routing_domain_mappings
+    ADD CONSTRAINT source_routing_domain_mappings_created_by_id_fkey FOREIGN KEY (created_by_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: source_routing_domain_mappings source_routing_domain_mappings_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.source_routing_domain_mappings
+    ADD CONSTRAINT source_routing_domain_mappings_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: source_routing_domain_mappings source_routing_domain_mappings_tenant_source_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.source_routing_domain_mappings
+    ADD CONSTRAINT source_routing_domain_mappings_tenant_source_fkey FOREIGN KEY (source_id, organization_id) REFERENCES public.sources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: source_routing_domain_mappings source_routing_domain_mappings_tenant_vrf_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.source_routing_domain_mappings
+    ADD CONSTRAINT source_routing_domain_mappings_tenant_vrf_fkey FOREIGN KEY (vrf_id, organization_id) REFERENCES public.vrfs(id, organization_id) ON DELETE CASCADE;
+
+
+--
 -- Name: source_vlan_group_mappings source_vlan_group_mappings_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -6730,6 +11296,14 @@ ALTER TABLE ONLY public.sources
 
 
 --
+-- Name: sources sources_tenant_agent_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sources
+    ADD CONSTRAINT sources_tenant_agent_fkey FOREIGN KEY (agent_id, organization_id) REFERENCES public.agents(id, organization_id);
+
+
+--
 -- Name: sync_runs sync_runs_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -6746,11 +11320,115 @@ ALTER TABLE ONLY public.sync_runs
 
 
 --
+-- Name: target_bindings target_bindings_approved_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.target_bindings
+    ADD CONSTRAINT target_bindings_approved_by_user_id_fkey FOREIGN KEY (approved_by_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: target_bindings target_bindings_organization_agent_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.target_bindings
+    ADD CONSTRAINT target_bindings_organization_agent_fkey FOREIGN KEY (agent_id, organization_id) REFERENCES public.agents(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: target_bindings target_bindings_organization_key_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.target_bindings
+    ADD CONSTRAINT target_bindings_organization_key_fkey FOREIGN KEY (installation_key_id, organization_id) REFERENCES public.installation_keys(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: target_bindings target_bindings_organization_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.target_bindings
+    ADD CONSTRAINT target_bindings_organization_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: target_bindings target_bindings_revoked_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.target_bindings
+    ADD CONSTRAINT target_bindings_revoked_by_user_id_fkey FOREIGN KEY (revoked_by_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: team_memberships team_memberships_added_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.team_memberships
+    ADD CONSTRAINT team_memberships_added_by_user_id_fkey FOREIGN KEY (added_by_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: team_memberships team_memberships_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.team_memberships
+    ADD CONSTRAINT team_memberships_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: team_memberships team_memberships_tenant_membership_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.team_memberships
+    ADD CONSTRAINT team_memberships_tenant_membership_fkey FOREIGN KEY (membership_id, organization_id) REFERENCES public.organization_memberships(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: team_memberships team_memberships_tenant_team_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.team_memberships
+    ADD CONSTRAINT team_memberships_tenant_team_fkey FOREIGN KEY (team_id, organization_id) REFERENCES public.teams(id, organization_id) ON DELETE CASCADE;
+
+
+--
 -- Name: teams teams_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.teams
     ADD CONSTRAINT teams_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: telemetry_batches telemetry_batches_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.telemetry_batches
+    ADD CONSTRAINT telemetry_batches_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: telemetry_batches telemetry_batches_tenant_source_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.telemetry_batches
+    ADD CONSTRAINT telemetry_batches_tenant_source_fkey FOREIGN KEY (source_id, organization_id) REFERENCES public.sources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: telemetry_buckets telemetry_buckets_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.telemetry_buckets
+    ADD CONSTRAINT telemetry_buckets_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: telemetry_marks telemetry_marks_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.telemetry_marks
+    ADD CONSTRAINT telemetry_marks_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
 
 
 --
@@ -6834,6 +11512,14 @@ ALTER TABLE ONLY public.triage_rules
 
 
 --
+-- Name: triage_rules triage_rules_resource_group_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.triage_rules
+    ADD CONSTRAINT triage_rules_resource_group_fkey FOREIGN KEY (resource_group_id, organization_id) REFERENCES public.resource_groups(id, organization_id) ON DELETE CASCADE;
+
+
+--
 -- Name: triage_rules triage_rules_site_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -6847,6 +11533,62 @@ ALTER TABLE ONLY public.triage_rules
 
 ALTER TABLE ONLY public.triage_rules
     ADD CONSTRAINT triage_rules_team_fkey FOREIGN KEY (team_id, organization_id) REFERENCES public.teams(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: user_identities user_identities_provider_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_identities
+    ADD CONSTRAINT user_identities_provider_id_fkey FOREIGN KEY (provider_id) REFERENCES public.identity_providers(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: user_identities user_identities_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_identities
+    ADD CONSTRAINT user_identities_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
+-- Name: user_passkeys user_passkeys_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_passkeys
+    ADD CONSTRAINT user_passkeys_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
+-- Name: user_recovery_codes user_recovery_codes_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_recovery_codes
+    ADD CONSTRAINT user_recovery_codes_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
+-- Name: user_totps user_totps_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_totps
+    ADD CONSTRAINT user_totps_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
+-- Name: users_tokens users_tokens_provider_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.users_tokens
+    ADD CONSTRAINT users_tokens_provider_id_fkey FOREIGN KEY (provider_id) REFERENCES public.identity_providers(id) ON DELETE SET NULL;
+
+
+--
+-- Name: users_tokens users_tokens_scoped_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.users_tokens
+    ADD CONSTRAINT users_tokens_scoped_organization_id_fkey FOREIGN KEY (scoped_organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
 
 
 --
@@ -6906,10 +11648,34 @@ ALTER TABLE ONLY public.vlans
 
 
 --
+-- Name: vrfs vrfs_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.vrfs
+    ADD CONSTRAINT vrfs_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: vrfs vrfs_organization_resource_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.vrfs
+    ADD CONSTRAINT vrfs_organization_resource_fkey FOREIGN KEY (resource_id, organization_id) REFERENCES public.resources(id, organization_id) ON DELETE CASCADE;
+
+
+--
+-- Name: webauthn_challenges webauthn_challenges_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.webauthn_challenges
+    ADD CONSTRAINT webauthn_challenges_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
 -- PostgreSQL database dump complete
 --
 
-\unrestrict KUhmeZG03Ery0IXc0zBBRjvxACYdzNt5andq2VIsZyeYT5OeMbZtCLN7exdxEj0
+\unrestrict 8LvG0ho1WggcqgnSs04djr8SKiGAvma54FHxWgreWigurkrwa1Hpyc8vlnaIZ9k
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);
@@ -6956,3 +11722,87 @@ INSERT INTO public."schema_migrations" (version) VALUES (20261010120000);
 INSERT INTO public."schema_migrations" (version) VALUES (20261010130000);
 INSERT INTO public."schema_migrations" (version) VALUES (20261010140000);
 INSERT INTO public."schema_migrations" (version) VALUES (20261010150000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261011120000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261012120000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261012130000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261013120000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261013130000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261014120000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261015120000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261016120000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261017120000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261018120000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261019120000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261020120000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261021120000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261022120000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261023120000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261024120000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261025120000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261026120000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261027120000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261028120000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261029120000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261030120000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261030130000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261030131900);
+INSERT INTO public."schema_migrations" (version) VALUES (20261030132000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261030132100);
+INSERT INTO public."schema_migrations" (version) VALUES (20261030132200);
+INSERT INTO public."schema_migrations" (version) VALUES (20261030135000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261030140000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261030140100);
+INSERT INTO public."schema_migrations" (version) VALUES (20261030140200);
+INSERT INTO public."schema_migrations" (version) VALUES (20261030140300);
+INSERT INTO public."schema_migrations" (version) VALUES (20261030150000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261030154700);
+INSERT INTO public."schema_migrations" (version) VALUES (20261030160300);
+INSERT INTO public."schema_migrations" (version) VALUES (20261030162100);
+INSERT INTO public."schema_migrations" (version) VALUES (20261030164500);
+INSERT INTO public."schema_migrations" (version) VALUES (20261030171500);
+INSERT INTO public."schema_migrations" (version) VALUES (20261030172000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261030173000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261030174000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261030180000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261031094217);
+INSERT INTO public."schema_migrations" (version) VALUES (20261031120000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261031120100);
+INSERT INTO public."schema_migrations" (version) VALUES (20261101120000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261101130000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261101130100);
+INSERT INTO public."schema_migrations" (version) VALUES (20261101130200);
+INSERT INTO public."schema_migrations" (version) VALUES (20261101153700);
+INSERT INTO public."schema_migrations" (version) VALUES (20261101153750);
+INSERT INTO public."schema_migrations" (version) VALUES (20261101153800);
+INSERT INTO public."schema_migrations" (version) VALUES (20261101153900);
+INSERT INTO public."schema_migrations" (version) VALUES (20261101190400);
+INSERT INTO public."schema_migrations" (version) VALUES (20261101190500);
+INSERT INTO public."schema_migrations" (version) VALUES (20261101190600);
+INSERT INTO public."schema_migrations" (version) VALUES (20261102093100);
+INSERT INTO public."schema_migrations" (version) VALUES (20261102093200);
+INSERT INTO public."schema_migrations" (version) VALUES (20261102093300);
+INSERT INTO public."schema_migrations" (version) VALUES (20261102093400);
+INSERT INTO public."schema_migrations" (version) VALUES (20261102093500);
+INSERT INTO public."schema_migrations" (version) VALUES (20261102093600);
+INSERT INTO public."schema_migrations" (version) VALUES (20261102094312);
+INSERT INTO public."schema_migrations" (version) VALUES (20261102151500);
+INSERT INTO public."schema_migrations" (version) VALUES (20261102161700);
+INSERT INTO public."schema_migrations" (version) VALUES (20261102161800);
+INSERT INTO public."schema_migrations" (version) VALUES (20261102161900);
+INSERT INTO public."schema_migrations" (version) VALUES (20261102161950);
+INSERT INTO public."schema_migrations" (version) VALUES (20261102162000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261102162500);
+INSERT INTO public."schema_migrations" (version) VALUES (20261102170000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261102173000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261102174000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261102193715);
+INSERT INTO public."schema_migrations" (version) VALUES (20261102193716);
+INSERT INTO public."schema_migrations" (version) VALUES (20261102193717);
+INSERT INTO public."schema_migrations" (version) VALUES (20261103090000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261103100000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261104090000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261104120000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261105090000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261105130000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261105135900);
+INSERT INTO public."schema_migrations" (version) VALUES (20261105140000);

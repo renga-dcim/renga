@@ -127,6 +127,58 @@ defmodule Renga.Transfers.ImportTest do
   defp count(schema, organization),
     do: Repo.aggregate(where(schema, organization_id: ^organization.id), :count)
 
+  test "unsupported processing ledgers are rejected from checksummed archives before any write",
+       context do
+    path = export(context)
+    {:ok, archive} = Archive.open(path, tmp_dir: context.tmp_dir)
+    on_exit(fn -> Archive.close(archive) end)
+    target = target()
+    before = Repo.get!(Organization, target.id)
+
+    for type <- ~w(reconciliation_work reconciliation_lanes) do
+      writer =
+        Enum.reduce(Archive.record_types(archive), Writer.new(tmp_dir: context.tmp_dir), fn name,
+                                                                                            writer ->
+          Writer.add_records(writer, name, Archive.records(archive, name))
+        end)
+
+      # Real compressed, checksummed files, not an in-memory Archive struct.
+      writer =
+        Writer.add_records(writer, type, [%{"id" => Ecto.UUID.generate(), "status" => "pending"}])
+
+      {:ok, snapshot_at, 0} = DateTime.from_iso8601(archive.manifest["snapshot_at"])
+      unsupported = Path.join(context.tmp_dir, "#{type}.tar.zst")
+
+      assert :ok =
+               Writer.finish(
+                 writer,
+                 %{
+                   organization: context.source,
+                   snapshot_at: snapshot_at,
+                   parts: archive.manifest["parts"]
+                 },
+                 unsupported
+               )
+
+      assert {:error, {:invalid, problems}} =
+               import_archive(unsupported, target,
+                 copy: true,
+                 authorize: fn -> flunk("unsupported archive reached the write transaction") end
+               )
+
+      assert Enum.any?(
+               problems,
+               &(&1.file == "#{type}.ndjson" and
+                   &1.message == "is not a record type of this export")
+             )
+
+      assert Repo.get!(Organization, target.id) == before
+      assert count(OrganizationImport, target) == 0
+      assert count(Resource, target) == 0
+      assert count(ChangeEvent, target) == 0
+    end
+  end
+
   test "an archive lands whole, with its records, history, and people", context do
     revisions_before =
       context.source |> resources_by_version() |> Enum.map(& &1.id)

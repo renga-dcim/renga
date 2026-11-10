@@ -37,7 +37,8 @@ defmodule Renga.Inventory.SameMachine do
   @doc """
   Re-evaluates what a reconciled observation may have changed: the machine a
   host agent reported, or the machines a hypervisor's domains could match.
-  Runs after reconciliation commits, under the organization lock.
+  Runs under the organization lock, inside root host reconciliation's
+  transaction or after a complete collector report commits.
 
   The evaluation reads current evidence, so it is judged by the server's
   clock rather than the report's: an old report replayed late must not find

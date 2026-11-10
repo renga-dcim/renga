@@ -11,6 +11,44 @@ use uuid::Uuid;
 /// Keeping this contract shared prevents the agent from sending a body the API cannot parse.
 pub const MAX_OBSERVATION_BYTES: usize = 256_000;
 
+/// Durable server acceptance, independent of the later canonical processing outcome.
+#[derive(Debug, Deserialize)]
+pub struct ObservationAccepted {
+    pub status: String,
+    pub duplicate: bool,
+    pub observation: AcceptedObservation,
+    pub receipt: ObservationReceipt,
+    pub processing: ObservationProcessing,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AcceptedObservation {
+    pub id: Uuid,
+    pub observation_id: String,
+    pub source_id: Uuid,
+    pub observed_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ObservationReceipt {
+    pub id: Uuid,
+    pub position: u64,
+    pub accepted_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ObservationProcessing {
+    pub status: ProcessingStatus,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessingStatus {
+    Pending,
+    Succeeded,
+    Quarantined,
+}
+
 #[derive(Debug, Serialize)]
 pub struct Observation {
     pub observation_id: Uuid,
