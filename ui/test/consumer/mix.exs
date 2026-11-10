@@ -5,6 +5,7 @@ defmodule RengaUIConsumer.MixProject do
     [
       app: :renga_ui_consumer,
       version: "0.1.0",
+      package: [licenses: ["Apache-2.0"]],
       elixir: "~> 1.15",
       deps: deps()
     ]
