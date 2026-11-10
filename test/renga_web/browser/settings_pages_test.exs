@@ -3,7 +3,8 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
   The sign-in and settings pages at phone width, in a real browser: each
   stays within the screen and its buttons keep 44px touch targets.
   """
-  use PhoenixTest.Playwright.Case, async: true
+  # Provider changes hold a deployment-wide advisory lock until Sandbox teardown.
+  use PhoenixTest.Playwright.Case, async: false
 
   import Renga.AccountsFixtures
   import Renga.InventoryFixtures
