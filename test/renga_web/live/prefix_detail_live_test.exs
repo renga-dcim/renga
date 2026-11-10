@@ -183,6 +183,10 @@ defmodule RengaWeb.PrefixDetailLiveTest do
       view |> element("#address-#{address.id}-adopt") |> render_click()
       assert has_element?(view, "#prefix-addresses [data-status='managed']", "Managed")
 
+      # Each remount replaces the page. Stop the obsolete view before inventory
+      # writes so its refreshes cannot compete for the same Sandbox connection.
+      GenServer.stop(view.pid)
+
       managed =
         Enum.find(
           Renga.Repo.all(Renga.IPAM.IpAddress),
@@ -197,6 +201,7 @@ defmodule RengaWeb.PrefixDetailLiveTest do
       if address.kind == "ipv4",
         do: assert(has_element?(view, "#address-cell-5[data-state='managed']"))
 
+      GenServer.stop(view.pid)
       report_addresses(scope, source, [text])
       {:ok, view, _html} = live(conn, ~p"/network/prefixes/#{lan}")
       assert has_element?(view, "#address-#{address.id}")
@@ -207,6 +212,7 @@ defmodule RengaWeb.PrefixDetailLiveTest do
 
       view |> element("#address-#{address.id}-release") |> render_click()
       assert has_element?(view, "#prefix-addresses [data-status='observed']")
+      GenServer.stop(view.pid)
     end
   end
 
