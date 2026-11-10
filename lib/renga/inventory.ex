@@ -442,10 +442,16 @@ defmodule Renga.Inventory do
   Updates source metadata while keeping token lifecycle separate.
   """
   def update_source(%Scope{} = scope, %Source{} = source, attrs) do
-    scope
-    |> get_source!(source.id)
-    |> Source.changeset(attrs)
-    |> Repo.update()
+    Repo.transaction(fn ->
+      # Neighbor input triggers may materialize a published generation. Take
+      # the canonical fence before the source tuple, as reconciliation does.
+      lock_organization!(scope.organization_id)
+
+      case scope |> get_source!(source.id) |> Source.changeset(attrs) |> Repo.update() do
+        {:ok, source} -> source
+        {:error, changeset} -> Repo.rollback(changeset)
+      end
+    end)
   end
 
   @doc """
