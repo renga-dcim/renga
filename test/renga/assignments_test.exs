@@ -1,5 +1,6 @@
 defmodule Renga.AssignmentsTest do
-  use Renga.DataCase, async: true
+  # Sweep assertions share the node-wide background permit with other workers.
+  use Renga.DataCase, async: false
 
   import Renga.InventoryFixtures
   import Renga.JobsFixtures, only: [member_scope: 2]
