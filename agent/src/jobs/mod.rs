@@ -5,6 +5,7 @@
 //! capability only when it is compiled in and enabled by its own
 //! configuration. Renga cannot widen that set remotely.
 
+pub mod evidence;
 pub mod inventory_collect;
 pub mod queries;
 pub mod record;
@@ -59,6 +60,19 @@ pub trait Capability: Send + Sync {
     /// Runs the job and returns the `result` object Renga checks against
     /// the capability's result schema.
     fn run(&self, parameters: &Value, cancellation: &Cancellation) -> Result<Value, JobFailure>;
+
+    /// Attempt context is used only by capabilities that submit protected evidence.
+    fn run_leased(
+        &self,
+        job: &crate::payload::LeasedJob,
+        cancellation: &Cancellation,
+    ) -> Result<Value, JobFailure> {
+        self.run(&job.parameters, cancellation)
+    }
+
+    fn evidence_limit(&self) -> (u32, u64) {
+        (0, 0)
+    }
 
     /// Whether a policy without an explicit `enabled` list enables it. Every
     /// `observe` capability is, except sensitive queries (RFD 12), which reveal

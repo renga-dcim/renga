@@ -93,6 +93,18 @@ impl JobRecords {
         self.records.iter().find(|record| record.job_id == job_id)
     }
 
+    /// Verify record headroom before asking the server to grant more work.
+    pub fn reserve_headroom(&mut self, now: DateTime<Utc>) -> Result<(), RecordError> {
+        self.remove_expired(now);
+        if self.records.len() >= MAX_RECORDS && self.records.iter().all(|record| !record.confirmed)
+        {
+            return Err(RecordError(
+                "job record is full with unresolved jobs".into(),
+            ));
+        }
+        self.persist(now)
+    }
+
     /// Durably notes that the job is about to run. Must succeed before the
     /// capability runs, or a crash could lead to running it twice unseen.
     pub fn start(

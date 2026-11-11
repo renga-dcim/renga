@@ -427,10 +427,46 @@ impl HttpClient {
         self.post_encoded_observation(&encode_observation(value)?)
     }
 
+    /// Protected evidence and receipt recovery have their own throttle class;
+    /// neither an ordinary backlog nor evidence backoff delays job heartbeats.
+    pub fn job_evidence(
+        &self,
+        job_id: uuid::Uuid,
+        evidence: &crate::jobs::evidence::Evidence,
+        receipt_only: bool,
+        cancellation: &Cancellation,
+    ) -> Result<(), TransportError> {
+        let suffix = if receipt_only {
+            "evidence/receipt"
+        } else {
+            "evidence"
+        };
+        let url = endpoint_url(
+            &self.settings.home,
+            &format!("/api/v1/agent/jobs/{job_id}/{suffix}"),
+        )?;
+        let mut envelope = serde_json::json!({
+            "lease_token": evidence.lease_token, "attempt": evidence.attempt,
+            "sha256": evidence.sha256,
+        });
+        if receipt_only {
+            envelope["observation_id"] = serde_json::json!(evidence.observation_id);
+        } else {
+            envelope["body"] = serde_json::json!(evidence.body);
+        }
+        let encoded = serde_json::to_vec(&envelope)
+            .map_err(|error| TransportError::new(error.to_string(), FailureKind::Permanent))?;
+        self.post_encoded_while(&url, &encoded, cancellation, |response| {
+            let status = response.status();
+            let body = response_body(response)?;
+            validate_observation_receipt(status, evidence.body.as_bytes(), &body)
+        })
+    }
+
     /// Posts an observation exactly as encoded, so a queued payload replays byte for byte and
     /// the server can recognize a repeat by its observation ID.
     pub fn post_encoded_observation(&self, body: &[u8]) -> Result<(), TransportError> {
-        self.post_encoded_observation_while(body, || self.cancellation.cancelled())
+        self.post_encoded_observation_with_cancellation(body, &self.cancellation)
     }
 
     /// Posts an observation while both the daemon and the operation that produced it remain
@@ -440,17 +476,7 @@ impl HttpClient {
         body: &[u8],
         cancellation: &Cancellation,
     ) -> Result<(), TransportError> {
-        self.post_encoded_observation_while(body, || {
-            self.cancellation.cancelled() || cancellation.cancelled()
-        })
-    }
-
-    fn post_encoded_observation_while(
-        &self,
-        body: &[u8],
-        cancelled: impl Fn() -> bool,
-    ) -> Result<(), TransportError> {
-        self.post_encoded_while(&self.observation_url, body, cancelled, |response| {
+        self.post_encoded_while(&self.observation_url, body, cancellation, |response| {
             let status = response.status();
             let accepted = response_body(response)?;
             validate_observation_receipt(status, body, &accepted)
@@ -460,38 +486,48 @@ impl HttpClient {
     /// Posts a telemetry batch exactly as encoded, so a queued batch replays byte for byte and
     /// the server recognizes a repeat by its replay ID (RFD 10, "Measured history").
     pub fn post_encoded_telemetry(&self, body: &[u8]) -> Result<(), TransportError> {
-        self.post_encoded_while(
-            &self.telemetry_url,
-            body,
-            || self.cancellation.cancelled(),
-            response_result,
-        )
-        .map_err(|error| {
-            // A batch's collector kind is fixed when it is encoded and a stream's kind never
-            // changes, so no retry can deliver it; unlike an observation, a telemetry batch
-            // is disposable, so it is dropped instead of holding back the batches after it.
-            if error.collector_kind_conflict {
-                TransportError {
-                    kind: FailureKind::PayloadRejected,
-                    ..error
+        self.post_encoded_telemetry_with_cancellation(body, &self.cancellation)
+    }
+
+    /// Includes the whole drain pass's budget, not a fresh timeout per batch.
+    pub fn post_encoded_telemetry_with_cancellation(
+        &self,
+        body: &[u8],
+        cancellation: &Cancellation,
+    ) -> Result<(), TransportError> {
+        self.post_encoded_while(&self.telemetry_url, body, cancellation, response_result)
+            .map_err(|error| {
+                // A batch's collector kind is fixed when it is encoded and a stream's kind never
+                // changes, so no retry can deliver it; unlike an observation, a telemetry batch
+                // is disposable, so it is dropped instead of holding back the batches after it.
+                if error.collector_kind_conflict {
+                    TransportError {
+                        kind: FailureKind::PayloadRejected,
+                        ..error
+                    }
+                } else {
+                    error
                 }
-            } else {
-                error
-            }
-        })
+            })
     }
 
     fn post_encoded_while(
         &self,
         url: &Url,
         body: &[u8],
-        cancelled: impl Fn() -> bool,
+        cancellation: &Cancellation,
         accept_response: impl Fn(Response) -> Result<(), TransportError>,
     ) -> Result<(), TransportError> {
-        let timeout = self.settings.request_timeout.min(DELIVERY_BUDGET);
-        self.noting_moved(retry(
+        let budget = cancellation
+            .remaining()
+            .unwrap_or(DELIVERY_BUDGET)
+            .min(self.cancellation.remaining().unwrap_or(DELIVERY_BUDGET))
+            .min(DELIVERY_BUDGET);
+        let timeout = self.settings.request_timeout.min(budget);
+        self.noting_moved(retry_with_budget(
             self.settings.max_retry_attempts,
             timeout,
+            budget,
             || {
                 self.check_retry_deadline(url)?;
                 let response = self
@@ -507,7 +543,7 @@ impl HttpClient {
                 self.remember_retry_deadline(url, accept_response(response))
             },
             thread::sleep,
-            cancelled,
+            || self.cancellation.cancelled() || cancellation.cancelled(),
         ))
     }
     fn post_json<T: Serialize, R: DeserializeOwned>(
@@ -565,7 +601,7 @@ impl HttpClient {
         ))
     }
 
-    // Six fixed classes, never one entry per job UUID. Bulk throttling must
+    // Fixed classes, never one entry per job UUID. Bulk throttling must
     // not suppress the independent check-in and report reserve.
     fn retry_class(url: &Url) -> &'static str {
         match url.path() {
@@ -574,6 +610,9 @@ impl HttpClient {
             CHECKIN_PATH => "checkins",
             JOB_LEASE_PATH => "leases",
             path if path.ends_with("/claims") => "claims",
+            path if path.ends_with("/evidence") || path.ends_with("/evidence/receipt") => {
+                "job-evidence"
+            }
             _ => "reports",
         }
     }
@@ -1906,6 +1945,35 @@ mod tests {
             listener.accept(),
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
         ));
+    }
+
+    #[test]
+    fn drain_deadline_bounds_an_http_request_already_in_flight() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = insecure_client(&format!("http://{}", listener.local_addr().unwrap()));
+        let (entered, waiting) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            read_request(&mut stream);
+            entered.send(()).unwrap();
+            released.recv_timeout(Duration::from_secs(5)).unwrap();
+            let _ = stream.write_all(b"HTTP/1.1 202 Accepted\r\nContent-Length: 2\r\n\r\n{}");
+        });
+        let (finished, result) = std::sync::mpsc::channel();
+        let delivery = thread::spawn(move || {
+            let deadline = Cancellation::with_deadline(Instant::now() + Duration::from_millis(100));
+            let outcome = client.post_encoded_observation_with_cancellation(b"{}", &deadline);
+            finished.send(outcome).unwrap();
+        });
+        waiting.recv_timeout(Duration::from_secs(2)).unwrap();
+        let bounded = result.recv_timeout(Duration::from_secs(1));
+        release.send(()).unwrap();
+        server.join().unwrap();
+        delivery.join().unwrap();
+        assert!(bounded
+            .expect("HTTP must finish before the drain's deadline, not its longer request timeout")
+            .is_err());
     }
 
     #[test]
