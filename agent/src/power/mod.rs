@@ -124,7 +124,7 @@ fn sample(root: &Path, now: DateTime<Utc>, sink: &Sink, sources: &PowerSources) 
     }
     let batch = batch(&scan.readings, now);
     match serde_json::to_vec(&batch) {
-        Ok(body) if body.len() <= MAX_TELEMETRY_BYTES => sink(batch.replay_id, &body),
+        Ok(body) if body.len() <= MAX_TELEMETRY_BYTES => sink.send(batch.replay_id, &body),
         Ok(body) => warn!(
             bytes = body.len(),
             "host power batch too large; dropping it"

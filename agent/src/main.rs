@@ -42,12 +42,13 @@ use std::{
 use tracing::{error, info, warn};
 use tracing_subscriber::{util::SubscriberInitExt, EnvFilter};
 
-/// The most telemetry batches one flush offers, after every queued observation, so a telemetry
-/// backlog cannot hold the delivery worker from the next inventory (RFD 10, "Measured history").
+/// Telemetry has an independent bounded opportunity even when observations are throttled.
 #[cfg(not(test))]
 const TELEMETRY_PER_FLUSH: usize = 120;
 #[cfg(test)]
 const TELEMETRY_PER_FLUSH: usize = 2;
+const OBSERVATION_DRAIN_BUDGET: Duration = Duration::from_secs(30);
+const FLUSH_BUDGET: Duration = Duration::from_secs(45);
 /// How long an inventory waits for a queue flush already using the delivery worker.
 const INVENTORY_DEFER: Duration = Duration::from_secs(1);
 /// How long a flush waits for an inventory already using the delivery worker.
@@ -550,6 +551,15 @@ fn run_configured(args: Args, stopped: Cancellation) -> Result<(), Box<dyn Error
                     Some(DeliveryTask::Flush) => {
                         scheduler.reschedule(job, Instant::now(), INVENTORY_DEFER)
                     }
+                    None if lock(&queue)
+                        .ready()
+                        .and_then(|queue| queue.collection_ready())
+                        .is_ok_and(|ready| !ready) =>
+                    {
+                        info!("ordinary inventory collection deferred by queue pressure; freshness unchanged");
+                        let jitter = (uuid::Uuid::new_v4().as_u128() % 30) as u64;
+                        scheduler.reschedule(job, Instant::now(), Duration::from_secs(30 + jitter));
+                    }
                     None => {
                         spawn_inventory(&mut delivery_worker, &client, &stopped, &config, &queue);
                         scheduler.reschedule(job, Instant::now(), config.inventory_interval);
@@ -981,6 +991,14 @@ fn send_inventory(
     labels: &BTreeMap<String, String>,
     queue: &Mutex<DeliveryQueue>,
 ) -> Result<uuid::Uuid, Box<dyn Error>> {
+    if lock(queue)
+        .ready()
+        .and_then(|queue| queue.collection_ready())
+        .is_ok_and(|ready| !ready)
+    {
+        info!("ordinary inventory collection deferred by queue pressure; freshness unchanged");
+        return Err("ordinary inventory collection deferred".into());
+    }
     let observation = Observation::new(collectors::collect(stopped)?).with_labels(labels);
     let observation_id = observation.observation_id;
     let body = encode_observation(&observation)?;
@@ -1064,10 +1082,36 @@ fn send_job_inventory(
 /// Queues collector module reports on disk; the inventory and flush passes deliver them with the
 /// current credentials, so a module never holds an HTTP client across reloads.
 fn queue_sink(queue: &Arc<Mutex<DeliveryQueue>>, stopped: &Cancellation) -> Sink {
-    let queue = Arc::clone(queue);
-    let stopped = stopped.clone();
-    Arc::new(move |observation_id, body| {
-        let Some(mut delivery) = lock_until_cancelled(&queue, &stopped) else {
+    Arc::new(ObservationSink {
+        queue: Arc::clone(queue),
+        stopped: stopped.clone(),
+    })
+}
+
+struct ObservationSink {
+    queue: Arc<Mutex<DeliveryQueue>>,
+    stopped: Cancellation,
+}
+
+impl renga_agent::switch_report::ReportSink for ObservationSink {
+    fn ready(&self) -> bool {
+        if self.stopped.cancelled() {
+            return false;
+        }
+        match lock(&self.queue)
+            .ready()
+            .and_then(|queue| queue.collection_ready())
+        {
+            Ok(ready) => ready,
+            Err(error) => {
+                warn!(%error, "optional collection deferred; queue unavailable");
+                false
+            }
+        }
+    }
+
+    fn send(&self, observation_id: uuid::Uuid, body: &[u8]) {
+        let Some(mut delivery) = lock_until_cancelled(&self.queue, &self.stopped) else {
             return;
         };
         match delivery
@@ -1079,14 +1123,14 @@ fn queue_sink(queue: &Arc<Mutex<DeliveryQueue>>, stopped: &Cancellation) -> Sink
                 warn!(%error, %observation_id, "cannot queue collector report; dropping it")
             }
         }
-    })
+    }
 }
 
 /// Queues telemetry batches on disk; flushes deliver them after any queued observations.
 fn telemetry_sink(queue: &Arc<Mutex<DeliveryQueue>>, stopped: &Cancellation) -> Sink {
     let queue = Arc::clone(queue);
     let stopped = stopped.clone();
-    Arc::new(move |replay_id, body| {
+    Arc::new(move |replay_id, body: &[u8]| {
         let Some(mut delivery) = lock_until_cancelled(&queue, &stopped) else {
             return;
         };
@@ -1106,6 +1150,7 @@ fn deliver_observation(
     observation_id: uuid::Uuid,
     body: &[u8],
 ) -> Result<uuid::Uuid, Box<dyn Error>> {
+    let cancellation = &cancellation.bounded(Instant::now() + OBSERVATION_DRAIN_BUDGET);
     let Some(mut delivery) = lock_until_cancelled(queue, cancellation) else {
         return Err("observation delivery cancelled".into());
     };
@@ -1116,9 +1161,10 @@ fn deliver_observation(
         .ready()
         .and_then(|queue| queue.enqueue(observation_id, body, SystemTime::now()))
     {
-        // Delivering without durability still beats losing this observation outright. The
-        // server keeps its newest observation current, so overtaking older entries is safe.
+        // This is explicitly not durable local acceptance. Never hold queue ownership
+        // over network work, including the degraded direct-delivery path.
         warn!(error = %failure, %observation_id, "cannot queue observation; delivering it directly");
+        drop(delivery);
         if cancellation.cancelled() {
             return Err("observation delivery cancelled".into());
         }
@@ -1127,7 +1173,8 @@ fn deliver_observation(
         return Ok(observation_id);
     }
 
-    let queue = delivery.ready()?;
+    let mut queue = delivery.ready()?.clone();
+    drop(delivery);
     let mut outcome = None;
     let drained = queue.drain(SystemTime::now(), cancellation, |entry| {
         let result = client.post_encoded_observation_with_cancellation(entry, cancellation);
@@ -1136,7 +1183,7 @@ fn deliver_observation(
         }
         result
     })?;
-    report_queue(queue, &drained);
+    report_queue(&queue, &drained);
     match outcome {
         Some(Ok(())) => {
             info!(%observation_id, "observation posted");
@@ -1156,34 +1203,36 @@ fn deliver_observation(
     }
 }
 
-/// Retries whatever is queued, oldest first: every observation, then a capped share of
-/// telemetry. Telemetry waits while observations cannot be delivered, since both go to the same
-/// server and inventory comes first.
+/// Bounded independent delivery opportunities: ordinary pressure cannot starve telemetry.
 fn flush(
     client: &HttpClient,
     stopped: &Cancellation,
     queue: &Mutex<DeliveryQueue>,
 ) -> Result<(), Box<dyn Error>> {
-    let mut delivery = lock(queue);
-    let observations = delivery.ready()?;
-    let drained = observations.drain(SystemTime::now(), stopped, |entry| {
-        client.post_encoded_observation(entry)
-    })?;
-    report_queue(observations, &drained);
-    if let Some(error) = drained.blocked {
-        return if error.is_cancelled() {
-            Ok(())
-        } else {
-            Err(error.into())
-        };
-    }
-
-    let telemetry = delivery.telemetry_ready()?;
-    let drained =
-        telemetry.drain_at_most(SystemTime::now(), TELEMETRY_PER_FLUSH, stopped, |entry| {
-            client.post_encoded_telemetry(entry)
+    let deadline = Instant::now() + FLUSH_BUDGET;
+    let ordinary = stopped.bounded(Instant::now() + OBSERVATION_DRAIN_BUDGET);
+    let ordinary_result = (|| -> Result<(), Box<dyn Error>> {
+        let mut observations = lock(queue).ready()?.clone();
+        let drained = observations.drain(SystemTime::now(), &ordinary, |entry| {
+            client.post_encoded_observation_with_cancellation(entry, &ordinary)
         })?;
-    report_queue(telemetry, &drained);
+        report_queue(&observations, &drained);
+        match drained.blocked {
+            Some(error) if !error.is_cancelled() => Err(error.into()),
+            _ => Ok(()),
+        }
+    })();
+
+    let mut telemetry = lock(queue).telemetry_ready()?.clone();
+    let telemetry_budget = stopped.bounded(deadline);
+    let drained = telemetry.drain_at_most(
+        SystemTime::now(),
+        TELEMETRY_PER_FLUSH,
+        &telemetry_budget,
+        |entry| client.post_encoded_telemetry_with_cancellation(entry, &telemetry_budget),
+    )?;
+    report_queue(&telemetry, &drained);
+    ordinary_result?;
     match drained.blocked {
         Some(error) if !error.is_cancelled() => Err(error.into()),
         _ => Ok(()),
@@ -3566,6 +3615,120 @@ mod tests {
     }
 
     #[test]
+    fn blocked_http_does_not_hold_queue_ownership_or_delay_checkins() {
+        let state = std::env::temp_dir().join(format!("renga-inflight-{}", uuid::Uuid::new_v4()));
+        let queue = Arc::new(Mutex::new(DeliveryQueue::new(state.clone())));
+        let first = observation_body(uuid::Uuid::new_v4());
+        lock(&queue)
+            .ready()
+            .unwrap()
+            .enqueue(uuid::Uuid::new_v4(), &first, SystemTime::now())
+            .unwrap();
+        let stopped = Cancellation::default();
+        let release = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let gate = Arc::clone(&release);
+        let (entered, waiting) = mpsc::channel();
+        let (origin, server) = routed_server(stopped.clone(), move |request, body| {
+            if request.contains("/api/v1/observations") {
+                entered.send(()).unwrap();
+                let (mutex, changed) = &*gate;
+                let _guard = changed
+                    .wait_while(mutex.lock().unwrap(), |released| !*released)
+                    .unwrap();
+                (202, observation_receipt(body, false))
+            } else {
+                assert!(request.contains("/api/v1/agent/checkins"));
+                (202, r#"{"status":"accepted"}"#.into())
+            }
+        });
+        let client = stub_client(&origin);
+        let delivery_queue = Arc::clone(&queue);
+        let delivery_client = client.clone();
+        let delivery_stop = stopped.clone();
+        let delivery = thread::spawn(move || {
+            flush(&delivery_client, &delivery_stop, &delivery_queue).unwrap();
+        });
+        waiting.recv_timeout(Duration::from_secs(2)).unwrap();
+        let (progress, observed) = mpsc::channel();
+        let producer_queue = Arc::clone(&queue);
+        let producer = thread::spawn(move || {
+            lock(&producer_queue)
+                .ready()
+                .unwrap()
+                .enqueue(uuid::Uuid::new_v4(), b"second", SystemTime::now())
+                .unwrap();
+            progress.send(()).unwrap();
+        });
+        let enqueued = observed.recv_timeout(Duration::from_secs(2));
+        let checkin = client.post_checkin(&CheckIn::new(Vec::new(), None));
+        let (mutex, changed) = &*release;
+        *mutex.lock().unwrap() = true;
+        changed.notify_all();
+        producer.join().unwrap();
+        delivery.join().unwrap();
+        stopped.cancel();
+        server.join().unwrap();
+        enqueued.expect("enqueue must finish while ordinary HTTP remains blocked");
+        checkin.expect("maintenance must progress independently of ordinary HTTP");
+        assert_eq!(lock(&queue).ready().unwrap().health().unwrap().entries, 1);
+        std::fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn high_water_defers_host_collection_until_the_backlog_falls() {
+        let state = std::env::temp_dir().join(format!("renga-paused-{}", uuid::Uuid::new_v4()));
+        let mut delivery = DeliveryQueue::new(state.clone());
+        delivery.queue = Some(
+            DiskQueue::open(
+                &state,
+                QueueKind::Observations,
+                renga_agent::queue::QueueLimits {
+                    max_entries: 10,
+                    max_bytes: 1_000_000,
+                    max_age: Duration::from_secs(60),
+                },
+                delivery.monitors.observations.clone(),
+            )
+            .unwrap(),
+        );
+        for _ in 0..8 {
+            let id = uuid::Uuid::new_v4();
+            delivery
+                .ready()
+                .unwrap()
+                .enqueue(id, &observation_body(id), SystemTime::now())
+                .unwrap();
+        }
+        let queue = Mutex::new(delivery);
+        let stopped = Cancellation::default();
+        let before = lock(&queue).ready().unwrap().health().unwrap();
+        let error = send_inventory(
+            &stub_client("http://127.0.0.1:9"),
+            &stopped,
+            &BTreeMap::new(),
+            &queue,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("collection deferred"));
+        assert_eq!(lock(&queue).ready().unwrap().health().unwrap(), before);
+        lock(&queue)
+            .ready()
+            .unwrap()
+            .drain_at_most(SystemTime::now(), 6, &stopped, |_| Ok(()))
+            .unwrap();
+        let (origin, server) = stub_server(vec![202, 202, 202]);
+        let id = send_inventory(&stub_client(&origin), &stopped, &BTreeMap::new(), &queue).unwrap();
+        let bodies = server.join().unwrap();
+        assert_eq!(bodies.len(), 3);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&bodies[2]).unwrap()["observation_id"],
+            json!(id)
+        );
+        assert_eq!(lock(&queue).ready().unwrap().health().unwrap().entries, 0);
+        std::fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
     fn flush_delivers_observations_before_a_capped_share_of_telemetry() {
         let state = std::env::temp_dir().join(format!("renga-telemetry-{}", uuid::Uuid::new_v4()));
         let queue = Mutex::new(DeliveryQueue::new(state.clone()));
@@ -3588,17 +3751,24 @@ mod tests {
         enqueue(false, &observation);
         let stopped = Cancellation::default();
 
-        // An observation the server cannot take holds every telemetry batch back.
-        let (origin, server) = stub_server(vec![503]);
+        // Ordinary failure still leaves a bounded independent telemetry opportunity.
+        let (origin, server) = stub_server(vec![503, 202, 202]);
         assert!(flush(&stub_client(&origin), &stopped, &queue).is_err());
-        assert_eq!(server.join().unwrap(), std::slice::from_ref(&observation));
-
-        // Then the observation goes first, and telemetry stops at its per-flush share.
-        let (origin, server) = stub_server(vec![202, 202, 202]);
-        flush(&stub_client(&origin), &stopped, &queue).unwrap();
         assert_eq!(
             server.join().unwrap(),
-            [observation, br#"{"t":1}"#.to_vec(), br#"{"t":2}"#.to_vec()]
+            [
+                observation.clone(),
+                br#"{"t":1}"#.to_vec(),
+                br#"{"t":2}"#.to_vec()
+            ]
+        );
+
+        // An independent telemetry failure retains only that batch.
+        let (origin, server) = stub_server(vec![202, 503]);
+        assert!(flush(&stub_client(&origin), &stopped, &queue).is_err());
+        assert_eq!(
+            server.join().unwrap(),
+            [observation, br#"{"t":3}"#.to_vec()]
         );
         let telemetry = lock(&queue).monitors.telemetry.latest().unwrap();
         assert_eq!(telemetry.entries, 1);
@@ -3712,7 +3882,20 @@ mod tests {
         for case in ["accepted", "mismatched", "blocked"] {
             let state =
                 std::env::temp_dir().join(format!("renga-job-receipt-{}", uuid::Uuid::new_v4()));
-            let queue = Arc::new(Mutex::new(DeliveryQueue::new(state.clone())));
+            let mut delivery = DeliveryQueue::new(state.clone());
+            delivery.queue = Some(
+                DiskQueue::open(
+                    &state,
+                    QueueKind::Observations,
+                    renga_agent::queue::QueueLimits {
+                        max_entries: 1,
+                        ..Default::default()
+                    },
+                    delivery.monitors.observations.clone(),
+                )
+                .unwrap(),
+            );
+            let queue = Arc::new(Mutex::new(delivery));
             let prior_id = uuid::Uuid::new_v4();
             let prior = observation_body(prior_id);
             lock(&queue)
@@ -3720,6 +3903,11 @@ mod tests {
                 .unwrap()
                 .enqueue(prior_id, &prior, SystemTime::now())
                 .unwrap();
+            assert!(lock(&queue)
+                .ready()
+                .unwrap()
+                .enqueue(uuid::Uuid::new_v4(), b"overflow", SystemTime::now())
+                .is_err());
             let requests = Arc::new(Mutex::new(Vec::new()));
             let reports = Arc::new(Mutex::new(Vec::new()));
             let posted = Arc::clone(&requests);
