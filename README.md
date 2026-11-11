@@ -125,8 +125,22 @@ SLUG --actor NAME --job-creation-rate N` overrides a limit for one
 organization (RFD 21) and records the change in its Activity too,
 `limits show` lists them, and `limits clear` returns one to the deployment
 default, which `LIMIT_*` variables such as `LIMIT_JOB_CREATION_RATE` set.
-Owners see their limits and usage under Settings > Limits. Intake has separate
-bulk and maintenance rates, per-installation rates, and pool-relative
+Owners see their limits and usage under Settings > Limits.
+
+Human request counters are shared across nodes and sessions, using fixed
+one-minute windows. A user's allowance is within the selected organization;
+people without one use the deployment's user default. Authenticated browser HTTP overload returns
+`429` and `Retry-After`; LiveView blocks the event or navigation and shows a
+retryable notice. These defaults are provisional, not load-validated:
+
+| Variable | Default |
+| --- | ---: |
+| `LIMIT_HTTP_ORGANIZATION_RATE` | 60,000 requests/minute |
+| `LIMIT_HTTP_USER_RATE` | 6,000 requests/minute/user |
+| `LIMIT_LIVE_ORGANIZATION_RATE` | 120,000 interactions/minute |
+| `LIMIT_LIVE_USER_RATE` | 12,000 interactions/minute/user |
+
+Intake has separate bulk and maintenance rates, per-installation rates, and pool-relative
 concurrency; overload returns `429` with `Retry-After`. The agent retains the
 retry deadline without extending its delivery or job-lease budget. The
 [capacity load test and recorded results](docs/capacity-load.md) describe the
