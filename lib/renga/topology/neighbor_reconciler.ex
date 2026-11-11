@@ -87,6 +87,75 @@ defmodule Renga.Topology.NeighborReconciler do
     adjacencies
   end
 
+  @doc false
+  def expiry_match(organization_id, evidence),
+    do:
+      match_remote_interface(
+        organization_id,
+        evidence,
+        bmc_resource_lookup(organization_id, [evidence])
+      )
+
+  @doc false
+  def finding_kinds, do: @finding_kinds
+
+  @doc false
+  def expiry_findings(organization_id, interface_id, as_of, generation_id) do
+    # Mismatches need the other endpoint's outgoing reports, not a complete
+    # organization scan. Snapshot boundaries are needed only for this endpoint.
+    neighbors =
+      Repo.query!(
+        "SELECT endpoint_a, endpoint_b FROM neighbor_generation_rows WHERE generation_id = $1 AND kind = 'candidate' AND (endpoint_a = $2 OR endpoint_b = $2)",
+        [Ecto.UUID.dump!(generation_id), Ecto.UUID.dump!(interface_id)]
+      ).rows
+      |> Enum.flat_map(fn [a, b] -> [Ecto.UUID.load!(a), Ecto.UUID.load!(b)] end)
+      |> Enum.uniq()
+      |> List.delete(interface_id)
+
+    expired_ids =
+      from(e in {"interface_neighbor_evidence_neighbor_storage", InterfaceNeighborEvidence},
+        where: e.organization_id == ^organization_id and e.local_interface_id == ^interface_id,
+        where: is_nil(e.stale_at) and e.expires_at <= ^as_of,
+        select: e.id
+      )
+      |> Repo.all()
+
+    local = latest_neighbor_evidence(organization_id, expired_ids, [interface_id])
+
+    other =
+      InterfaceNeighborEvidence
+      |> where(
+        [e],
+        e.organization_id == ^organization_id and e.local_interface_id in ^neighbors and
+          is_nil(e.stale_at)
+      )
+      |> latest_evidence_query()
+      |> Repo.all()
+
+    evidence = local ++ other
+    matches = neighbor_matches(organization_id, evidence)
+    mismatches = mismatch_findings(organization_id, evidence, matches, as_of)
+
+    conflicts =
+      conflicting_findings(evidence, matches, as_of)
+      |> Enum.reject(&conflict_explained?(&1, mismatches))
+
+    adjacencies =
+      Repo.all(
+        from a in CurrentInterfaceAdjacency,
+          where:
+            a.organization_id == ^organization_id and
+              (a.interface_a_id == ^interface_id or a.interface_b_id == ^interface_id)
+      )
+
+    (ambiguous_findings(local, matches, as_of) ++
+       conflicts ++
+       mismatches ++
+       asymmetric_findings(adjacencies, as_of) ++
+       expired_findings(local, latest_neighbor_boundaries(organization_id, local), as_of))
+    |> Enum.filter(&(&1.interface_id == interface_id))
+  end
+
   defp put_reported_neighbors(
          organization_id,
          source,
@@ -769,7 +838,7 @@ defmodule Renga.Topology.NeighborReconciler do
     end)
   end
 
-  defp latest_neighbor_evidence(organization_id, newly_expired_ids) do
+  defp latest_neighbor_evidence(organization_id, newly_expired_ids, interface_ids \\ nil) do
     tracked_expired_ids =
       TopologyFinding
       |> where(
@@ -777,6 +846,7 @@ defmodule Renga.Topology.NeighborReconciler do
         finding.organization_id == ^organization_id and finding.status == "open" and
           finding.kind == "expired_adjacency"
       )
+      |> limit_finding_interfaces(interface_ids)
       |> select([finding], fragment("?->>'evidence_id'", finding.details))
       |> Repo.all()
       |> Kernel.++(newly_expired_ids)
@@ -788,10 +858,16 @@ defmodule Renga.Topology.NeighborReconciler do
       [item, interface],
       item.organization_id == ^organization_id and interface.status != "not_present"
     )
+    |> limit_evidence_interfaces(interface_ids)
     |> current_or_tracked_evidence(tracked_expired_ids)
     |> latest_evidence_query()
     |> Repo.all()
   end
+
+  defp limit_finding_interfaces(query, nil), do: query
+  defp limit_finding_interfaces(query, ids), do: where(query, [f], f.interface_id in ^ids)
+  defp limit_evidence_interfaces(query, nil), do: query
+  defp limit_evidence_interfaces(query, ids), do: where(query, [e], e.local_interface_id in ^ids)
 
   defp current_or_tracked_evidence(query, []),
     do: where(query, [item, _interface], is_nil(item.stale_at))
@@ -1155,7 +1231,8 @@ defmodule Renga.Topology.NeighborReconciler do
   defp evidence_order(item),
     do: {DateTime.to_unix(item.observed_at, :microsecond), item.observation_id}
 
-  defp primary_evidence_order(item) do
+  @doc false
+  def primary_evidence_order(item) do
     {
       evidence_order(item),
       item.protocol,

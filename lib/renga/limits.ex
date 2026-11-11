@@ -25,6 +25,36 @@ defmodule Renga.Limits do
   @max_value 9_223_372_036_854_775_807
 
   @definitions [
+    intake_bulk_rate: %{
+      env: "LIMIT_INTAKE_BULK_RATE",
+      default: 60_000,
+      unit: "requests per minute per node",
+      description:
+        "Bulk observations, telemetry, and new job leases; cannot use maintenance capacity.",
+      usage: &Renga.IntakeCapacity.bulk_usage/1
+    },
+    intake_maintenance_rate: %{
+      env: "LIMIT_INTAKE_MAINTENANCE_RATE",
+      default: 60_000,
+      unit: "requests per minute per node",
+      description: "Reserved check-ins and already-leased job reports.",
+      usage: &Renga.IntakeCapacity.maintenance_usage/1
+    },
+    installation_intake_rate: %{
+      env: "LIMIT_INSTALLATION_INTAKE_RATE",
+      default: 600,
+      unit: "requests per minute per lane per node",
+      description: "One installation's intake in each lane.",
+      usage: &Renga.IntakeCapacity.installation_usage/1
+    },
+    intake_concurrency: %{
+      env: "LIMIT_INTAKE_CONCURRENCY",
+      default: :pool_fraction,
+      unit: "operations per lane per node",
+      description:
+        "Admitted operations held through reconciliation; defaults to half an intake lane, sized from the database pool.",
+      usage: &Renga.IntakeCapacity.concurrency_usage/1
+    },
     job_creation_rate: %{
       env: "LIMIT_JOB_CREATION_RATE",
       default: 10_000,
@@ -60,7 +90,12 @@ defmodule Renga.Limits do
   def default(name) when name in @names do
     :renga
     |> Application.get_env(__MODULE__, [])
-    |> Keyword.get_lazy(name, fn -> @definitions[name].default end)
+    |> Keyword.get_lazy(name, fn ->
+      case @definitions[name].default do
+        :pool_fraction -> Renga.IntakeCapacity.organization_size()
+        value -> value
+      end
+    end)
   end
 
   @doc "The value of `name` that applies to `organization_id` now."
@@ -71,6 +106,18 @@ defmodule Renga.Limits do
     |> select([limit], limit.value)
     |> Repo.one()
     |> Kernel.||(default(name))
+  end
+
+  @doc "Effective values from one snapshot, without a query per setting."
+  def get_all(organization_id) do
+    overrides =
+      OrganizationLimit
+      |> where([limit], limit.organization_id == ^organization_id)
+      |> select([limit], {limit.name, limit.value})
+      |> Repo.all()
+      |> Map.new()
+
+    Map.new(@names, fn name -> {name, Map.get(overrides, Atom.to_string(name), default(name))} end)
   end
 
   @doc """

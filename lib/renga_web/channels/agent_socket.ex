@@ -29,7 +29,10 @@ defmodule RengaWeb.AgentSocket do
          |> assign(:current_installation_id, installation_id)
          |> assign(:current_intake_api_key, key)}
 
-      _refused ->
+      {:error, _reason} ->
+        :error
+
+      :error ->
         :error
     end
   end

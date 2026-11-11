@@ -14,6 +14,7 @@ defmodule RengaWeb.Parsers do
   @default Plug.Parsers.init(
              parsers: [:urlencoded, :multipart, :json],
              pass: ["*/*"],
+             body_reader: {__MODULE__, :read_body, []},
              json_decoder: Phoenix.json_library()
            )
 
@@ -32,11 +33,59 @@ defmodule RengaWeb.Parsers do
   @impl true
   def init(opts), do: opts
 
+  @doc false
+  def read_body(conn, options) do
+    case Plug.Conn.read_body(conn, options) do
+      {result, body, conn} ->
+        bytes = Map.get(conn.private, :intake_bytes, 0) + byte_size(body)
+        {result, body, Plug.Conn.put_private(conn, :intake_bytes, bytes)}
+
+      error ->
+        error
+    end
+  end
+
   @impl true
   def call(conn, _opts) do
-    if scim_path?(conn.path_info),
-      do: parse_scim(conn),
-      else: Plug.Parsers.call(conn, @default)
+    cond do
+      scim_path?(conn.path_info) ->
+        parse_scim(conn)
+
+      observation_path?(conn.path_info) ->
+        parse_observation(conn)
+
+      true ->
+        Plug.Parsers.call(conn, @default)
+    end
+  end
+
+  defp observation_path?(segments) do
+    Enum.map(segments, &URI.decode/1) == ["api", "v1", "observations"]
+  rescue
+    # Malformed path segments remain the router's responsibility.
+    ArgumentError -> false
+  end
+
+  defp parse_observation(conn) do
+    options =
+      Plug.Parsers.init(
+        parsers: [:json],
+        pass: ["*/*"],
+        body_reader: {__MODULE__, :read_body, []},
+        json_decoder: Phoenix.json_library(),
+        length: Renga.Inventory.AgentPayload.max_observation_bytes()
+      )
+
+    Plug.Parsers.call(conn, options)
+  rescue
+    Plug.Parsers.RequestTooLargeError ->
+      conn
+      |> Plug.Conn.put_status(:request_entity_too_large)
+      |> Phoenix.Controller.json(%{
+        status: "rejected",
+        errors: [%{path: "body", message: "observation is too large"}]
+      })
+      |> Plug.Conn.halt()
   end
 
   # The router percent-decodes path segments before matching, so

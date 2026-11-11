@@ -1943,19 +1943,17 @@ defmodule Renga.Topology do
   end
 
   defp latest_snapshot_events(organization_id, resource_id, section) do
-    latest_event =
-      from event in TopologySnapshotEvent,
-        where: event.organization_id == ^organization_id,
-        where: event.resource_id == ^resource_id and event.section == ^section,
-        where: event.source_id == parent_as(:source).id,
-        order_by: [desc: event.observed_at, desc: event.observation_id],
-        limit: 1
-
-    Source
-    |> from(as: :source)
-    |> where([source], source.organization_id == ^organization_id)
-    |> join(:inner_lateral, [source: _source], event in subquery(latest_event), on: true)
-    |> select([_source, event], event)
+    # Start at this resource's evidence, not every historical installation in
+    # the organization. Re-enrollment must not add a probe per unrelated source.
+    TopologySnapshotEvent
+    |> where([event], event.organization_id == ^organization_id)
+    |> where([event], event.resource_id == ^resource_id and event.section == ^section)
+    |> distinct([event], event.source_id)
+    |> order_by([event],
+      asc: event.source_id,
+      desc: event.observed_at,
+      desc: event.observation_id
+    )
     |> Repo.all()
     |> Map.new(&{&1.source_id, &1})
   end

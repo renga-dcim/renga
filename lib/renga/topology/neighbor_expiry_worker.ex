@@ -8,8 +8,7 @@ defmodule Renga.Topology.NeighborExpiryWorker do
 
   alias Renga.Accounts.Organization
   alias Renga.Accounts.Scope
-  alias Renga.Repo
-  alias Renga.Topology
+  alias Renga.Topology.NeighborGeneration
   alias Renga.Topology.InterfaceNeighborEvidence
 
   def start_link(options \\ []) do
@@ -24,7 +23,7 @@ defmodule Renga.Topology.NeighborExpiryWorker do
       Keyword.get(
         options,
         :interval,
-        Application.get_env(:renga, :neighbor_expiry_interval_ms, 30_000)
+        Application.get_env(:renga, :neighbor_expiry_interval_ms, 1_000)
       )
 
     sweep = Keyword.get(options, :sweep, &sweep/0)
@@ -40,23 +39,48 @@ defmodule Renga.Topology.NeighborExpiryWorker do
   end
 
   @doc false
-  def sweep(as_of \\ Renga.Time.utc_now_ms(), expire \\ &Topology.expire_interface_neighbors/2) do
-    InterfaceNeighborEvidence
-    |> join(:inner, [evidence], organization in Organization,
-      on: organization.id == evidence.organization_id
-    )
+  def sweep(as_of \\ Renga.Time.utc_now_ms(), expire \\ &advance_turn/2) do
+    from(organization in Organization, as: :organization)
+    |> where([organization], organization.status == "active")
     |> where(
-      [evidence, organization],
-      organization.status == "active" and is_nil(evidence.stale_at) and
-        evidence.expires_at <= ^as_of
+      [organization],
+      exists(
+        from e in InterfaceNeighborEvidence,
+          where:
+            e.organization_id == parent_as(:organization).id and is_nil(e.stale_at) and
+              e.expires_at <= ^as_of,
+          select: 1
+      ) or
+        fragment(
+          "EXISTS (SELECT 1 FROM neighbor_generations g WHERE g.organization_id = ? AND g.status IN ('building','published','obsolete'))",
+          organization.id
+        )
     )
-    |> distinct([evidence, _organization], evidence.organization_id)
-    |> order_by([evidence, _organization], asc: evidence.organization_id)
-    |> select([evidence, _organization], evidence.organization_id)
-    |> Repo.all()
-    |> Enum.map(fn organization_id ->
-      scope = %Scope{organization_id: organization_id, roles: ["topology_reconciler"]}
-      expire_tenant(expire, scope, as_of)
+    |> select([organization], %{organization_id: organization.id})
+    |> then(
+      &Renga.Background.run("neighbor_expiry", &1, fn organization_id ->
+        scope = %Scope{organization_id: organization_id, roles: ["topology_reconciler"]}
+        expire_tenant(expire, scope, as_of)
+      end)
+    )
+    |> Enum.map(fn
+      {:ok, result} -> result
+      failed -> failed
+    end)
+  end
+
+  # Commit each small unit before attempting the next one. The scheduler's
+  # outer deadline may cancel the last unit without discarding earlier work.
+  defp advance_turn(scope, as_of) do
+    deadline = System.monotonic_time(:millisecond) + 150
+
+    Enum.reduce_while(1..100, nil, fn _, _ ->
+      result = NeighborGeneration.step(scope, as_of)
+
+      if result in [{:ok, :building}, {:ok, :compacting}] and
+           System.monotonic_time(:millisecond) < deadline,
+         do: {:cont, result},
+         else: {:halt, result}
     end)
   end
 

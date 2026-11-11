@@ -1,11 +1,108 @@
 defmodule Renga.InventoryResourceConcurrencyTest do
   use ExUnit.Case, async: false
+  import Ecto.Query
 
   alias Ecto.Adapters.SQL.Sandbox
   alias Renga.Accounts
   alias Renga.Inventory
   alias Renga.Inventory.ResourceStore
   alias Renga.Repo
+
+  test "source edits wait before locking their tuple when reconciliation owns the organization" do
+    with_resource(fn scope, _resource ->
+      {:ok, source} = Inventory.create_source(scope, %{kind: "host_agent", name: "lock-order"})
+      parent = self()
+
+      reconciler =
+        Task.async(fn ->
+          :ok = Sandbox.checkout(Repo, sandbox: false)
+
+          try do
+            Repo.transaction(fn ->
+              Inventory.lock_organization!(scope.organization_id)
+              send(parent, :organization_locked)
+              receive do: (:read_source -> :ok)
+
+              locked =
+                Repo.one!(
+                  from s in Inventory.Source, where: s.id == ^source.id, lock: "FOR SHARE"
+                )
+
+              assert locked.status == "active"
+            end)
+          after
+            Sandbox.checkin(Repo)
+          end
+        end)
+
+      assert_receive :organization_locked
+
+      updater =
+        Task.async(fn ->
+          :ok = Sandbox.checkout(Repo, sandbox: false)
+
+          try do
+            Inventory.update_source(scope, source, %{status: "disabled"})
+          after
+            Sandbox.checkin(Repo)
+          end
+        end)
+
+      try do
+        assert Task.yield(updater, 100) == nil
+      after
+        send(reconciler.pid, :read_source)
+      end
+
+      assert {:ok, _} = Task.await(reconciler)
+      assert {:ok, %{status: "disabled"}} = Task.await(updater)
+    end)
+  end
+
+  test "a direct legacy input writer fails retryably instead of waiting with its tuple locked" do
+    with_resource(fn scope, _resource ->
+      {:ok, source} = Inventory.create_source(scope, %{kind: "manual", name: "legacy-order"})
+      parent = self()
+
+      holder =
+        Task.async(fn ->
+          :ok = Sandbox.checkout(Repo, sandbox: false)
+
+          try do
+            Repo.transaction(fn ->
+              Inventory.lock_organization!(scope.organization_id)
+              send(parent, :organization_locked)
+              receive do: (:read_source -> :ok)
+              Repo.one!(from s in Inventory.Source, where: s.id == ^source.id, lock: "FOR SHARE")
+            end)
+          after
+            Sandbox.checkin(Repo)
+          end
+        end)
+
+      assert_receive :organization_locked
+
+      try do
+        error =
+          assert_raise Postgrex.Error, fn ->
+            Repo.update_all(from(s in Inventory.Source, where: s.id == ^source.id),
+              set: [status: "disabled"]
+            )
+          end
+
+        assert error.postgres.code == :lock_not_available
+      after
+        send(holder.pid, :read_source)
+      end
+
+      assert {:ok, %{status: "active"}} = Task.await(holder)
+
+      assert {1, nil} =
+               Repo.update_all(from(s in Inventory.Source, where: s.id == ^source.id),
+                 set: [status: "disabled"]
+               )
+    end)
+  end
 
   test "concurrent stale updates allow one winner and reject the rest" do
     with_resource(fn scope, resource ->

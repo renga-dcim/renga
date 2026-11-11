@@ -657,7 +657,7 @@ defmodule Renga.Transfers.ImportTest do
   test "a copy knows every constraint that orders two IDs" do
     %{rows: rows} =
       Repo.query!("""
-      SELECT conrelid::regclass::text, pg_get_constraintdef(oid) FROM pg_constraint
+      SELECT replace(conrelid::regclass::text, '_neighbor_storage', ''), pg_get_constraintdef(oid) FROM pg_constraint
       WHERE contype = 'c' AND connamespace = current_schema()::regnamespace
         AND pg_get_constraintdef(oid) ~ '_id [<>] '
       ORDER BY 1

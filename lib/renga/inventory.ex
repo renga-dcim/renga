@@ -188,26 +188,32 @@ defmodule Renga.Inventory do
   def authenticate_intake_api_key(_token), do: :error
 
   @doc """
-  Records that an installation made an authenticated API request, whatever
-  becomes of its payload.
+  Writes a bounded, coalesced batch of authenticated installation contacts,
+  using authentication time rather than the time the recorder flushes.
 
   Contact is its own clock (RFD 1, "Collection model"): a collector whose
   reports are all rejected is still reachable, though nothing renews its
   lease. An installation that has not registered yet has no agent to update;
   it records contact when its first accepted request registers it.
   """
-  def record_intake_contact(%IntakeApiKey{organization_id: organization_id}, installation_id) do
-    now = Renga.Time.utc_now_ms()
+  def record_intake_contacts([]), do: :ok
 
-    from(agent in Agent,
-      where: agent.organization_id == ^organization_id,
-      where: agent.installation_id == ^installation_id,
-      # A slower request finishing late never moves the clock backwards.
-      update: [
-        set: [last_contacted_at: fragment("GREATEST(?, ?)", agent.last_contacted_at, ^now)]
-      ]
+  def record_intake_contacts(contacts) do
+    {organizations, installations, times} =
+      Enum.reduce(contacts, {[], [], []}, fn {org, id, at}, {orgs, ids, times} ->
+        {[Ecto.UUID.dump!(org) | orgs], [Ecto.UUID.dump!(id) | ids],
+         [DateTime.to_naive(at) | times]}
+      end)
+
+    Repo.query!(
+      """
+      UPDATE agents AS agent
+      SET last_contacted_at = GREATEST(agent.last_contacted_at, contact.at)
+      FROM unnest($1::uuid[], $2::uuid[], $3::timestamp[]) AS contact(organization_id, installation_id, at)
+      WHERE agent.organization_id = contact.organization_id AND agent.installation_id = contact.installation_id
+      """,
+      [organizations, installations, times]
     )
-    |> Repo.update_all([])
 
     :ok
   end
@@ -229,7 +235,9 @@ defmodule Renga.Inventory do
 
     with_intake_installation(scope, intake_api_key, installation_id, attrs, fn agent,
                                                                                lease,
-                                                                               _source ->
+                                                                               source ->
+      # Response assembly reuses the source read under the intake fence.
+      agent = %{agent | source: source}
       {present_installation_key!(agent, installation_key, lease.renewed_at), lease}
     end)
   end
@@ -434,10 +442,16 @@ defmodule Renga.Inventory do
   Updates source metadata while keeping token lifecycle separate.
   """
   def update_source(%Scope{} = scope, %Source{} = source, attrs) do
-    scope
-    |> get_source!(source.id)
-    |> Source.changeset(attrs)
-    |> Repo.update()
+    Repo.transaction(fn ->
+      # Neighbor input triggers may materialize a published generation. Take
+      # the canonical fence before the source tuple, as reconciliation does.
+      lock_organization!(scope.organization_id)
+
+      case scope |> get_source!(source.id) |> Source.changeset(attrs) |> Repo.update() do
+        {:ok, source} -> source
+        {:error, changeset} -> Repo.rollback(changeset)
+      end
+    end)
   end
 
   @doc """
@@ -609,7 +623,7 @@ defmodule Renga.Inventory do
     Organization
     |> where([organization], organization.id == ^organization_id)
     |> select([organization], organization.status)
-    |> lock("FOR SHARE")
+    |> lock("FOR KEY SHARE")
     |> Repo.one!()
     |> case do
       "active" -> :ok
@@ -654,7 +668,8 @@ defmodule Renga.Inventory do
     Agent
     |> where([agent], agent.organization_id == ^organization_id)
     |> where([agent], agent.installation_id == ^installation_id)
-    |> preload(:source)
+    |> join(:inner, [agent], source in assoc(agent, :source))
+    |> preload([_agent, source], source: source)
     |> Repo.one()
     |> case do
       %Agent{} = agent ->
@@ -1622,17 +1637,16 @@ defmodule Renga.Inventory do
   Stores one observation-scoped source assertion about identity.
 
   Canonical links are optional because unresolved and conflicting claims must be
-  representable before the reconciler chooses a resource.
+  representable before the reconciler chooses a resource. Reconciliation may
+  reuse its already-loaded, tenant-scoped source and immutable observation;
+  ID callers still resolve both through scoped queries.
   """
   def create_resource_identifier_claim(
         %Scope{organization_id: organization_id} = scope,
-        source_id,
-        observation_id,
+        %Source{organization_id: organization_id, id: source_id} = source,
+        %Observation{organization_id: organization_id, source_id: source_id} = observation,
         attrs
       ) do
-    source = get_source!(scope, source_id)
-    observation = get_source_observation!(scope, source.id, observation_id)
-
     Repo.transaction(fn ->
       kind = get_attr(attrs, :kind)
       normalized_value = ResourceIdentifier.normalize_value(kind, get_attr(attrs, :value))
@@ -1682,6 +1696,12 @@ defmodule Renga.Inventory do
         {:error, changeset} -> Repo.rollback(changeset)
       end
     end)
+  end
+
+  def create_resource_identifier_claim(%Scope{} = scope, source_id, observation_id, attrs) do
+    source = get_source!(scope, source_id)
+    observation = get_source_observation!(scope, source.id, observation_id)
+    create_resource_identifier_claim(scope, source, observation, attrs)
   end
 
   defp lock_and_update_claim_history(
@@ -2898,10 +2918,13 @@ defmodule Renga.Inventory do
 
   @doc false
   def lock_organization!(organization_id) do
+    # Serialize canonical mutations without blocking installation liveness.
+    # The status key still excludes suspension/deletion; keep the row before
+    # the advisory fence for compatibility with managed and older writers.
     Organization
     |> where([organization], organization.id == ^organization_id)
     |> select([organization], organization.id)
-    |> lock("FOR UPDATE")
+    |> lock("FOR NO KEY UPDATE")
     |> Repo.one!()
 
     Repo.query!("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [organization_id])

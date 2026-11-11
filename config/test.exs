@@ -31,7 +31,9 @@ config :renga, Renga.Repo,
   # Production sets a baseline from DATABASE_STATEMENT_TIMEOUT (RFD 21); tests
   # run with one too, generous enough for slow CI machines.
   parameters: [statement_timeout: "60s"],
-  pool_size: System.schedulers_online() * 2
+  # Async controller tests are independent organizations, not an overload
+  # test. Leave room for their real authentication and maintenance lanes.
+  pool_size: max(System.schedulers_online() * 2, 64)
 
 # Browser tests (tagged :playwright) need a running server to visit.
 config :renga, RengaWeb.Endpoint,
@@ -68,6 +70,7 @@ config :renga, Renga.Mailer, adapter: Swoosh.Adapters.Test
 
 # Tests invoke deterministic expiry sweeps directly under the SQL sandbox.
 config :renga, :neighbor_expiry_worker_enabled, false
+config :renga, :intake_contact_worker_enabled, false
 config :renga, :same_machine_sweeper_enabled, false
 config :renga, :collector_findings_worker_enabled, false
 config :renga, :job_sweeper_enabled, false
@@ -83,6 +86,7 @@ config :renga, :telemetry_pruner_enabled, false
 config :renga, Renga.Transfers.Export, repeatable_read: false
 config :renga, Renga.Transfers, run_exports: :inline
 config :renga, :transfer_expiry_worker_enabled, false
+config :renga, :transfer_generation_worker_enabled, false
 
 # Tests add an imperative capability to exercise retry classes.
 config :renga, Renga.Jobs.Registry, extra_capabilities: [Renga.Jobs.TestCapabilities.Restart]

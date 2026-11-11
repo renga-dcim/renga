@@ -66,6 +66,26 @@ defmodule RengaWeb.AgentSocketTest do
     assert {403, _response} = handshake([auth_protocol("renga_intake_unknown"), header])
   end
 
+  test "refuses an overloaded authentication lane without crashing the handshake", context do
+    limit = Renga.IntakeCapacity.lane_size(:authentication)
+
+    held =
+      for _ <- 1..limit do
+        {:ok, ref} = Renga.IntakeCapacity.acquire({:authentication, :bulk}, limit)
+        ref
+      end
+
+    try do
+      assert {403, _response} =
+               handshake([
+                 auth_protocol(context.token),
+                 "x-renga-installation-id: #{context.installation_id}"
+               ])
+    after
+      Enum.each(held, &Renga.IntakeCapacity.release/1)
+    end
+  end
+
   test "refuses a socket without an installation ID", context do
     assert {403, _response} = handshake([auth_protocol(context.token)])
   end

@@ -18,7 +18,6 @@ defmodule Renga.Inventory.SameMachineSweeper do
   alias Renga.Accounts.Scope
   alias Renga.Inventory.CollectorFinding
   alias Renga.Inventory.SameMachine
-  alias Renga.Repo
 
   def start_link(options \\ []) do
     {name, options} = Keyword.pop(options, :name, __MODULE__)
@@ -60,8 +59,15 @@ defmodule Renga.Inventory.SameMachineSweeper do
     |> distinct([finding, _organization], finding.organization_id)
     |> order_by([finding, _organization], asc: finding.organization_id)
     |> select([finding, _organization], finding.organization_id)
-    |> Repo.all()
-    |> Enum.map(&expire_tenant(%Scope{organization_id: &1}, as_of))
+    |> then(
+      &Renga.Background.run("same_machine", &1, fn id ->
+        expire_tenant(%Scope{organization_id: id}, as_of)
+      end)
+    )
+    |> Enum.map(fn
+      {:ok, result} -> result
+      failed -> failed
+    end)
   end
 
   defp expire_tenant(scope, as_of) do

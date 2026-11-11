@@ -4,7 +4,8 @@ defmodule RengaWeb.Api.V1.CollectionClocksTest do
   (RFD 1, "Collection model"): each kind of request moves only the clocks it
   is evidence for.
   """
-  use RengaWeb.ConnCase, async: true
+  # Contact flushing is a node-wide batch, not a sandbox-local operation.
+  use RengaWeb.ConnCase, async: false
 
   import Ecto.Query
   import Renga.AccountsFixtures
@@ -46,7 +47,24 @@ defmodule RengaWeb.Api.V1.CollectionClocksTest do
 
     conn = post_observation(context, Map.delete(observation("rejected"), "observation_id"))
     assert valid_api_response(conn, 422)
+    Renga.IntakeCapacity.flush_contacts()
 
+    agent = Repo.get!(Agent, agent.id) |> Repo.preload(:lease)
+    assert DateTime.after?(agent.last_contacted_at, @long_ago)
+    assert agent.lease.renewed_at == @long_ago
+    assert CollectionClocks.by_source(context.scope) == %{}
+
+    # Admission rejection is still authenticated contact, not lease renewal.
+    :ok =
+      Renga.Limits.set(
+        context.scope.organization,
+        [intake_bulk_rate: 0],
+        Renga.DeploymentAudit.operator("test")
+      )
+
+    rewind(agent)
+    assert valid_api_response(post_observation(context, observation("throttled")), 429)
+    Renga.IntakeCapacity.flush_contacts()
     agent = Repo.get!(Agent, agent.id) |> Repo.preload(:lease)
     assert DateTime.after?(agent.last_contacted_at, @long_ago)
     assert agent.lease.renewed_at == @long_ago
@@ -102,6 +120,7 @@ defmodule RengaWeb.Api.V1.CollectionClocksTest do
     # inventory clock.
     rewind(agent)
     assert valid_api_response(check_in(context), 202)
+    Renga.IntakeCapacity.flush_contacts()
     assert Map.fetch!(CollectionClocks.by_source(context.scope), source_id) == clocks
     agent = Repo.get!(Agent, agent.id) |> Repo.preload(:lease)
     assert DateTime.after?(agent.last_contacted_at, @long_ago)

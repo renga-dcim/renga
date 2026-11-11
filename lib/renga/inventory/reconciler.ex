@@ -362,7 +362,7 @@ defmodule Renga.Inventory.Reconciler do
         )
 
       {:error, candidates} ->
-        reconcile_claims(scope, source.id, observation, nil, %{})
+        reconcile_claims(scope, source, observation, nil, %{})
         result = record_ambiguous(scope, observation, attempt, started_at, candidates)
         {:error, result}
     end
@@ -507,7 +507,7 @@ defmodule Renga.Inventory.Reconciler do
       ensure_resource(scope, observation, identifiers, matched_resource)
 
     canonical_identifiers = reconcile_identifiers(scope, resource, identifiers)
-    reconcile_claims(scope, source.id, observation, resource, canonical_identifiers)
+    reconcile_claims(scope, source, observation, resource, canonical_identifiers)
 
     freshness_advanced? =
       current_observation?(scope, resource.id, observation) and
@@ -642,6 +642,14 @@ defmodule Renga.Inventory.Reconciler do
   end
 
   defp mac_set_candidates(scope, observed_macs) do
+    # Keep the native macaddr predicate indexable and tenant-scoped. Casting
+    # the stored column to text scans every site's interfaces under the lock.
+    macs =
+      Enum.map(observed_macs, fn value ->
+        {:ok, mac} = Renga.Types.MacAddress.cast(value)
+        mac
+      end)
+
     Resource
     |> join(:inner, [resource], interface in Interface, on: interface.resource_id == resource.id)
     |> where([resource], resource.organization_id == ^scope.organization_id)
@@ -651,9 +659,10 @@ defmodule Renga.Inventory.Reconciler do
     |> where([_resource, interface], not is_nil(interface.mac_address))
     |> join(:inner, [resource, _interface], candidate in Interface,
       on:
-        candidate.resource_id == resource.id and candidate.status != "not_present" and
+        candidate.organization_id == ^scope.organization_id and
+          candidate.resource_id == resource.id and candidate.status != "not_present" and
           candidate.kind in ^@identity_interface_kinds and
-          fragment("?::text", candidate.mac_address) in ^MapSet.to_list(observed_macs)
+          candidate.mac_address in ^macs
     )
     |> select(
       [resource, interface, _candidate],
@@ -744,14 +753,14 @@ defmodule Renga.Inventory.Reconciler do
     )
   end
 
-  defp reconcile_claims(scope, source_id, observation, resource, canonical_identifiers) do
+  defp reconcile_claims(scope, source, observation, resource, canonical_identifiers) do
     observation.payload
     |> observation_identifiers()
     |> Enum.each(fn identifier ->
       canonical = Map.get(canonical_identifiers, {identifier.kind, identifier.normalized_value})
 
       {:ok, _claim} =
-        Inventory.create_resource_identifier_claim(scope, source_id, observation.id, %{
+        Inventory.create_resource_identifier_claim(scope, source, observation, %{
           kind: identifier.kind,
           value: identifier.value,
           confidence: confidence(identifier.kind),

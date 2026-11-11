@@ -137,22 +137,34 @@ defmodule Renga.Inventory.Reconciler.Projections do
     end
   end
 
-  defp persist_component_evidence(scope, source, observation, resource, attrs) do
-    Repo.get_by(ComponentEvidence,
-      organization_id: scope.organization_id,
-      observation_id: observation.id,
-      kind: attrs["kind"],
-      source_local_id: attrs["source_local_id"]
-    ) ||
-      case Inventory.create_component_evidence(
-             scope,
-             source.id,
-             observation.id,
-             resource.id,
-             attrs
-           ) do
-        {:ok, evidence} -> evidence
-      end
+  defp persist_component_evidence(scope, source, observation, resource, components) do
+    now = Renga.Time.utc_now_ms()
+
+    components
+    |> Enum.chunk_every(100)
+    |> Enum.flat_map(fn batch ->
+      rows =
+        Enum.map(batch, fn attrs ->
+          %ComponentEvidence{
+            id: Ecto.UUID.generate(),
+            organization_id: scope.organization_id,
+            source_id: source.id,
+            observation_id: observation.id,
+            resource_id: resource.id,
+            inserted_at: now,
+            updated_at: now
+          }
+          |> ComponentEvidence.changeset(Map.put(attrs, "observed_at", observation.observed_at))
+          |> Ecto.Changeset.apply_action!(:insert)
+          |> Map.take(ComponentEvidence.__schema__(:fields))
+        end)
+
+      # Validate each row as before; foreign keys and uniqueness still apply
+      # atomically in the enclosing canonical transaction. Bound bind counts
+      # for large reports without a round trip for every DIMM.
+      {_count, evidence} = Repo.insert_all(ComponentEvidence, rows, returning: true)
+      evidence
+    end)
   end
 
   defp reported_component_attrs(payload) do
@@ -167,17 +179,7 @@ defmodule Renga.Inventory.Reconciler.Projections do
     end
   end
 
-  defp reconcile_component_evidence(
-         scope,
-         source,
-         observation,
-         resource,
-         payload,
-         current_snapshot?
-       ) do
-    complete_snapshot? =
-      complete_component_snapshot?(source, observation, payload, current_snapshot?)
-
+  defp unambiguous_component_attrs(payload) do
     component_attrs = reported_component_attrs(payload)
 
     module_identity_frequencies =
@@ -190,15 +192,40 @@ defmodule Renga.Inventory.Reconciler.Projections do
       |> Enum.filter(&(&1["kind"] == "module"))
       |> Enum.frequencies_by(&module_position_identity_key/1)
 
-    component_attrs =
-      Enum.reject(component_attrs, fn
-        %{"kind" => "module", "source_local_id" => source_local_id} = module ->
-          module_identity_frequencies[source_local_id] > 1 or
-            module_position_frequencies[module_position_identity_key(module)] > 1
+    Enum.reject(component_attrs, fn
+      %{"kind" => "module", "source_local_id" => source_local_id} = module ->
+        module_identity_frequencies[source_local_id] > 1 or
+          module_position_frequencies[module_position_identity_key(module)] > 1
 
-        _component ->
-          false
-      end)
+      _component ->
+        false
+    end)
+  end
+
+  defp component_evidence_by_identity(_scope, _observation, []), do: %{}
+
+  defp component_evidence_by_identity(scope, observation, _component_attrs) do
+    ComponentEvidence
+    |> where(
+      [e],
+      e.organization_id == ^scope.organization_id and e.observation_id == ^observation.id
+    )
+    |> Repo.all()
+    |> Map.new(&{{&1.kind, &1.source_local_id}, &1})
+  end
+
+  defp reconcile_component_evidence(
+         scope,
+         source,
+         observation,
+         resource,
+         payload,
+         current_snapshot?
+       ) do
+    complete_snapshot? =
+      complete_component_snapshot?(source, observation, payload, current_snapshot?)
+
+    component_attrs = unambiguous_component_attrs(payload)
 
     position_frequencies =
       component_attrs
@@ -206,16 +233,46 @@ defmodule Renga.Inventory.Reconciler.Projections do
       |> Enum.reject(&is_nil/1)
       |> Enum.frequencies()
 
-    Enum.each(component_attrs, fn attrs ->
-      position_key = position_identity_key(attrs)
-      allow_position_match? = not is_nil(position_key) and position_frequencies[position_key] == 1
+    # One observation owns this immutable evidence set. Load it once, then
+    # include newly inserted entries so duplicate identities and retries keep
+    # the same first-evidence behavior without a lookup per component.
+    existing = component_evidence_by_identity(scope, observation, component_attrs)
 
-      evidence = persist_component_evidence(scope, source, observation, resource, attrs)
+    missing =
+      component_attrs
+      |> Enum.uniq_by(&{&1["kind"], &1["source_local_id"]})
+      |> Enum.reject(&Map.has_key?(existing, {&1["kind"], &1["source_local_id"]}))
 
-      if evidence.kind in @canonical_component_kinds do
-        reconcile_actual_component(scope, evidence, allow_position_match?, current_snapshot?)
-      end
-    end)
+    inserted =
+      persist_component_evidence(scope, source, observation, resource, missing)
+      |> Map.new(&{{&1.kind, &1.source_local_id}, &1})
+
+    _evidence_by_identity =
+      Enum.reduce(component_attrs, existing, fn attrs, evidence_by_identity ->
+        position_key = position_identity_key(attrs)
+
+        allow_position_match? =
+          not is_nil(position_key) and position_frequencies[position_key] == 1
+
+        identity = {attrs["kind"], attrs["source_local_id"]}
+        existing_evidence = evidence_by_identity[identity]
+
+        evidence =
+          existing_evidence ||
+            Map.fetch!(inserted, identity)
+
+        if evidence.kind in @canonical_component_kinds do
+          reconcile_actual_component(
+            scope,
+            evidence,
+            allow_position_match?,
+            current_snapshot?,
+            is_nil(existing_evidence)
+          )
+        end
+
+        Map.put(evidence_by_identity, identity, evidence)
+      end)
 
     if complete_snapshot? do
       observed_ids =
@@ -299,11 +356,24 @@ defmodule Renga.Inventory.Reconciler.Projections do
 
   defp components_declared_complete?(_payload), do: false
 
-  defp reconcile_actual_component(scope, evidence, allow_position_match?, current_snapshot?) do
-    case Repo.get_by(ActualComponentEvidenceMatch,
-           organization_id: scope.organization_id,
-           component_evidence_id: evidence.id
-         ) do
+  defp reconcile_actual_component(
+         scope,
+         evidence,
+         allow_position_match?,
+         current_snapshot?,
+         new_evidence?
+       ) do
+    # A just-inserted evidence row cannot already have a match. Retries and
+    # duplicate identities still check the persisted match before reconciling.
+    existing_match =
+      unless new_evidence? do
+        Repo.get_by(ActualComponentEvidenceMatch,
+          organization_id: scope.organization_id,
+          component_evidence_id: evidence.id
+        )
+      end
+
+    case existing_match do
       nil ->
         case match_actual_component(scope.organization_id, evidence, allow_position_match?) do
           {:ok, component, strategy} ->
@@ -325,15 +395,19 @@ defmodule Renga.Inventory.Reconciler.Projections do
 
   defp match_actual_component(organization_id, evidence, allow_position_match?) do
     [
-      {"serial_number", serial_component_matches(organization_id, evidence)},
-      {"provider_id", provider_component_matches(organization_id, evidence)},
+      {"serial_number", fn -> serial_component_matches(organization_id, evidence) end},
+      {"provider_id", fn -> provider_component_matches(organization_id, evidence) end},
       {"position_part_number",
-       position_component_matches(organization_id, evidence, allow_position_match?)}
+       fn -> position_component_matches(organization_id, evidence, allow_position_match?) end}
     ]
-    |> Enum.find_value(:none, fn
-      {_strategy, []} -> false
-      {strategy, [component]} -> {:ok, component, strategy}
-      {_strategy, _ambiguous} -> :ambiguous
+    |> Enum.find_value(:none, fn {strategy, matches} ->
+      # A stronger identity decides the result. Do not scan all historical
+      # provider evidence when a serial number has already settled it.
+      case matches.() do
+        [] -> false
+        [component] -> {:ok, component, strategy}
+        _ambiguous -> :ambiguous
+      end
     end)
   end
 
@@ -360,7 +434,8 @@ defmodule Renga.Inventory.Reconciler.Projections do
     )
     |> where(
       [_component, _match, prior],
-      prior.source_id == ^evidence.source_id and
+      prior.organization_id == ^organization_id and prior.resource_id == ^evidence.resource_id and
+        prior.source_id == ^evidence.source_id and
         prior.kind == ^evidence.kind and
         prior.source_local_id == ^evidence.source_local_id
     )

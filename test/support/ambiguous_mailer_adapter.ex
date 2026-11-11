@@ -5,7 +5,10 @@ defmodule Renga.AmbiguousMailerAdapter do
 
   @impl true
   def deliver(email, _config) do
-    send(self(), {:ambiguous_email, email})
+    # Match Swoosh's test adapter when delivery runs in a supervised batch.
+    for pid <- Enum.uniq([self() | List.wrap(Process.get(:"$callers"))]),
+        do: send(pid, {:ambiguous_email, email})
+
     {:error, :provider_timeout}
   end
 end

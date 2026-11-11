@@ -27,6 +27,11 @@ defmodule RengaWeb.Api.V1.ObservationController do
          description: "This observation ID was already stored with the same payload."},
       unauthorized: Schemas.unauthorized_response(),
       forbidden: {Schemas.Rejected, description: "The organization is suspended."},
+      too_many_requests:
+        {Schemas.Rejected,
+         description: "Capacity exhausted. Retry no earlier than Retry-After seconds."},
+      request_entity_too_large:
+        {Schemas.Rejected, description: "The encoded observation exceeds the intake size bound."},
       conflict:
         {Schemas.Rejected,
          description:

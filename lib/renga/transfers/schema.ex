@@ -46,6 +46,17 @@ defmodule Renga.Transfers.Schema do
 
       Map.update(acc, table, %{column => info}, &Map.put(&1, column, info))
     end)
+    |> logical_columns()
+  end
+
+  # Current-state views retain their physical constraints. In particular,
+  # a UNION view's nullable metadata must not weaken archive validation.
+  defp logical_columns(columns) do
+    Enum.reduce(columns, columns, fn {table, fields}, acc ->
+      if String.ends_with?(table, "_neighbor_storage"),
+        do: Map.put(acc, String.replace_suffix(table, "_neighbor_storage", ""), fields),
+        else: acc
+    end)
   end
 
   @doc """
@@ -64,9 +75,9 @@ defmodule Renga.Transfers.Schema do
 
     %{rows: rows} =
       Repo.query!("""
-      SELECT source.relname,
+      SELECT regexp_replace(source.relname, '_neighbor_storage$', ''),
              array_agg(field.attname ORDER BY key.position),
-             target.relname,
+             regexp_replace(target.relname, '_neighbor_storage$', ''),
              array_agg(target_field.attname ORDER BY key.position)
       FROM pg_constraint AS constraint_
       JOIN pg_class AS source ON source.oid = constraint_.conrelid

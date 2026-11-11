@@ -251,6 +251,31 @@ defmodule Renga.Accounts.OrganizationDomainsTest do
       assert Repo.reload!(claim).verified_at == reverified_at
       refute Enum.any?(changes(organization), &(&1.metadata["change"] == "unverified"))
     end
+
+    test "rechecks rotate within an organization and preserve the quiet organization's turn", %{
+      owner: owner
+    } do
+      old = DateTime.add(Renga.Time.utc_now_ms(), -2, :day)
+      due_before = DateTime.add(Renga.Time.utc_now_ms(), -1, :day)
+      noisy = for n <- 1..6, do: verified(owner, "site#{n}.example")
+      quiet_owner = scope(organization_fixture(), "owner")
+      quiet = verified(quiet_owner, "quiet.example")
+      ids = Enum.map([quiet | noisy], & &1.id)
+      Repo.update_all(where(OrganizationDomain, [d], d.id in ^ids), set: [checked_at: old])
+
+      # A resolver failure is an attempted check, not a reason to keep the
+      # same oldest domain ahead of all the others on every invocation.
+      for claim <- noisy,
+          do: FakeTxtResolver.put(OrganizationDomains.record_name(claim), {:error, :timeout})
+
+      assert :ok = OrganizationDomains.recheck_verified(due_before)
+      assert DateTime.after?(Repo.reload!(quiet).checked_at, due_before)
+      assert Enum.count(noisy, &DateTime.after?(Repo.reload!(&1).checked_at, due_before)) == 5
+
+      assert :ok = OrganizationDomains.recheck_verified(due_before)
+      assert Enum.all?(noisy, &DateTime.after?(Repo.reload!(&1).checked_at, due_before))
+      assert Enum.all?(noisy, &Repo.reload!(&1).verified_at)
+    end
   end
 
   test "the worker checks again on its interval" do

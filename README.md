@@ -81,7 +81,7 @@ runtime server and database settings with environment variables:
 | `SECRET_KEY_BASE` | yes | Generate with `mix phx.gen.secret` |
 | `PHX_HOST` | yes | Public host name used in generated URLs, and the home agents are sent to (RFD 23) |
 | `DATABASE_SSL` | no | `true` to require TLS, verifying the server certificate against the OS trust store and the URL's host name; any `ssl` query option in `DATABASE_URL` must also be `true` |
-| `POOL_SIZE` | no | Database connections per node (default 10) |
+| `POOL_SIZE` | no | Database connections per node (default 64). Budget all replicas plus administrative connections against PostgreSQL's connection limit. See [the measured large-site/re-enrollment profile](docs/capacity-load.md); smaller overrides have not passed that capacity gate |
 | `DATABASE_STATEMENT_TIMEOUT` | no | Longest a single application statement may run, in milliseconds (default 30000), so one organization's slow query cannot hold a connection others need (RFD 21). It is sent as a connection startup parameter, so a PgBouncer in front of the database must accept `statement_timeout` (do not list it in `ignore_startup_parameters`, which would drop the bound). `bin/migrate` runs without it |
 | `DATABASE_BACKGROUND_STATEMENT_TIMEOUT` | no | Longer per-statement limit for approved background work such as job history purges, in milliseconds (default 300000) |
 | `ECTO_IPV6` | no | `true` to reach the database over IPv6 |
@@ -125,7 +125,14 @@ SLUG --actor NAME --job-creation-rate N` overrides a limit for one
 organization (RFD 21) and records the change in its Activity too,
 `limits show` lists them, and `limits clear` returns one to the deployment
 default, which `LIMIT_*` variables such as `LIMIT_JOB_CREATION_RATE` set.
-Owners see their limits and usage under Settings > Limits. `renga-admin
+Owners see their limits and usage under Settings > Limits. Intake has separate
+bulk and maintenance rates, per-installation rates, and pool-relative
+concurrency; overload returns `429` with `Retry-After`. The agent retains the
+retry deadline without extending its delivery or job-lease budget. The
+[capacity load test and recorded results](docs/capacity-load.md) describe the
+candidate defaults and outstanding launch gates: realistic full re-enrollment
+currently meets the limits, so these defaults are **not launch-validated**.
+`renga-admin
 export --organization SLUG --output FILE --actor NAME` writes one
 organization's export archive (RFD 20, [format](docs/export-format.md)) from a
 consistent snapshot; `--history` and `--raw-observations` add the optional

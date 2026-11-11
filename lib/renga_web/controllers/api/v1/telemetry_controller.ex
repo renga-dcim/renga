@@ -24,6 +24,9 @@ defmodule RengaWeb.Api.V1.TelemetryController do
         {Schemas.TelemetryAccepted,
          description: "This replay ID was already accepted with the same batch."},
       unauthorized: Schemas.unauthorized_response(),
+      too_many_requests:
+        {Schemas.Rejected,
+         description: "Capacity exhausted. Retry no earlier than Retry-After seconds."},
       forbidden: {Schemas.Rejected, description: "The installation's agent is disabled."},
       conflict:
         {Schemas.Rejected,

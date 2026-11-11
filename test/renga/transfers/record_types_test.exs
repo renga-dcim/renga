@@ -15,14 +15,15 @@ defmodule Renga.Transfers.RecordTypesTest do
       SELECT c.table_name, c.column_name
       FROM information_schema.columns AS c
       JOIN information_schema.tables AS t USING (table_schema, table_name)
-      WHERE c.table_schema = current_schema() AND t.table_type = 'BASE TABLE'
+      WHERE c.table_schema = current_schema() AND t.table_type IN ('BASE TABLE', 'VIEW')
       """)
 
     columns = Enum.group_by(columns, &hd/1, &List.last/1)
 
     %{rows: foreign_keys} =
       Repo.query!("""
-      SELECT c.conrelid::regclass::text, c.confrelid::regclass::text,
+      SELECT regexp_replace(c.conrelid::regclass::text, '_neighbor_storage$', ''),
+             regexp_replace(c.confrelid::regclass::text, '_neighbor_storage$', ''),
              (SELECT array_agg(a.attname::text ORDER BY k.n)
               FROM unnest(c.conkey) WITH ORDINALITY AS k(attnum, n)
               JOIN pg_attribute AS a ON a.attrelid = c.conrelid AND a.attnum = k.attnum)

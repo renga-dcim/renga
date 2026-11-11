@@ -130,6 +130,43 @@ defmodule Renga.AssignmentsTest do
     assert Repo.get!(Assignment, assignment.id).expired_at
   end
 
+  test "expiry makes bounded progress for a large organization without delaying a quiet one",
+       context do
+    deadline = DateTime.add(Renga.Time.utc_now_ms(), -1, :second)
+
+    # Expired assignments can coexist for the same member and role; they no
+    # longer grant access, but each still needs its own durable Activity entry.
+    noisy =
+      for _ <- 1..26 do
+        Repo.insert!(%Assignment{
+          organization_id: context.viewer.organization_id,
+          membership_id: context.viewer.membership_id,
+          built_in_role: "member",
+          valid_until: deadline
+        })
+      end
+
+    quiet_scope = member_scope(organization_fixture(), "viewer")
+
+    quiet =
+      Repo.insert!(%Assignment{
+        organization_id: quiet_scope.organization_id,
+        membership_id: quiet_scope.membership_id,
+        built_in_role: "member",
+        valid_until: deadline
+      })
+
+    Assignments.sweep_expired()
+    assert Repo.reload!(quiet).expired_at
+    completed = Enum.count(noisy, &Repo.reload!(&1).expired_at)
+    assert completed in 1..25
+
+    Assignments.sweep_expired()
+    assert Enum.all?(noisy, &Repo.reload!(&1).expired_at)
+    assert expiry_events(context.owner, quiet.id) == []
+    assert length(expiry_events(quiet_scope, quiet.id)) == 1
+  end
+
   test "member status changes cannot take away or restore assignments above the actor ceiling",
        context do
     owner_only = role(context.owner, "Organization operator", ~w(organization.manage))

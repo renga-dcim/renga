@@ -21,7 +21,7 @@ defmodule Renga.Operators.InvitationDeliveries do
   alias Renga.Repo
   alias Renga.Vault
 
-  @batch_size 100
+  @batch_size 5
   @lease_seconds 60
   @max_retry_seconds 3_600
 
@@ -85,14 +85,34 @@ defmodule Renga.Operators.InvitationDeliveries do
   end
 
   defp sweep_available(now, dispatch) do
-    ids =
+    due =
       InvitationDelivery
       |> available(now)
+      |> join(:inner, [delivery], invitation in OrganizationInvitation,
+        on: invitation.id == delivery.invitation_id
+      )
+
+    ready =
+      from [_delivery, invitation] in due,
+        distinct: invitation.organization_id,
+        select: %{organization_id: invitation.organization_id}
+
+    Renga.Background.run("invitation_delivery", ready, fn organization_id ->
+      due
+      |> where([_delivery, invitation], invitation.organization_id == ^organization_id)
       |> order_by([delivery], asc: delivery.available_at, asc: delivery.id)
       |> limit(@batch_size)
       |> select([delivery], delivery.invitation_id)
       |> Repo.all()
+      |> dispatch_available(dispatch)
+    end)
+    |> Enum.reduce(%{delivered: 0, pending: 0, discarded: 0}, fn
+      {:ok, counts}, total -> Map.merge(total, counts, fn _key, a, b -> a + b end)
+      _failure, total -> total
+    end)
+  end
 
+  defp dispatch_available(ids, dispatch) do
     Enum.reduce(ids, %{delivered: 0, pending: 0, discarded: 0}, fn id, counts ->
       case dispatch.(id) do
         :ok -> Map.update!(counts, :delivered, &(&1 + 1))

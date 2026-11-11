@@ -13,6 +13,7 @@ defmodule Renga.Telemetry.Store.Postgres do
 
   @behaviour Renga.Telemetry.Store
 
+  import Ecto.Query
   alias Renga.Repo
   alias Renga.Telemetry.Store
   alias Renga.Telemetry.Store.Bucket
@@ -20,7 +21,7 @@ defmodule Renga.Telemetry.Store.Postgres do
   @bucket_seconds 300
   @retention_seconds 30 * 86_400
   @future_seconds 300
-  @prune_batch 10_000
+  @prune_batch 1_000
 
   @impl true
   def bucket_seconds, do: @bucket_seconds
@@ -148,30 +149,42 @@ defmodule Renga.Telemetry.Store.Postgres do
   end
 
   @impl true
-  def prune(now), do: prune(Store.floor_to(horizon(now), @bucket_seconds), 0)
+  def prune(now) do
+    before = Store.floor_to(horizon(now), @bucket_seconds)
 
-  # In batches, so no one delete holds its locks for long.
-  defp prune(before, total) do
+    ready =
+      from bucket in "telemetry_buckets",
+        where: bucket.bucket_start < ^DateTime.to_naive(before),
+        distinct: bucket.organization_id,
+        select: %{organization_id: type(bucket.organization_id, Ecto.UUID)}
+
+    Renga.Background.run("telemetry_history", ready, &prune_batch(&1, before))
+    |> Enum.reduce(0, fn
+      {:ok, count}, total -> total + count
+      _, total -> total
+    end)
+  end
+
+  defp prune_batch(organization_id, before) do
     {:ok, deleted} =
-      Repo.with_statement_timeout(Repo.background_statement_timeout_ms(), fn query_options ->
+      Repo.with_statement_timeout(200, fn query_options ->
         %{num_rows: deleted} =
           Repo.query!(
             """
             DELETE FROM telemetry_buckets
             WHERE ctid IN (
-              SELECT ctid FROM telemetry_buckets WHERE bucket_start < $1 LIMIT $2
+              SELECT ctid FROM telemetry_buckets
+              WHERE organization_id = $1 AND bucket_start < $2 LIMIT $3
             )
             """,
-            [DateTime.to_naive(before), @prune_batch],
+            [Ecto.UUID.dump!(organization_id), DateTime.to_naive(before), @prune_batch],
             query_options
           )
 
         deleted
       end)
 
-    if deleted == @prune_batch,
-      do: prune(before, total + deleted),
-      else: total + deleted
+    deleted
   end
 
   defp horizon(now), do: DateTime.add(now, -@retention_seconds, :second)

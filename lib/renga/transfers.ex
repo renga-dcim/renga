@@ -40,6 +40,7 @@ defmodule Renga.Transfers do
   @chunk_bytes 1024 * 1024
   # A node that stops mid-export leaves it running; one this old has died.
   @stale_after_hours 24
+  @generation_budget_ms 59_000
 
   @doc "How long an archive is offered for download, in days."
   def validity_days, do: @validity_days
@@ -70,7 +71,7 @@ defmodule Renga.Transfers do
     parts = Enum.filter(Archive.parts(), &(&1 in parts))
 
     scope
-    |> insert_export(parts)
+    |> insert_export(parts, url_fun)
     |> Changes.broadcast(scope.organization_id)
     |> tap(fn
       {:ok, export} -> run_in_background(export, url_fun)
@@ -78,7 +79,7 @@ defmodule Renga.Transfers do
     end)
   end
 
-  defp insert_export(scope, parts) do
+  defp insert_export(scope, parts, url_fun) do
     Repo.transaction(fn ->
       authorize_export!(scope)
 
@@ -87,6 +88,7 @@ defmodule Renga.Transfers do
         requested_by_user_id: scope.user.id,
         parts: parts,
         readable_payloads: scope |> Jobs.readable_payloads() |> Enum.sort(),
+        notification_url: url_fun.(),
         status: "running"
       }
       |> Ecto.Changeset.change()
@@ -112,10 +114,9 @@ defmodule Renga.Transfers do
         run(export.id, url_fun)
 
       _background ->
-        {:ok, _pid} =
-          Task.Supervisor.start_child(Renga.Transfers.TaskSupervisor, fn ->
-            run(export.id, url_fun)
-          end)
+        # The durable row is the queue. A request cannot spawn another
+        # snapshot task while this node's export reserve is occupied.
+        :ok
     end
 
     :ok
@@ -125,27 +126,60 @@ defmodule Renga.Transfers do
   # Writes the archive and stores it, unless the export was revoked
   # meanwhile. A failure marks the export failed rather than leaving it
   # running.
-  def run(export_id, url_fun) do
+  def run(export_id, url_fun, options \\ []) do
+    started = System.monotonic_time(:millisecond)
     export = Repo.get!(OrganizationExport, export_id)
     organization = Repo.get!(Organization, export.organization_id)
     # The archive holds the whole organization, so it is written in a new
     # directory only this node's user can read, as the CLI's output is.
-    dir = Path.join(System.tmp_dir!(), "renga-export-#{Ecto.UUID.generate()}")
+    dir =
+      Path.join(
+        Keyword.get_lazy(options, :tmp_dir, &System.tmp_dir!/0),
+        "renga-export-#{Ecto.UUID.generate()}"
+      )
+
+    previous_trap_exit = Process.flag(:trap_exit, true)
 
     try do
       File.mkdir!(dir)
       File.chmod!(dir, 0o700)
       path = Path.join(dir, "#{export.id}.tar.zst")
 
-      {:ok, summary} =
-        Export.write(organization, path,
-          parts: export.parts,
-          readable_payloads: export.readable_payloads
+      # Link cancellation to the owner as well as the ordinary deadline:
+      # an outer worker timeout must not leave its snapshot running.
+      task =
+        Task.Supervisor.async(Renga.Background.Tasks, fn ->
+          {:ok, summary} =
+            Export.write(
+              organization,
+              path,
+              Keyword.merge(options,
+                tmp_dir: dir,
+                parts: export.parts,
+                readable_payloads: export.readable_payloads
+              )
+            )
+
+          case store(export, path, summary) do
+            {:ok, export} -> notify_ready(export, organization, url_fun)
+            {:error, :not_running} -> :ok
+          end
+        end)
+
+      budget =
+        max(
+          Keyword.get(options, :budget_ms, @generation_budget_ms) -
+            (System.monotonic_time(:millisecond) - started),
+          0
         )
 
-      case store(export, path, summary) do
-        {:ok, export} -> notify_ready(export, organization, url_fun)
-        {:error, :not_running} -> :ok
+      case await_snapshot(task, budget) do
+        {:ok, _result} ->
+          :ok
+
+        result ->
+          Logger.error("Organization export #{export.id} failed: #{inspect(result)}")
+          fail(export)
       end
     rescue
       exception ->
@@ -153,17 +187,110 @@ defmodule Renga.Transfers do
         fail(export)
     after
       File.rm_rf(dir)
+      Process.flag(:trap_exit, previous_trap_exit)
     end
   end
+
+  # Task.yield ignores linked parent exits while this process traps exits.
+  # Cancel the snapshot before unwinding through cleanup and releasing the
+  # batch's execution permit, even when its coordinator has been killed.
+  defp await_snapshot(task, budget) do
+    receive do
+      {ref, result} when ref == task.ref ->
+        Process.demonitor(ref, [:flush])
+        {:ok, result}
+
+      {:DOWN, ref, :process, _pid, reason} when ref == task.ref ->
+        {:exit, reason}
+
+      {:EXIT, pid, reason} when pid != task.pid and reason != :normal ->
+        Task.shutdown(task, :brutal_kill)
+        exit(reason)
+    after
+      budget -> Task.shutdown(task, :brutal_kill)
+    end
+  end
+
+  @doc false
+  def generate_queued do
+    now = Renga.Time.utc_now_ms()
+
+    ready =
+      from export in OrganizationExport,
+        where: export.status == "running",
+        where: is_nil(export.processing_deadline) or export.processing_deadline <= ^now,
+        distinct: export.organization_id,
+        select: %{organization_id: export.organization_id}
+
+    Renga.Background.run("export_generation", ready, &generate_organization/1,
+      budget_ms: 60_000,
+      batch_timeout_ms: 60_000,
+      max_batches: 1
+    )
+  end
+
+  defp generate_organization(organization_id) do
+    started = System.monotonic_time(:millisecond)
+
+    {:ok, claimed} =
+      Repo.transaction(fn ->
+        # The same row-before-child order as revocation and lifecycle purge.
+        Repo.query!("SELECT id FROM organizations WHERE id = $1 FOR KEY SHARE", [
+          Ecto.UUID.dump!(organization_id)
+        ])
+
+        export =
+          Repo.one(
+            from export in OrganizationExport,
+              where: export.organization_id == ^organization_id and export.status == "running",
+              lock: "FOR UPDATE SKIP LOCKED"
+          )
+
+        claim_generation!(export)
+      end)
+
+    if claimed do
+      url = claimed.notification_url || RengaWeb.Endpoint.url() <> "/settings/export"
+
+      run(claimed.id, fn -> url end,
+        budget_ms: max(@generation_budget_ms - (System.monotonic_time(:millisecond) - started), 0)
+      )
+    end
+  end
+
+  defp claim_generation!(%OrganizationExport{processing_deadline: nil} = export) do
+    export
+    |> Ecto.Changeset.change(
+      processing_deadline: DateTime.add(Renga.Time.utc_now_ms(), 60, :second)
+    )
+    |> Repo.update!()
+  end
+
+  defp claim_generation!(%OrganizationExport{} = export) do
+    # A claimed snapshot cannot be resumed across a crashed database
+    # transaction. Fail it once; never publish or restart a stale claim.
+    if DateTime.compare(export.processing_deadline, Renga.Time.utc_now_ms()) != :gt,
+      do: mark_failed!(export)
+
+    nil
+  end
+
+  defp claim_generation!(nil), do: nil
 
   defp store(export, path, summary) do
     result =
       Repo.transaction(
         fn ->
+          Repo.query!("SELECT id FROM organizations WHERE id = $1 FOR KEY SHARE", [
+            Ecto.UUID.dump!(export.organization_id)
+          ])
+
           case locked_export(export.organization_id, export.id) do
             %OrganizationExport{status: "running"} = export ->
+              check_generation_deadline!(export)
               {bytes, sha256} = insert_chunks(export, path)
               now = Renga.Time.utc_now_ms()
+              check_generation_deadline!(export)
 
               export
               |> Ecto.Changeset.change(
@@ -181,10 +308,17 @@ defmodule Renga.Transfers do
               Repo.rollback(:not_running)
           end
         end,
-        timeout: :infinity
+        timeout: @generation_budget_ms
       )
 
     Changes.broadcast(result, export.organization_id)
+  end
+
+  defp check_generation_deadline!(%{processing_deadline: nil}), do: :ok
+
+  defp check_generation_deadline!(%{processing_deadline: deadline}) do
+    if DateTime.compare(deadline, Renga.Time.utc_now_ms()) != :gt,
+      do: Repo.rollback(:not_running)
   end
 
   defp insert_chunks(export, path) do
@@ -225,7 +359,7 @@ defmodule Renga.Transfers do
   end
 
   defp fail(export) do
-    Repo.transaction(fn ->
+    Repo.with_statement_timeout(200, fn _options ->
       lock_organization!(export.organization_id)
 
       case locked_export(export.organization_id, export.id) do
@@ -365,24 +499,54 @@ defmodule Renga.Transfers do
 
     due =
       OrganizationExport
+      |> from(as: :export)
       |> where(
         [export],
         (export.status == "ready" and export.expires_at <= ^now) or
-          (export.status == "running" and export.inserted_at <= ^stale_before)
+          (export.status == "running" and export.inserted_at <= ^stale_before) or
+          (export.status in ~w(expired failed revoked) and
+             exists(
+               from chunk in "organization_export_chunks",
+                 where: chunk.export_id == parent_as(:export).id,
+                 select: 1
+             ))
       )
-      |> select([export], {export.organization_id, export.id})
+
+    ready =
+      from export in due,
+        distinct: export.organization_id,
+        select: %{organization_id: export.organization_id}
+
+    Renga.Background.run("export_expiry", ready, fn organization_id ->
+      due
+      |> where([export], export.organization_id == ^organization_id)
+      |> order_by([export], asc: export.id)
+      |> limit(5)
+      |> select([export], export.id)
       |> Repo.all()
-
-    Enum.count(due, fn {organization_id, export_id} ->
-      {:ok, changed?} =
-        Repo.transaction(fn ->
-          lock_organization!(organization_id)
-          organization_id |> locked_export(export_id) |> sweep_one(now, stale_before)
-        end)
-
-      if changed?, do: Changes.broadcast({:ok, nil}, organization_id)
-      changed?
+      |> Enum.count(&sweep_export(organization_id, &1, now, stale_before))
     end)
+    |> Enum.reduce(0, fn
+      {:ok, count}, total -> total + count
+      _failure, total -> total
+    end)
+  end
+
+  defp sweep_export(organization_id, export_id, now, stale_before) do
+    {:ok, changed?} =
+      Repo.transaction(fn ->
+        lock_organization!(organization_id)
+        export = locked_export(organization_id, export_id)
+        changed? = sweep_one(export, now, stale_before)
+
+        if export && (changed? or export.status in ~w(expired failed revoked)),
+          do: delete_chunk_batch!(export)
+
+        changed?
+      end)
+
+    if changed?, do: Changes.broadcast({:ok, nil}, organization_id)
+    changed?
   end
 
   # Rechecked under the lock: a revocation may have won the race.
@@ -397,7 +561,8 @@ defmodule Renga.Transfers do
   defp sweep_one(_export, _now, _stale_before), do: false
 
   defp expire!(export) do
-    delete_chunks!(export)
+    # Stop downloads atomically; byte reclamation then advances in bounded
+    # batches even when an archive is too large for one worker deadline.
     export |> Ecto.Changeset.change(status: "expired") |> Repo.update!()
     record!(export, nil, "export_expired", %{})
     true
@@ -457,6 +622,17 @@ defmodule Renga.Transfers do
     Repo.query!("DELETE FROM organization_export_chunks WHERE export_id = $1", [
       Ecto.UUID.dump!(export.id)
     ])
+  end
+
+  defp delete_chunk_batch!(export) do
+    Repo.query!(
+      """
+      DELETE FROM organization_export_chunks WHERE export_id = $1 AND position IN
+        (SELECT position FROM organization_export_chunks WHERE export_id = $1
+         ORDER BY position LIMIT 25)
+      """,
+      [Ecto.UUID.dump!(export.id)]
+    )
   end
 
   defp record!(export, actor_user_id, kind, metadata) do

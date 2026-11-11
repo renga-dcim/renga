@@ -2036,6 +2036,16 @@
               }
             },
             "description": "The check-in payload is invalid."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "Capacity exhausted. Retry no earlier than Retry-After seconds."
           }
         },
         "description": "Renews the collector's lease and stores its capabilities and metadata. The first check-in from an installation registers the collector.",
@@ -2158,6 +2168,16 @@
               }
             },
             "description": "The lease request is invalid."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "Capacity exhausted. Retry no earlier than Retry-After seconds."
           }
         },
         "description": "Leases up to `limit` queued `observe` jobs for the calling installation whose capability it listed, and offers privileged jobs within the same limit for it to claim with a signature (RFD 13). The installation must have checked in first.",
@@ -2257,6 +2277,16 @@
               }
             },
             "description": "The claim is invalid."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "Capacity exhausted. Retry no earlier than Retry-After seconds."
           }
         },
         "description": "Leases a privileged job offered by `leaseAgentJobs` when the signature verifies against the installation's approved key (RFD 13). A job whose resource was bound elsewhere in the meantime fails instead.",
@@ -2376,6 +2406,16 @@
               }
             },
             "description": "The report is invalid."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "Capacity exhausted. Retry no earlier than Retry-After seconds."
           }
         },
         "description": "Records a numbered report on a job the installation holds and extends its lease. Resending a recorded sequence replays it without recording or extending anything. The response says whether cancellation was requested.",
@@ -2476,6 +2516,16 @@
             },
             "description": "The installation ID is registered to a different collector source, the `observation_id` was already used for a different payload, or the named collector is disabled or registered with a different kind."
           },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "The encoded observation exceeds the intake size bound."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -2485,6 +2535,16 @@
               }
             },
             "description": "The observation is invalid."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "Capacity exhausted. Retry no earlier than Retry-After seconds."
           }
         },
         "description": "Stores a point-in-time report about the collector's host, or from one of its collector modules, then reconciles it into inventory once. Retries are safe: resending an observation under the same `observation_id` returns the stored one.",
@@ -2584,6 +2644,16 @@
               }
             },
             "description": "The batch is invalid."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "Capacity exhausted. Retry no earlier than Retry-After seconds."
           }
         },
         "description": "Accepts timed readings, such as power draw, from the installation's host or one of its collector modules. Retries are safe: resending a batch under the same `replay_id` returns the accepted one.",

@@ -33,8 +33,8 @@ defmodule Renga.LimitsTest do
     organization = organization_fixture()
     :ok = Limits.set(organization, [job_creation_rate: 5], Renga.DeploymentAudit.operator("test"))
 
-    assert [%{name: :job_creation_rate, value: 5, default: 10_000, overridden?: true}] =
-             Limits.list(organization)
+    assert %{name: :job_creation_rate, value: 5, default: 10_000, overridden?: true} =
+             Enum.find(Limits.list(organization), &(&1.name == :job_creation_rate))
   end
 
   test "parse_name/1 accepts only known limits" do

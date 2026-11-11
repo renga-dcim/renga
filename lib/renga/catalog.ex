@@ -1132,9 +1132,18 @@ defmodule Renga.Catalog do
         evidence.resource_id == ^resource.id
     )
     |> join(:left, [evidence], match in ActualComponentEvidenceMatch,
-      on: match.component_evidence_id == evidence.id
+      on:
+        match.component_evidence_id == evidence.id and
+          match.organization_id == ^scope.organization_id and
+          match.owner_resource_id == ^resource.id
     )
-    |> where([evidence, match], evidence.kind in ^@canonical_component_kinds and is_nil(match.id))
+    # The composite evidence FK guarantees this scope. Exposing it lets the
+    # covering index supply one resource's match IDs in a single scan rather
+    # than probing the global match index for every historical evidence row.
+    |> where(
+      [evidence, match],
+      evidence.kind in ^@canonical_component_kinds and is_nil(match.component_evidence_id)
+    )
     |> Repo.all()
     |> Enum.map(fn evidence ->
       %{

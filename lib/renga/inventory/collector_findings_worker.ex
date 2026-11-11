@@ -38,8 +38,16 @@ defmodule Renga.Inventory.CollectorFindingsWorker do
 
   @doc false
   def sweep(now \\ Renga.Time.utc_now_ms()) do
-    Enum.map(CollectorFindings.organization_ids(), fn organization_id ->
-      refresh_tenant(%Scope{organization_id: organization_id}, now)
+    Renga.Background.run(
+      "collector_findings",
+      CollectorFindings.organization_query(),
+      fn organization_id ->
+        refresh_tenant(%Scope{organization_id: organization_id}, now)
+      end
+    )
+    |> Enum.map(fn
+      {:ok, result} -> result
+      failed -> failed
     end)
   end
 

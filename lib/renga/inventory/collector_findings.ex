@@ -108,11 +108,11 @@ defmodule Renga.Inventory.CollectorFindings do
   end
 
   @doc """
-  Active organizations whose collector evidence can open or resolve these
+  Query of active organizations whose collector evidence can open or resolve these
   findings: those with a collector target, or with an open finding that
   time could resolve.
   """
-  def organization_ids do
+  def organization_query do
     with_findings =
       CollectorFinding
       |> where([finding], finding.status == "open" and finding.kind in ^@timed_kinds)
@@ -134,6 +134,5 @@ defmodule Renga.Inventory.CollectorFindings do
     |> where([_row, organization], organization.status == "active")
     |> distinct(true)
     |> select([row], row.organization_id)
-    |> Repo.all()
   end
 end

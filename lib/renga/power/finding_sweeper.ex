@@ -59,11 +59,14 @@ defmodule Renga.Power.FindingSweeper do
   does not stop the rest.
   """
   def sweep do
-    Enum.each(organizations(), fn organization ->
+    Renga.Background.run("power_findings", organizations(), fn id ->
+      organization = Repo.get!(Organization, id)
       scope = Accounts.scope_for(organization)
       reconcile(organization, scope)
       record_history(organization, scope)
     end)
+
+    :ok
   end
 
   defp reconcile(organization, scope) do
@@ -98,7 +101,7 @@ defmodule Renga.Power.FindingSweeper do
     Organization
     |> where([organization], organization.status == "active")
     |> where([organization], organization.id in subquery(with_power))
-    |> Repo.all()
+    |> select([organization], %{organization_id: organization.id})
   end
 
   # Sweeps start on whole multiples of the interval, so history records
