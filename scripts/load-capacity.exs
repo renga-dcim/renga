@@ -1,16 +1,20 @@
 # Run only against the disposable local test database:
 # nix develop --command env MIX_ENV=test MIX_TEST_PARTITION=_capacity mix run --no-start scripts/load-capacity.exs
 # Uses the complete Endpoint (body parser, auth, admission, controller and
-# reconciliation) and real PostgreSQL, not a simulated limiter or mocked Repo.
+# durable acceptance) and the autonomous executor against real PostgreSQL.
+# Exploratory only: stage 2/3 and immutable topology are not exercised.
 defmodule Renga.CapacityLoad do
   import Ecto.Query
   import Renga.AccountsFixtures
   import Renga.InventoryFixtures
   alias Renga.{Accounts, Inventory, Repo}
+  alias Renga.Inventory.{Agent, Observation, ReconciliationLane, ReconciliationWork}
 
-  @hosts 3_000
-  @baseline_seconds 60
-  @enrollment_seconds 300
+  @hosts String.to_integer(System.get_env("LOAD_HOSTS", "3000"))
+  @baseline_seconds String.to_integer(System.get_env("LOAD_BASELINE_SECONDS", "60"))
+  @enrollment_seconds String.to_integer(System.get_env("LOAD_ENROLLMENT_SECONDS", "300"))
+  @drain_ms String.to_integer(System.get_env("LOAD_DRAIN_TIMEOUT_MS", "300000"))
+  @harness_sha256 Base.encode16(:crypto.hash(:sha256, File.read!(__ENV__.file)), case: :lower)
 
   def run do
     unless Mix.env() == :test, do: raise("capacity load must use the disposable test database")
@@ -22,7 +26,7 @@ defmodule Renga.CapacityLoad do
           "use MIX_TEST_PARTITION=_capacity; this script retains its disposable database for inspection"
         )
 
-    pool = String.to_integer(System.get_env("LOAD_POOL_SIZE", "64"))
+    pool = String.to_integer(System.get_env("LOAD_POOL_SIZE", "10"))
     database_profile? = System.get_env("LOAD_DATABASE_PROFILE") == "true"
 
     parameters =
@@ -47,6 +51,12 @@ defmodule Renga.CapacityLoad do
     )
 
     Application.put_env(:renga, :intake_contact_worker_enabled, true)
+
+    Application.put_env(
+      :renga,
+      :reconciliation_worker_enabled,
+      System.get_env("LOAD_RECONCILIATION_ENABLED") != "false"
+    )
 
     Application.put_env(
       :renga,
@@ -78,6 +88,8 @@ defmodule Renga.CapacityLoad do
     :ets.new(__MODULE__, [:named_table, :public])
     :ets.new(:capacity_queries, [:named_table, :public])
     :ets.new(:capacity_slow_queries, [:named_table, :public, :ordered_set])
+    :ets.new(:capacity_receipts, [:named_table, :public])
+    :ets.new(:capacity_successes, [:named_table, :public])
 
     if System.get_env("LOAD_PROFILE") == "true" do
       :telemetry.attach(
@@ -98,6 +110,11 @@ defmodule Renga.CapacityLoad do
     fleet = fleet("large-site")
     quiet = fleet("quiet-neighbor")
 
+    :persistent_term.put({__MODULE__, :organizations}, [
+      fleet.organization.id,
+      quiet.organization.id
+    ])
+
     reuse? = System.get_env("LOAD_REUSE") == "true"
 
     hosts =
@@ -110,7 +127,15 @@ defmodule Renga.CapacityLoad do
 
     seed =
       if reuse? do
-        %{name: "seed", reused: true}
+        pending =
+          Repo.all(
+            from work in ReconciliationWork,
+              where:
+                work.organization_id == ^fleet.organization.id and work.status != "succeeded",
+              select: work.id
+          )
+
+        %{name: "seed", reused: true, processing: drain(pending, false)}
       else
         seed =
           phase(
@@ -123,6 +148,8 @@ defmodule Renga.CapacityLoad do
         assert_accepted!(seed)
         seed
       end
+
+    seed = Map.put(seed, :canonical_projection, assert_resources!(fleet, @hosts))
 
     # Agents default to hourly inventory and 60-second check-ins. Stable
     # evenly spread offsets model scheduled jitter rather than a stampede.
@@ -143,21 +170,24 @@ defmodule Renga.CapacityLoad do
           do: {div((n - 1) * @enrollment_seconds * 1_000, @hosts), {:enroll, n, id}}
 
     maintenance =
-      for minute <- 0..4,
+      for minute <- 0..div(@enrollment_seconds - 1, 60),
           {n, id} <- hosts,
           minute * 60_000 + div((n - 1) * 60_000, @hosts) <
             div((n - 1) * @enrollment_seconds * 1_000, @hosts),
           do: {minute * 60_000 + div((n - 1) * 60_000, @hosts), {:checkin, n, id}}
 
     new_maintenance =
-      for minute <- 1..4,
+      for minute <- 1..max(div(@enrollment_seconds - 1, 60), 1),
           {n, id} <- reenrolled,
+          minute * 60_000 + div((n - 1) * 60_000, @hosts) < @enrollment_seconds * 1_000,
           minute * 60_000 + div((n - 1) * 60_000, @hosts) >
             div((n - 1) * @enrollment_seconds * 1_000, @hosts),
           do: {minute * 60_000 + div((n - 1) * 60_000, @hosts), {:checkin, n, id}}
 
     enrollment =
       scheduled("full_reenrollment", enrollment_events ++ maintenance ++ new_maintenance, fleet)
+
+    enrollment = Map.put(enrollment, :canonical_projection, assert_resources!(fleet, @hosts))
 
     # A deliberately saturated admitted bulk operation, not just a low
     # configured rate. Every quiet request runs while the noisy permits
@@ -195,13 +225,28 @@ defmodule Renga.CapacityLoad do
         Enum.each(held, &Renga.IntakeCapacity.release/1)
       end
 
+    processing_neighbor = processing_neighbor(fleet, quiet, reenrolled)
+    final_backlog = backlog()
+
+    unless Enum.all?(
+             final_backlog,
+             &(&1.pending_units == 0 and &1.pending_bytes == 0 and &1.outstanding == [])
+           ),
+           do: raise("run ended with an unresolved or charged obligation")
+
     result = %{
+      exploratory: true,
+      harness_sha256: @harness_sha256,
       hosts: @hosts,
       pool_size: pool,
+      organizations: %{large_site: fleet.organization.id, quiet_neighbor: quiet.organization.id},
+      intake_limits: limits,
+      pending_work_limits: ReconciliationWork.limits(fleet.organization.id),
+      final_backlog: final_backlog,
       application_modules_preloaded: true,
       baseline_seconds: @baseline_seconds,
       enrollment_seconds: @enrollment_seconds,
-      phases: [seed, baseline, enrollment, neighbor]
+      phases: [seed, baseline, enrollment, neighbor, processing_neighbor]
     }
 
     IO.puts(Jason.encode!(result, pretty: true))
@@ -275,14 +320,41 @@ defmodule Renga.CapacityLoad do
     :ets.delete_all_objects(:capacity_queries)
     :ets.delete_all_objects(:capacity_slow_queries)
 
-    values =
-      events
-      |> Task.async_stream(operation,
-        max_concurrency: concurrency,
-        ordered: false,
-        timeout: :infinity
-      )
-      |> Enum.flat_map(fn {:ok, results} -> results end)
+    sampler = Task.async(fn -> sample_backlog([]) end)
+
+    {values, processing, samples} =
+      try do
+        values =
+          events
+          |> Task.async_stream(operation,
+            max_concurrency: concurrency,
+            ordered: false,
+            timeout: :infinity
+          )
+          |> Enum.flat_map(fn {:ok, results} -> results end)
+
+        acceptance_elapsed = System.monotonic_time(:millisecond) - started
+        accepted = Enum.reject(values, &is_nil(&1.work_id))
+
+        IO.puts(
+          Jason.encode!(%{
+            event: "acceptance_complete",
+            phase: name,
+            statuses: Enum.frequencies_by(values, & &1.status),
+            receipts: length(accepted),
+            elapsed_ms: acceptance_elapsed
+          })
+        )
+
+        processing =
+          drain(Enum.map(accepted, & &1.work_id))
+          |> Map.put(:acceptance_elapsed_ms, acceptance_elapsed)
+
+        {values, processing}
+      after
+        send(sampler.pid, :stop)
+      end
+      |> then(fn {values, processing} -> {values, processing, Task.await(sampler, 5_000)} end)
 
     times = values |> Enum.map(& &1.ms) |> Enum.sort()
 
@@ -298,7 +370,8 @@ defmodule Renga.CapacityLoad do
       p95_ms: Enum.at(times, trunc(length(times) * 0.95)),
       p99_ms: Enum.at(times, min(trunc(length(times) * 0.99), length(times) - 1)),
       admission_rejections: Map.new(:ets.tab2list(__MODULE__)),
-      failed_reconciliations: Enum.count(values, & &1.failed_reconciliation)
+      processing: processing,
+      backlog_samples: samples
     }
 
     if System.get_env("LOAD_PROFILE") == "true" do
@@ -424,9 +497,341 @@ defmodule Renga.CapacityLoad do
   end
 
   defp assert_accepted!(result) do
-    unless Enum.all?(result.statuses, fn {status, _} -> status in [200, 202] end) and
-             result.failed_reconciliations == 0,
-           do: raise("load phase #{result.name} failed; see status/reconciliation totals")
+    unless Enum.all?(result.statuses, fn {status, _} -> status in [200, 202] end),
+      do: raise("load phase #{result.name} failed; see status/reconciliation totals")
+  end
+
+  defp sample_backlog(samples, next_sample \\ 0) do
+    observe_successes(:ets.select(:capacity_receipts, [{{:"$1", :_}, [], [:"$1"]}]))
+    now = System.monotonic_time(:millisecond)
+
+    {samples, next_sample} =
+      if next_sample == 0 or now >= next_sample do
+        {[%{at_ms: System.system_time(:millisecond), organizations: backlog()} | samples],
+         now + 1_000}
+      else
+        {samples, next_sample}
+      end
+
+    receive do
+      :stop -> Enum.reverse(samples)
+    after
+      100 -> sample_backlog(samples, next_sample)
+    end
+  end
+
+  defp backlog do
+    organizations = :persistent_term.get({__MODULE__, :organizations})
+
+    rows =
+      Repo.all(
+        from lane in ReconciliationLane,
+          left_join: work in ReconciliationWork,
+          on: work.organization_id == lane.organization_id and work.status != "succeeded",
+          where: lane.organization_id in ^organizations,
+          group_by: [lane.organization_id, lane.pending_units, lane.pending_bytes, work.status],
+          select: %{
+            organization_id: lane.organization_id,
+            pending_units: lane.pending_units,
+            pending_bytes: lane.pending_bytes,
+            status: work.status,
+            count: count(work.id),
+            oldest: min(work.inserted_at),
+            now: type(fragment("clock_timestamp()"), :utc_datetime_usec)
+          }
+      )
+
+    rows
+    |> Enum.group_by(& &1.organization_id)
+    |> Enum.map(fn {org, [first | _] = rows} ->
+      %{
+        organization_id: org,
+        pending_units: first.pending_units,
+        pending_bytes: first.pending_bytes,
+        outstanding:
+          rows
+          |> Enum.reject(&(&1.count == 0))
+          |> Enum.map(fn row ->
+            %{
+              status: row.status,
+              count: row.count,
+              oldest_age_ms: DateTime.diff(row.now, row.oldest, :millisecond)
+            }
+          end)
+      }
+    end)
+  end
+
+  defp drain(ids, validate? \\ true) do
+    started = System.monotonic_time(:millisecond)
+    if validate?, do: validate_receipts!(ids)
+    await_success(ids, started + @drain_ms)
+
+    times =
+      ids
+      |> Enum.map(fn id ->
+        [{^id, accepted, observed}] = :ets.lookup(:capacity_successes, id)
+        DateTime.diff(observed, accepted, :millisecond)
+      end)
+      |> Enum.sort()
+
+    assert_debits!()
+
+    %{
+      accepted_work: length(ids),
+      succeeded_work: length(times),
+      drain_ms: System.monotonic_time(:millisecond) - started,
+      accepted_to_observed_success_p95_ms: percentile(times, 0.95),
+      accepted_to_observed_success_p99_ms: percentile(times, 0.99),
+      accepted_to_observed_success_max_ms: List.last(times),
+      nominal_poll_ms: 100,
+      final_backlog: backlog()
+    }
+  end
+
+  defp percentile([], _fraction), do: nil
+
+  defp percentile(times, fraction),
+    do: Enum.at(times, min(trunc(length(times) * fraction), length(times) - 1))
+
+  defp await_success(ids, deadline) do
+    observe_successes(ids)
+
+    statuses =
+      Repo.all(from work in ReconciliationWork, where: work.id in ^ids, select: work.status)
+
+    cond do
+      length(statuses) == length(ids) and Enum.all?(statuses, &(&1 == "succeeded")) ->
+        # A turn can commit between the observation query and this status read.
+        observe_successes(ids)
+        :ok
+
+      "quarantined" in statuses ->
+        raise("processing quarantined work: #{inspect(Enum.frequencies(statuses))}")
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        raise("processing drain timed out: #{inspect(backlog())}")
+
+      true ->
+        Process.sleep(100)
+        await_success(ids, deadline)
+    end
+  end
+
+  # The database clock is sampled only after the succeeded row is visible to
+  # another connection. Unlike attempt.completed_at this includes commit and
+  # required effects. Poll scheduling/query time makes it an upper bound.
+  defp observe_successes(ids) do
+    unseen = Enum.reject(ids, &:ets.member(:capacity_successes, &1))
+
+    Repo.all(
+      from work in ReconciliationWork,
+        where: work.id in ^unseen and work.status == "succeeded",
+        select:
+          {work.id, work.inserted_at, type(fragment("clock_timestamp()"), :utc_datetime_usec)}
+    )
+    |> Enum.each(&:ets.insert_new(:capacity_successes, &1))
+  end
+
+  defp validate_receipts!(ids) do
+    unless length(Enum.uniq(ids)) == length(ids),
+      do: raise("reused receipt for fresh submissions")
+
+    rows =
+      Repo.all(
+        from work in ReconciliationWork,
+          join: observation in Observation,
+          on:
+            observation.id == work.observation_id and observation.source_id == work.source_id and
+              observation.organization_id == work.organization_id,
+          join: agent in Agent,
+          on:
+            agent.id == work.installation_agent_id and agent.source_id == work.source_id and
+              agent.organization_id == work.organization_id,
+          where: work.id in ^ids,
+          select:
+            {work.id,
+             %{
+               organization_id: work.organization_id,
+               installation_id: agent.installation_id,
+               observation_id: observation.id,
+               submitted: observation.idempotency_key,
+               source_id: observation.source_id,
+               position: work.position,
+               accepted_at: work.inserted_at
+             }}
+      )
+      |> Map.new()
+
+    for id <- ids do
+      [{^id, expected}] = :ets.lookup(:capacity_receipts, id)
+      actual = Map.fetch!(rows, id)
+
+      unless Map.delete(actual, :accepted_at) == Map.delete(expected, :accepted_at) and
+               DateTime.compare(actual.accepted_at, expected.accepted_at) == :eq,
+             do: raise("receipt does not identify submitted obligation")
+    end
+  end
+
+  # A successful HTTP receipt is insufficient: persisted accounting must equal
+  # the unresolved obligations, including when another organization is busy.
+  defp assert_debits! do
+    organizations = :persistent_term.get({__MODULE__, :organizations})
+
+    # One MVCC snapshot, not separate reads racing the noisy worker's debit.
+    accounting =
+      Repo.all(
+        from lane in ReconciliationLane,
+          left_join: work in ReconciliationWork,
+          on: work.organization_id == lane.organization_id and work.status != "succeeded",
+          where: lane.organization_id in ^organizations,
+          group_by: [lane.organization_id, lane.pending_units, lane.pending_bytes],
+          select: {
+            lane.pending_units,
+            lane.pending_bytes,
+            fragment("COALESCE(SUM(?), 0)::bigint", work.units),
+            fragment("COALESCE(SUM(?), 0)::bigint", work.bytes)
+          }
+      )
+
+    for {units, bytes, expected_units, expected_bytes} <- accounting do
+      unless units == expected_units and bytes == expected_bytes,
+        do: raise("pending reservation does not match outstanding work")
+    end
+  end
+
+  defp assert_resources!(fleet, expected) do
+    resources =
+      Repo.all(
+        from(resource in Renga.Inventory.Resource,
+          where: resource.organization_id == ^fleet.organization.id,
+          select: resource.id
+        )
+      )
+
+    interfaces =
+      Repo.all(
+        from interface in Renga.Inventory.Interface,
+          where: interface.organization_id == ^fleet.organization.id,
+          group_by: interface.resource_id,
+          select: {interface.resource_id, count(interface.id)}
+      )
+      |> Map.new()
+
+    memory =
+      Repo.all(
+        from component in Renga.Catalog.ActualComponent,
+          where:
+            component.organization_id == ^fleet.organization.id and component.kind == "memory" and
+              component.status == "present",
+          group_by: component.owner_resource_id,
+          select: {component.owner_resource_id, count(component.id)}
+      )
+      |> Map.new()
+
+    unless length(resources) == expected and
+             Enum.all?(resources, &(Map.get(interfaces, &1) == 4 and Map.get(memory, &1) == 12)),
+           do:
+             raise(
+               "canonical fixture must have #{expected} hosts, each with four interfaces and twelve DIMMs"
+             )
+
+    %{
+      hosts: length(resources),
+      interfaces: Enum.sum(Map.values(interfaces)),
+      memory_components: Enum.sum(Map.values(memory))
+    }
+  end
+
+  defp processing_neighbor(fleet, quiet, hosts) do
+    worker = Renga.Inventory.ReconciliationWorker
+    :ok = :sys.suspend(worker)
+
+    noisy =
+      try do
+        noisy = for {n, id} <- Enum.take(Stream.cycle(hosts), 500), do: observation(fleet, n, id)
+
+        unless Enum.all?(noisy, &(&1.status == 202)),
+          do: raise("noisy processing setup was rejected")
+
+        ids = Enum.map(noisy, & &1.work_id)
+        validate_receipts!(ids)
+
+        pending =
+          Repo.all(
+            from work in ReconciliationWork,
+              where: work.id in ^ids,
+              select: {work.status, work.units, work.bytes}
+          )
+
+        unless length(pending) == 500 and
+                 Enum.all?(pending, fn {status, units, _bytes} ->
+                   status == "pending" and units == 1
+                 end),
+               do: raise("noisy setup must retain 500 pending host roots before resuming")
+
+        assert_debits!()
+        bytes = Enum.sum(Enum.map(pending, &elem(&1, 2)))
+
+        unless ReconciliationWork.pending_units(fleet.organization.id) == 500 and
+                 ReconciliationWork.pending_bytes(fleet.organization.id) == bytes,
+               do: raise("noisy prefill reservation differs from its 500 roots")
+
+        IO.puts(
+          Jason.encode!(%{
+            event: "noisy_prefill",
+            pending_roots: length(pending),
+            units: 500,
+            bytes: bytes
+          })
+        )
+
+        noisy
+      after
+        :ok = :sys.resume(worker)
+      end
+
+    queued = ReconciliationWork.pending_units(fleet.organization.id)
+    unless queued > 0, do: raise("no noisy backlog at quiet arrival")
+
+    result =
+      phase(
+        "processing_noisy_neighbor",
+        1..20,
+        fn n ->
+          id = Ecto.UUID.generate()
+          [checkin(quiet, id), observation(quiet, 200_000 + n, id)]
+        end,
+        1
+      )
+
+    assert_accepted!(result)
+    identities = for n <- 1..20, do: "capacity-machine-#{200_000 + n}"
+
+    canonical =
+      Repo.all(
+        from identifier in Renga.Inventory.ResourceIdentifier,
+          where:
+            identifier.organization_id == ^quiet.organization.id and
+              identifier.kind == "machine_id",
+          where: identifier.normalized_value in ^identities,
+          group_by: identifier.normalized_value,
+          select: {identifier.normalized_value, count(identifier.resource_id, :distinct)}
+      )
+      |> Map.new()
+
+    unless canonical == Map.new(identities, &{&1, 1}),
+      do: raise("quiet processing did not preserve exactly one host for every stable identity")
+
+    remaining = ReconciliationWork.pending_units(fleet.organization.id)
+    unless remaining > 0, do: raise("control did not overlap quiet completion with noisy backlog")
+    noisy_drain = drain(Enum.map(noisy, & &1.work_id))
+
+    Map.merge(result, %{
+      noisy_queued_at_arrival: queued,
+      noisy_pending_at_quiet_completion: remaining,
+      noisy_drain: noisy_drain
+    })
   end
 
   defp checkin(fleet, id),
@@ -484,6 +889,40 @@ defmodule Renga.CapacityLoad do
 
     response = Jason.decode!(conn.resp_body)
     duration = System.monotonic_time(:millisecond) - started
+
+    work_id =
+      if path == "/api/v1/observations" and conn.status in [200, 202] do
+        %{
+          "observation" => %{
+            "id" => observation_id,
+            "observation_id" => submitted,
+            "source_id" => source_id
+          },
+          "receipt" => %{"id" => id, "position" => position, "accepted_at" => accepted_at}
+        } = response
+
+        unless submitted == body.observation_id and is_integer(position) and position > 0,
+          do: raise("mismatched observation receipt")
+
+        {:ok, _id} = Ecto.UUID.cast(id)
+        {:ok, time, _offset} = DateTime.from_iso8601(accepted_at)
+
+        :ets.insert(
+          :capacity_receipts,
+          {id,
+           %{
+             organization_id: fleet.organization.id,
+             installation_id: installation,
+             observation_id: observation_id,
+             submitted: submitted,
+             source_id: source_id,
+             position: position,
+             accepted_at: time
+           }}
+        )
+
+        id
+      end
 
     rejection_stage =
       case {conn.status, conn.assigns[:current_scope]} do
@@ -548,8 +987,8 @@ defmodule Renga.CapacityLoad do
       status: conn.status,
       path: path,
       ms: duration,
-      rejection_stage: rejection_stage,
-      failed_reconciliation: get_in(response, ["reconciliation", "status"]) == "failed"
+      work_id: work_id,
+      rejection_stage: rejection_stage
     }
   end
 end
