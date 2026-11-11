@@ -195,7 +195,18 @@ defmodule Renga.Inventory.IntakeRegistrationConcurrencyTest do
         Inventory.ingest_intake_observation(scope, key, installation_id, %{}, %{
           idempotency_key: "concurrent-first-observation",
           observed_at: Renga.Time.utc_now_ms(),
-          payload: %{"hostname" => "concurrent-host"}
+          payload: %{
+            "observation_id" => "concurrent-first-observation",
+            "observed_at" => DateTime.to_iso8601(Renga.Time.utc_now_ms()),
+            "resources" => [
+              %{
+                "kind" => "server",
+                "identifiers" => %{"hostname" => "concurrent-host"},
+                "attributes" => %{},
+                "interfaces" => []
+              }
+            ]
+          }
         })
       end)
 

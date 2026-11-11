@@ -771,7 +771,8 @@ fn job_catalog(
     let labels = labels.clone();
     let queue = Arc::clone(queue);
     // The collection runs through the ordinary queue, so a job's observation
-    // is delivered and deduplicated exactly like a scheduled one.
+    // needs its own durable receipt, just like a scheduled one. Enqueueing it or
+    // accepting an older queue entry does not complete the job.
     let collect = move |cancellation: &Cancellation| {
         send_inventory(&client, cancellation, &labels, &queue).map_err(|error| error.to_string())
     };
@@ -1332,28 +1333,16 @@ mod tests {
                 .into_iter()
                 .map(|(status, response)| {
                     let (stream, _) = listener.accept().unwrap();
-                    let mut reader = BufReader::new(stream);
-                    let mut length = 0;
-                    loop {
-                        let mut line = String::new();
-                        reader.read_line(&mut line).unwrap();
-                        if line == "\r\n" {
-                            break;
-                        }
-                        if let Some((name, value)) = line.split_once(':') {
-                            if name.eq_ignore_ascii_case("content-length") {
-                                length = value.trim().parse().unwrap();
-                            }
-                        }
-                    }
-                    let mut body = vec![0; length];
-                    reader.read_exact(&mut body).unwrap();
-                    write!(
-                        reader.get_mut(),
-                        "HTTP/1.1 {status} Status\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
-                        response.len()
-                    )
-                    .unwrap();
+                    let (request, body, mut reader) = read_http_request_body(stream);
+                    let response = if request.contains("/api/v1/observations")
+                        && matches!(status, 200 | 202)
+                        && response.is_empty()
+                    {
+                        observation_receipt(&body, status == 200)
+                    } else {
+                        response.to_string()
+                    };
+                    answer(&mut reader, status, &response);
                     body
                 })
                 .collect()
@@ -1361,9 +1350,38 @@ mod tests {
         (origin, server)
     }
 
-    fn read_http_request(stream: TcpStream) -> (String, BufReader<TcpStream>) {
-        let (request_line, _body, reader) = read_http_request_body(stream);
-        (request_line, reader)
+    fn observation_body(id: uuid::Uuid) -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "observation_id": id,
+            "observed_at": "2026-10-14T12:00:00.123Z",
+            "source": {"kind": "host_agent"},
+            "resources": [{"kind": "server", "identifiers": {"hostname": "queued-host"}}]
+        }))
+        .unwrap()
+    }
+
+    fn observation_receipt(body: &[u8], duplicate: bool) -> String {
+        let observation: serde_json::Value = serde_json::from_slice(body).unwrap();
+        let observed_at =
+            chrono::DateTime::parse_from_rfc3339(observation["observed_at"].as_str().unwrap())
+                .unwrap()
+                .with_timezone(&chrono::Utc)
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        json!({
+            "status": "accepted", "duplicate": duplicate,
+            "observation": {
+                "id": "67e55044-10b1-426f-9247-bb680e5fe0c8",
+                "observation_id": observation["observation_id"],
+                "source_id": "8ea9ae04-bf9b-4c34-8192-4f617eade95e",
+                "observed_at": observed_at
+            },
+            "receipt": {
+                "id": "1f0e9b2a-3c4d-4e5f-8a9b-0c1d2e3f4a5b",
+                "position": 1, "accepted_at": "2026-10-14T12:00:01.000Z"
+            },
+            "processing": {"status": "pending"}
+        })
+        .to_string()
     }
 
     fn read_http_request_body(stream: TcpStream) -> (String, Vec<u8>, BufReader<TcpStream>) {
@@ -1478,7 +1496,7 @@ mod tests {
                                 return;
                             }
 
-                            let (request, mut reader) = read_http_request(stream);
+                            let (request, body, mut reader) = read_http_request_body(stream);
                             if request.contains("/api/v1/agent/home") {
                                 answer(&mut reader, 200, &home);
                             } else if request.contains("/api/v1/agent/checkins") {
@@ -1488,7 +1506,7 @@ mod tests {
                                     r#"{"status":"accepted","jobs_waiting":false}"#,
                                 );
                             } else if request.contains("/api/v1/observations") {
-                                answer(&mut reader, 202, "{}");
+                                answer(&mut reader, 202, &observation_receipt(&body, false));
                             } else if request.contains("/api/v1/agent/jobs/lease") {
                                 let active = active_leases.fetch_add(1, Ordering::SeqCst) + 1;
                                 if active > 1 {
@@ -1555,7 +1573,7 @@ mod tests {
                                 return;
                             }
 
-                            let (request, mut reader) = read_http_request(stream);
+                            let (request, body, mut reader) = read_http_request_body(stream);
                             if request.contains("/api/v1/agent/home") {
                                 answer(&mut reader, 200, &home);
                             } else if request.contains("/api/v1/agent/checkins") {
@@ -1567,7 +1585,7 @@ mod tests {
                                 };
                                 answer(&mut reader, 202, body);
                             } else if request.contains("/api/v1/observations") {
-                                answer(&mut reader, 202, "{}");
+                                answer(&mut reader, 202, &observation_receipt(&body, false));
                             } else if request.contains("/api/v1/agent/jobs/lease") {
                                 answer(&mut reader, 200, r#"{"jobs":[]}"#);
                                 leased.send(()).unwrap();
@@ -1652,7 +1670,7 @@ mod tests {
                                 return;
                             }
 
-                            let (request, mut reader) = read_http_request(stream);
+                            let (request, body, mut reader) = read_http_request_body(stream);
                             if request.contains("/api/v1/agent/home") {
                                 answer(&mut reader, 200, &home);
                             } else if request.contains("/api/v1/agent/checkins") {
@@ -1663,7 +1681,7 @@ mod tests {
                                     r#"{"status":"accepted","jobs_waiting":false}"#,
                                 );
                             } else if request.contains("/api/v1/observations") {
-                                answer(&mut reader, 202, "{}");
+                                answer(&mut reader, 202, &observation_receipt(&body, false));
                             } else {
                                 answer(&mut reader, 404, "{}");
                             }
@@ -1688,10 +1706,10 @@ mod tests {
         )
     }
 
-    /// Answers each HTTP request with `route(request line and headers)` until stopped.
+    /// Answers each HTTP request with `route(request line, body)` until stopped.
     fn routed_server(
         stopped: Cancellation,
-        route: impl Fn(&str) -> (u16, String) + Send + Sync + 'static,
+        route: impl Fn(&str, &[u8]) -> (u16, String) + Send + Sync + 'static,
     ) -> (String, thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -1705,9 +1723,9 @@ mod tests {
                         stream.set_nonblocking(false).unwrap();
                         let route = Arc::clone(&route);
                         connections.push(thread::spawn(move || {
-                            let (request, mut reader) = read_http_request(stream);
-                            let (status, body) = route(&request);
-                            answer(&mut reader, status, &body);
+                            let (request, body, mut reader) = read_http_request_body(stream);
+                            let (status, response) = route(&request, &body);
+                            answer(&mut reader, status, &response);
                         }));
                     }
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -1745,13 +1763,13 @@ mod tests {
         let stopped = Cancellation::default();
         let (checked_in, new_home_checkins) = mpsc::channel();
         let new_home_stop = stopped.clone();
-        let (new_origin, new_server) = routed_server(stopped.clone(), move |request| {
+        let (new_origin, new_server) = routed_server(stopped.clone(), move |request, body| {
             if request.contains("/api/v1/agent/checkins") {
                 let _ = checked_in.send(());
                 new_home_stop.cancel();
                 (202, r#"{"status":"accepted","jobs_waiting":false}"#.into())
             } else if request.contains("/api/v1/observations") {
-                (202, "{}".into())
+                (202, observation_receipt(body, false))
             } else {
                 (404, "{}".into())
             }
@@ -1759,7 +1777,7 @@ mod tests {
         let expected_home = format!("{new_origin}/");
         let old_requests = Arc::new(Mutex::new(Vec::new()));
         let old_log = Arc::clone(&old_requests);
-        let (old_origin, old_server) = routed_server(stopped.clone(), move |request| {
+        let (old_origin, old_server) = routed_server(stopped.clone(), move |request, _body| {
             old_log
                 .lock()
                 .unwrap()
@@ -1772,7 +1790,7 @@ mod tests {
         });
         let resolutions = Arc::new(AtomicUsize::new(0));
         let resolved = Arc::clone(&resolutions);
-        let (resolver, resolver_server) = routed_server(stopped.clone(), move |request| {
+        let (resolver, resolver_server) = routed_server(stopped.clone(), move |request, _body| {
             assert!(request.contains("GET /api/v1/agent/home?deployment=eu-1 "));
             assert!(!request.to_ascii_lowercase().contains("authorization"));
             let home = if resolved.fetch_add(1, Ordering::SeqCst) == 0 {
@@ -2090,7 +2108,7 @@ mod tests {
                                 }
                                 answer(&mut reader, 200, r#"{"cancel_requested":false}"#);
                             } else if request.contains("/api/v1/observations") {
-                                answer(&mut reader, 202, "{}");
+                                answer(&mut reader, 202, &observation_receipt(&body, false));
                             } else {
                                 answer(&mut reader, 404, "{}");
                             }
@@ -2258,11 +2276,11 @@ mod tests {
         let state =
             std::env::temp_dir().join(format!("renga-reload-snmp-{}", uuid::Uuid::new_v4()));
         let stopped = Cancellation::default();
-        let accept = |request: &str| {
+        let accept = |request: &str, body: &[u8]| {
             if request.contains("/api/v1/agent/checkins") {
                 (202, r#"{"status":"accepted","jobs_waiting":false}"#.into())
             } else if request.contains("/api/v1/observations") {
-                (202, "{}".into())
+                (202, observation_receipt(body, false))
             } else {
                 (404, "{}".into())
             }
@@ -2274,41 +2292,43 @@ mod tests {
         let move_now = Arc::clone(&moving);
         let moved = Arc::new(AtomicBool::new(false));
         let said_moved = Arc::clone(&moved);
-        let (second_home, second_server) = routed_server(stopped.clone(), move |request| {
+        let (second_home, second_server) = routed_server(stopped.clone(), move |request, body| {
             if move_now.load(Ordering::SeqCst) {
                 said_moved.store(true, Ordering::SeqCst);
                 (410, r#"{"error":"moved"}"#.into())
             } else {
-                accept(request)
+                accept(request, body)
             }
         });
         let third_checkins = Arc::new(AtomicUsize::new(0));
         let checked_in = Arc::clone(&third_checkins);
-        let (third_home, third_server) = routed_server(stopped.clone(), move |request| {
+        let (third_home, third_server) = routed_server(stopped.clone(), move |request, body| {
             if request.contains("/api/v1/agent/checkins") {
                 checked_in.fetch_add(1, Ordering::SeqCst);
             }
-            accept(request)
+            accept(request, body)
         });
-        let (first_resolver, first_resolver_server) = routed_server(stopped.clone(), move |_| {
-            (200, json!({ "home": first_home }).to_string())
-        });
+        let (first_resolver, first_resolver_server) =
+            routed_server(stopped.clone(), move |_, _| {
+                (200, json!({ "home": first_home }).to_string())
+            });
         // The new resolver fails until released, then names the second home until it says
         // the organization moved, and the third after.
         let resolvable = Arc::new(AtomicBool::new(false));
         let released = Arc::clone(&resolvable);
         let asked = Arc::new(AtomicUsize::new(0));
         let asked_count = Arc::clone(&asked);
-        let (second_resolver, second_resolver_server) = routed_server(stopped.clone(), move |_| {
-            asked_count.fetch_add(1, Ordering::SeqCst);
-            if !released.load(Ordering::SeqCst) {
-                (503, "{}".into())
-            } else if moved.load(Ordering::SeqCst) {
-                (200, json!({ "home": third_home }).to_string())
-            } else {
-                (200, json!({ "home": second_home }).to_string())
-            }
-        });
+        let (second_resolver, second_resolver_server) =
+            routed_server(stopped.clone(), move |_, _| {
+                asked_count.fetch_add(1, Ordering::SeqCst);
+                if !released.load(Ordering::SeqCst) {
+                    (503, "{}".into())
+                } else if moved.load(Ordering::SeqCst) {
+                    (200, json!({ "home": third_home }).to_string())
+                } else {
+                    (200, json!({ "home": second_home }).to_string())
+                }
+            });
         let (old_target, old_polls) = silent_snmp_target(stopped.clone());
         let (new_target, new_polls) = silent_snmp_target(stopped.clone());
         std::fs::create_dir_all(&state).unwrap();
@@ -2362,7 +2382,7 @@ mod tests {
         let stopped = Cancellation::default();
         let (checked_in, new_home_checkins) = mpsc::channel();
         let new_home_stop = stopped.clone();
-        let (new_origin, new_server) = routed_server(stopped.clone(), move |request| {
+        let (new_origin, new_server) = routed_server(stopped.clone(), move |request, _body| {
             if request.contains("/api/v1/agent/checkins") {
                 let _ = checked_in.send(());
                 new_home_stop.cancel();
@@ -2374,7 +2394,7 @@ mod tests {
         // The old home says `moved` once and then only fails, as a deployment going away
         // would, so nothing but the pending relocation can find the new home.
         let said_moved = Arc::new(AtomicBool::new(false));
-        let (old_origin, old_server) = routed_server(stopped.clone(), move |request| {
+        let (old_origin, old_server) = routed_server(stopped.clone(), move |request, _body| {
             if request.contains("/api/v1/agent/checkins")
                 && !said_moved.swap(true, Ordering::SeqCst)
             {
@@ -2387,7 +2407,7 @@ mod tests {
         // The resolver has not caught up when first asked after the move.
         let resolutions = Arc::new(AtomicUsize::new(0));
         let resolved = Arc::clone(&resolutions);
-        let (resolver, resolver_server) = routed_server(stopped.clone(), move |_request| {
+        let (resolver, resolver_server) = routed_server(stopped.clone(), move |_request, _body| {
             let home = if resolved.fetch_add(1, Ordering::SeqCst) < 2 {
                 &old_origin
             } else {
@@ -2421,7 +2441,7 @@ mod tests {
         let stopped = Cancellation::default();
         let said_moved = Arc::new(AtomicBool::new(false));
         let moved_once = Arc::clone(&said_moved);
-        let (old_origin, old_server) = routed_server(stopped.clone(), move |request| {
+        let (old_origin, old_server) = routed_server(stopped.clone(), move |request, _body| {
             if request.contains("/api/v1/agent/checkins")
                 && !moved_once.swap(true, Ordering::SeqCst)
             {
@@ -2431,16 +2451,17 @@ mod tests {
             }
         });
         let first_answer = old_origin.clone();
-        let (resolver, resolver_server) = routed_server(stopped.clone(), move |_request| {
+        let (resolver, resolver_server) = routed_server(stopped.clone(), move |_request, _body| {
             (200, json!({ "home": first_answer }).to_string())
         });
         // The replacement resolver has not caught up either.
         let replacement_asked = Arc::new(AtomicUsize::new(0));
         let asked = Arc::clone(&replacement_asked);
-        let (replacement, replacement_server) = routed_server(stopped.clone(), move |_request| {
-            asked.fetch_add(1, Ordering::SeqCst);
-            (200, json!({ "home": old_origin }).to_string())
-        });
+        let (replacement, replacement_server) =
+            routed_server(stopped.clone(), move |_request, _body| {
+                asked.fetch_add(1, Ordering::SeqCst);
+                (200, json!({ "home": old_origin }).to_string())
+            });
         let config = write_agent_config(&state, &resolver, "renga_intake_test");
         let daemon = spawn_daemon(config, &state, false, stopped.clone());
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -2484,20 +2505,22 @@ mod tests {
             let (arrived, request_arrived) = mpsc::channel();
             let (release, released) = mpsc::channel::<()>();
             let released = Arc::new(Mutex::new(released));
-            let (home_origin, home_server) = routed_server(server_stop.clone(), move |request| {
-                if request.contains(path) {
-                    let _ = arrived.send(());
-                    let _ = released.lock().unwrap().recv();
-                    (410, r#"{"error":"moved"}"#.into())
-                } else if request.contains("/api/v1/agent/checkins") {
-                    (202, r#"{"status":"accepted","jobs_waiting":false}"#.into())
-                } else {
-                    (404, "{}".into())
-                }
-            });
-            let (resolver, resolver_server) = routed_server(server_stop.clone(), move |_request| {
-                (200, json!({ "home": home_origin }).to_string())
-            });
+            let (home_origin, home_server) =
+                routed_server(server_stop.clone(), move |request, _body| {
+                    if request.contains(path) {
+                        let _ = arrived.send(());
+                        let _ = released.lock().unwrap().recv();
+                        (410, r#"{"error":"moved"}"#.into())
+                    } else if request.contains("/api/v1/agent/checkins") {
+                        (202, r#"{"status":"accepted","jobs_waiting":false}"#.into())
+                    } else {
+                        (404, "{}".into())
+                    }
+                });
+            let (resolver, resolver_server) =
+                routed_server(server_stop.clone(), move |_request, _body| {
+                    (200, json!({ "home": home_origin }).to_string())
+                });
             let config = write_agent_config(&state, &resolver, "renga_intake_test");
             let daemon = spawn_daemon(config, &state, false, stopped.clone());
 
@@ -2523,11 +2546,11 @@ mod tests {
     fn a_single_run_that_hears_moved_forgets_the_home_for_the_next_run() {
         let state = std::env::temp_dir().join(format!("renga-once-moved-{}", uuid::Uuid::new_v4()));
         let stopped = Cancellation::default();
-        let (old_origin, old_server) = routed_server(stopped.clone(), |_request| {
+        let (old_origin, old_server) = routed_server(stopped.clone(), |_request, _body| {
             (410, r#"{"error":"moved"}"#.into())
         });
         let resolver_home = old_origin.clone();
-        let (resolver, resolver_server) = routed_server(stopped.clone(), move |_request| {
+        let (resolver, resolver_server) = routed_server(stopped.clone(), move |_request, _body| {
             (200, json!({ "home": resolver_home }).to_string())
         });
         let config = write_agent_config(&state, &resolver, "renga_intake_test");
@@ -2716,7 +2739,12 @@ mod tests {
                                 }
                                 let status = if moved.load(Ordering::SeqCst) { 410 } else { 202 };
                                 let _ = heard.send(Heard::Observation(name, id, status));
-                                answer(&mut reader, status, if status == 410 { gone } else { "{}" });
+                                let response = if status == 410 {
+                                    gone.to_string()
+                                } else {
+                                    observation_receipt(&body, false)
+                                };
+                                answer(&mut reader, status, &response);
                             } else if moved.load(Ordering::SeqCst) {
                                 answer(&mut reader, 410, gone);
                             } else if request.contains("/api/v1/agent/checkins") {
@@ -2841,7 +2869,7 @@ mod tests {
         let resolver_asked = Arc::clone(&asked);
         let old_moved = Arc::clone(&old.moved);
         let (old_origin, new_origin) = (old.origin.clone(), new.origin.clone());
-        let (resolver, resolver_server) = routed_server(stopped.clone(), move |_request| {
+        let (resolver, resolver_server) = routed_server(stopped.clone(), move |_request, _body| {
             resolver_asked.fetch_add(1, Ordering::SeqCst);
             let home = if old_moved.load(Ordering::SeqCst) {
                 &new_origin
@@ -2914,14 +2942,15 @@ mod tests {
             let resolver_asked = Arc::clone(&asked);
             let old_moved = Arc::clone(&old.moved);
             let old_origin = old.origin.clone();
-            let (resolver, resolver_server) = routed_server(stopped.clone(), move |_request| {
-                resolver_asked.fetch_add(1, Ordering::SeqCst);
-                if old_moved.load(Ordering::SeqCst) && !resolvable {
-                    (503, "{}".into())
-                } else {
-                    (200, json!({ "home": old_origin }).to_string())
-                }
-            });
+            let (resolver, resolver_server) =
+                routed_server(stopped.clone(), move |_request, _body| {
+                    resolver_asked.fetch_add(1, Ordering::SeqCst);
+                    if old_moved.load(Ordering::SeqCst) && !resolvable {
+                        (503, "{}".into())
+                    } else {
+                        (200, json!({ "home": old_origin }).to_string())
+                    }
+                });
             let (daemon, _stopping) = relocation_daemon(&state, &resolver, stopped.clone());
             let mut hearing = Hearing {
                 receiver,
@@ -2982,17 +3011,18 @@ mod tests {
         let answered = Arc::new(Mutex::new(answered));
         let old_moved = Arc::clone(&old.moved);
         let (old_origin, new_origin) = (old.origin.clone(), new.origin.clone());
-        let (resolver, resolver_server) = routed_server(server_stop.clone(), move |_request| {
-            if !old_moved.load(Ordering::SeqCst) {
-                return (200, json!({ "home": old_origin }).to_string());
-            }
-            let _ = resolving.send(());
-            let _ = answered
-                .lock()
-                .unwrap()
-                .recv_timeout(Duration::from_secs(30));
-            (200, json!({ "home": new_origin }).to_string())
-        });
+        let (resolver, resolver_server) =
+            routed_server(server_stop.clone(), move |_request, _body| {
+                if !old_moved.load(Ordering::SeqCst) {
+                    return (200, json!({ "home": old_origin }).to_string());
+                }
+                let _ = resolving.send(());
+                let _ = answered
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(30));
+                (200, json!({ "home": new_origin }).to_string())
+            });
         let (daemon, loop_stopped) = relocation_daemon(&state, &resolver, stopped.clone());
         let mut hearing = Hearing {
             receiver,
@@ -3038,7 +3068,7 @@ mod tests {
         let stopped = Cancellation::default();
         let checkins = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&checkins);
-        let (home_origin, home_server) = routed_server(stopped.clone(), move |request| {
+        let (home_origin, home_server) = routed_server(stopped.clone(), move |request, _body| {
             if request.contains("/api/v1/agent/checkins") {
                 counted.fetch_add(1, Ordering::SeqCst);
                 (202, r#"{"status":"accepted","jobs_waiting":false}"#.into())
@@ -3047,17 +3077,18 @@ mod tests {
             }
         });
         let first_home = home_origin.clone();
-        let (resolver, resolver_server) = routed_server(stopped.clone(), move |_request| {
+        let (resolver, resolver_server) = routed_server(stopped.clone(), move |_request, _body| {
             (200, json!({ "home": first_home }).to_string())
         });
         // The replacement resolver is slow and names a home the new key cannot be sent to.
         let asked = Arc::new(AtomicBool::new(false));
         let replacement_asked = Arc::clone(&asked);
-        let (slow_resolver, slow_server) = routed_server(stopped.clone(), move |_request| {
-            replacement_asked.store(true, Ordering::SeqCst);
-            thread::sleep(Duration::from_millis(1500));
-            (200, json!({ "home": "http://127.0.0.1:9" }).to_string())
-        });
+        let (slow_resolver, slow_server) =
+            routed_server(stopped.clone(), move |_request, _body| {
+                replacement_asked.store(true, Ordering::SeqCst);
+                thread::sleep(Duration::from_millis(1500));
+                (200, json!({ "home": "http://127.0.0.1:9" }).to_string())
+            });
         let config = write_agent_config(&state, &resolver, "renga_intake_test");
         let daemon = spawn_daemon(config.clone(), &state, false, stopped.clone());
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -3417,7 +3448,9 @@ mod tests {
     fn flush_replays_queued_bodies_exactly_and_keeps_what_the_server_could_not_take() {
         let state = std::env::temp_dir().join(format!("renga-flush-{}", uuid::Uuid::new_v4()));
         let queue = Mutex::new(DeliveryQueue::new(state.clone()));
-        for body in [&br#"{"n":1}"#[..], br#"{"n":2}"#] {
+        let first = observation_body(uuid::Uuid::new_v4());
+        let second = observation_body(uuid::Uuid::new_v4());
+        for body in [&first, &second] {
             lock(&queue)
                 .ready()
                 .unwrap()
@@ -3429,16 +3462,13 @@ mod tests {
         // The server is unavailable for the second entry, which stays queued.
         let (origin, server) = stub_server(vec![202, 503]);
         assert!(flush(&stub_client(&origin), &stopped, &queue).is_err());
-        assert_eq!(
-            server.join().unwrap(),
-            [br#"{"n":1}"#.to_vec(), br#"{"n":2}"#.to_vec()]
-        );
+        assert_eq!(server.join().unwrap(), [first, second.clone()]);
         assert_eq!(lock(&queue).ready().unwrap().health().unwrap().entries, 1);
 
         // A later flush finds the server back, and a repeat answered as a duplicate counts.
         let (origin, server) = stub_server(vec![200]);
         flush(&stub_client(&origin), &stopped, &queue).unwrap();
-        assert_eq!(server.join().unwrap(), [br#"{"n":2}"#.to_vec()]);
+        assert_eq!(server.join().unwrap(), [second]);
         assert_eq!(lock(&queue).ready().unwrap().health().unwrap().entries, 0);
         std::fs::remove_dir_all(state).unwrap();
     }
@@ -3462,24 +3492,21 @@ mod tests {
         for n in 1..=3 {
             enqueue(true, format!(r#"{{"t":{n}}}"#).as_bytes());
         }
-        enqueue(false, br#"{"o":1}"#);
+        let observation = observation_body(uuid::Uuid::new_v4());
+        enqueue(false, &observation);
         let stopped = Cancellation::default();
 
         // An observation the server cannot take holds every telemetry batch back.
         let (origin, server) = stub_server(vec![503]);
         assert!(flush(&stub_client(&origin), &stopped, &queue).is_err());
-        assert_eq!(server.join().unwrap(), [br#"{"o":1}"#.to_vec()]);
+        assert_eq!(server.join().unwrap(), std::slice::from_ref(&observation));
 
         // Then the observation goes first, and telemetry stops at its per-flush share.
         let (origin, server) = stub_server(vec![202, 202, 202]);
         flush(&stub_client(&origin), &stopped, &queue).unwrap();
         assert_eq!(
             server.join().unwrap(),
-            [
-                br#"{"o":1}"#.to_vec(),
-                br#"{"t":1}"#.to_vec(),
-                br#"{"t":2}"#.to_vec()
-            ]
+            [observation, br#"{"t":1}"#.to_vec(), br#"{"t":2}"#.to_vec()]
         );
         let telemetry = lock(&queue).monitors.telemetry.latest().unwrap();
         assert_eq!(telemetry.entries, 1);
@@ -3586,6 +3613,126 @@ mod tests {
         worker.join().unwrap();
         assert_eq!(lock(&queue).ready().unwrap().health().unwrap().entries, 0);
         std::fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn inventory_job_succeeds_only_after_its_own_durable_acceptance() {
+        for case in ["accepted", "mismatched", "head_only", "blocked"] {
+            let state =
+                std::env::temp_dir().join(format!("renga-job-receipt-{}", uuid::Uuid::new_v4()));
+            let queue = Arc::new(Mutex::new(DeliveryQueue::new(state.clone())));
+            let prior_id = uuid::Uuid::new_v4();
+            let prior = observation_body(prior_id);
+            lock(&queue)
+                .ready()
+                .unwrap()
+                .enqueue(prior_id, &prior, SystemTime::now())
+                .unwrap();
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let reports = Arc::new(Mutex::new(Vec::new()));
+            let posted = Arc::clone(&requests);
+            let reported = Arc::clone(&reports);
+            let older = prior.clone();
+            let leased = AtomicBool::new(false);
+            let job_id = uuid::Uuid::new_v4();
+            let stopped = Cancellation::default();
+            let (origin, server) = routed_server(stopped.clone(), move |request, body| {
+                if request.contains("/api/v1/agent/jobs/lease") {
+                    if leased.swap(true, Ordering::SeqCst) {
+                        return (200, r#"{"jobs":[]}"#.into());
+                    }
+                    let job = json!({
+                        "id": job_id,
+                        "capability": "inventory.collect@1",
+                        "parameters": {},
+                        "attempt": 1,
+                        "lease_token": "lease",
+                        "lease_expires_at": chrono::Utc::now() + chrono::Duration::seconds(60),
+                        "timeout_ms": 30_000,
+                        "output_limit_bytes": 65_536
+                    });
+                    (200, json!({ "jobs": [job] }).to_string())
+                } else if request.contains(&format!("/api/v1/agent/jobs/{job_id}/events")) {
+                    reported
+                        .lock()
+                        .unwrap()
+                        .push(serde_json::from_slice::<serde_json::Value>(body).unwrap());
+                    (200, r#"{"cancel_requested":false}"#.into())
+                } else if request.contains("/api/v1/observations") {
+                    posted.lock().unwrap().push(body.to_vec());
+                    if case == "blocked" || (case == "head_only" && body != older) {
+                        (503, "{}".into())
+                    } else if case == "mismatched" && body != older {
+                        (202, observation_receipt(&older, false))
+                    } else {
+                        (202, observation_receipt(body, false))
+                    }
+                } else {
+                    (404, "{}".into())
+                }
+            });
+            let config = stub_config(&origin);
+            let client = stub_client(&origin);
+            let catalog = job_catalog(&client, &config.labels, &config.osquery, &queue);
+            let generation = PolicyGeneration::default();
+            let handled = Worker::new(
+                &client,
+                &catalog,
+                &config.jobs,
+                &state,
+                &stopped,
+                &generation,
+                generation.current(),
+            )
+            .run_pass()
+            .unwrap();
+            stopped.cancel();
+            server.join().unwrap();
+
+            assert_eq!(handled, 1, "{case}");
+            let requests = requests.lock().unwrap();
+            assert_eq!(requests[0], prior, "{case}");
+            assert_eq!(
+                requests.len(),
+                if case == "blocked" { 1 } else { 2 },
+                "{case}"
+            );
+            let reports = reports.lock().unwrap();
+            let outcome = reports.last().unwrap();
+            if case == "accepted" {
+                // The response still says pending: canonical completion is not the job's boundary.
+                let observation: serde_json::Value = serde_json::from_slice(&requests[1]).unwrap();
+                assert_ne!(observation["observation_id"], json!(prior_id));
+                assert_eq!(outcome["type"], "succeeded");
+                assert_eq!(
+                    outcome["payload"]["result"]["observation_id"],
+                    observation["observation_id"]
+                );
+            } else {
+                assert_eq!(outcome["type"], "failed", "{case}");
+                assert!(
+                    !reports.iter().any(|report| report["type"] == "succeeded"),
+                    "{case}"
+                );
+            }
+            let expected = match case {
+                "accepted" => 0,
+                "blocked" => 2,
+                _ => 1,
+            };
+            assert_eq!(
+                lock(&queue).ready().unwrap().health().unwrap().entries,
+                expected,
+                "{case}"
+            );
+            if expected == 1 {
+                let (origin, server) = stub_server(vec![200]);
+                flush(&stub_client(&origin), &Cancellation::default(), &queue).unwrap();
+                assert_eq!(server.join().unwrap(), [requests[1].clone()], "{case}");
+                assert_eq!(lock(&queue).ready().unwrap().health().unwrap().entries, 0);
+            }
+            std::fs::remove_dir_all(state).unwrap();
+        }
     }
 
     #[test]

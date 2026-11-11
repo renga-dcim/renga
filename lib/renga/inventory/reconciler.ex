@@ -43,166 +43,85 @@ defmodule Renga.Inventory.Reconciler do
   transaction ownership; callers already in a transaction use the core instead.
   """
   def reconcile(%Scope{} = scope, %Observation{} = observation, opts \\ []) do
-    if Keyword.has_key?(opts, :after_commit) and Repo.in_transaction?(),
-      do: raise(ArgumentError, "post-commit dispatch requires top-level reconciliation")
-
-    authorize = Keyword.get(opts, :authorize, fn -> :ok end)
-
-    {result, effect_owner} =
-      try do
-        do_reconcile(scope, observation, authorize)
-      rescue
-        exception -> {record_unexpected_failure(scope, observation, exception, authorize), :none}
-      end
-
-    Keyword.get(opts, :after_commit, fn result, _owner -> result end).(result, effect_owner)
+    Renga.Inventory.ReconciliationWork.reconcile(scope, observation, opts)
   end
 
   @doc """
-  Reconciles an observation only when it has no terminal processing result.
-
-  This is the ingestion path. The organization lock makes the terminal-result
-  check and first attempt allocation atomic, while `reconcile/2` remains the
-  explicit retry path for repaired failures.
+  Schedules unattempted evidence or reads its durable disposition. A terminal
+  replay is read-only; repaired failures require an authorized explicit retry.
   """
   def reconcile_once(%Scope{} = scope, %Observation{} = observation, opts \\ []) do
-    if Keyword.has_key?(opts, :after_commit) and Repo.in_transaction?(),
-      do: raise(ArgumentError, "post-commit dispatch requires top-level reconciliation")
-
-    authorize = Keyword.get(opts, :authorize, fn -> :ok end)
-
-    {result, effect_owner} =
-      try do
-        reconcile_once(scope, observation, authorize, %{})
-      rescue
-        exception ->
-          record_unexpected_failure_once(scope, observation, exception, authorize)
-      end
-
-    Keyword.get(opts, :after_commit, fn result, _owner -> result end).(result, effect_owner)
-  end
-
-  defp reconcile_once(scope, observation, authorize, failed) do
-    Repo.transaction(fn ->
-      authorize.()
-      Inventory.lock_organization!(scope.organization_id)
-
-      reconcile_turn(scope, observation, failed, latest_result(scope, observation.id))
-    end)
-    |> case do
-      {:ok, result} ->
-        result
-
-      {:error, {:resource_failed, derived, exception}} ->
-        failed = fail_resource!(scope, derived, exception, authorize, failed)
-        reconcile_once(scope, observation, authorize, failed)
-
-      {:error, {:turn_failed, exception, owner}} ->
-        record_unexpected_failure_once(scope, observation, exception, authorize, owner)
-
-      {:error, reason} ->
-        record_unexpected_failure_once(scope, observation, reason, authorize)
-    end
-  end
-
-  defp do_reconcile(scope, observation, authorize, failed \\ %{}) do
-    Repo.transaction(fn ->
-      authorize.()
-      Inventory.lock_organization!(scope.organization_id)
-      reconcile_turn(scope, observation, failed)
-    end)
-    |> case do
-      {:ok, result} ->
-        result
-
-      {:error, {:resource_failed, derived, exception}} ->
-        failed = fail_resource!(scope, derived, exception, authorize, failed)
-        do_reconcile(scope, observation, authorize, failed)
-
-      {:error, {:turn_failed, exception, owner}} ->
-        {record_unexpected_failure(scope, observation, exception, authorize), owner}
-
-      {:error, reason} ->
-        {{:error, reason}, :none}
-    end
-  end
-
-  # Records the failure of the one resource that raised, then lets the report
-  # run again without it. Another run of the same report may have reconciled
-  # the resource since this one rolled back; its committed success stands and
-  # is not superseded. Each rerun settles one more resource, so a report runs
-  # at most once per resource it carries.
-  defp fail_resource!(scope, derived, exception, authorize, failed) do
-    attrs = unexpected_failure_attrs(exception)
-
-    {:ok, outcome} =
-      Repo.transaction(fn ->
-        authorize.()
-        Inventory.lock_organization!(scope.organization_id)
-
-        case latest_result(scope, derived.id) do
-          %{status: "succeeded"} -> :succeeded
-          _none_or_failed -> create_failure(scope, derived, attrs)
-        end
-      end)
-
-    case outcome do
-      :succeeded -> failed
-      {:error, _result} -> Map.put(failed, derived.id, true)
-    end
+    Renga.Inventory.ReconciliationWork.reconcile(
+      scope,
+      observation,
+      Keyword.put(opts, :once, true)
+    )
   end
 
   @doc """
   Internal primitive running the canonical reconciliation core in the caller's transaction.
 
-  The caller must freshly authorize the operation and hold the inventory
-  organization lock. `observation` must already be persisted in that same
-  organization. Transaction presence alone proves neither authorization,
-  ownership, nor deduplication. This function neither opens a transaction nor
-  handles rollback/retry bookkeeping. For a root host-agent observation, triage,
-  address, same-machine, and collector DB effects commit with canonical projections:
-  a critical-effect failure now fails the host attempt rather than being logged
-  after canonical state has committed. Complete-report follow-ups remain with the
-  Inventory wrapper; scoped-member orchestration is unchanged.
-
-  `failed` is restricted to members of this report whose unexpected failures the
-  orchestrator already recorded after rollback in this run. A member failure may
-  call `Repo.rollback/1`, rolling back the entire caller transaction. Complete-report
-  orchestration still visits later members and supplies the whole result set to
-  collector finalization.
+  Only the fenced worker calls this primitive. Transaction presence alone proves
+  neither authorization nor ownership. Canonical projections, attempt outcomes,
+  triage, address, same-machine and collector effects share the report transaction.
+  An unexpected member failure rolls the whole report back; failure disposition
+  is recorded afterward under the same unexpired claim.
   """
-  def reconcile_in_transaction(%Scope{} = scope, %Observation{} = observation, failed \\ %{}) do
+  def reconcile_in_transaction(%Scope{} = scope, %Observation{} = observation) do
     unless Repo.in_transaction?(),
       do: raise(ArgumentError, "reconciliation core requires a caller-owned transaction")
 
-    {result, _effect_owner} = reconcile_turn(scope, observation, failed)
+    result = reconcile_turn(scope, observation)
+
+    if report?(observation) do
+      reconcile_report_effects(scope, observation)
+    end
+
     result
   end
 
-  # Carry the decision out of the transaction; source metadata remains mutable
-  # and a post-commit reread could skip effects this turn never performed.
-  defp reconcile_turn(scope, observation, failed, terminal \\ nil) do
+  defp reconcile_report_effects(scope, observation) do
+    resources =
+      scope
+      |> Inventory.list_derived_observations(observation.id)
+      |> Enum.flat_map(fn derived ->
+        case latest_result(scope, derived.id) do
+          %{status: "succeeded", matched_resource_id: id} ->
+            [Inventory.get_resource!(scope, id)]
+
+          _ ->
+            []
+        end
+      end)
+      |> Enum.uniq_by(& &1.id)
+
+    Enum.each(resources, fn resource ->
+      {:ok, _} = Renga.TriageRules.apply_to_resource(scope.organization_id, resource.id)
+    end)
+
+    success = {:ok, resources, false}
+    {:ok, :ok} = Renga.IPAM.AddressFindings.reconcile(scope.organization_id)
+    {:ok, _} = Renga.Inventory.SameMachine.refresh_after!(scope, observation, success)
+    {:ok, _} = Renga.Inventory.CollectorFindings.refresh_after!(scope, observation, success)
+  end
+
+  defp reconcile_turn(scope, observation) do
     source = turn_source(scope, observation)
-    owner = turn_effect_owner(observation, source)
 
     try do
       result =
-        cond do
-          terminal -> result_to_reconciliation(scope, terminal)
-          is_nil(source) -> perform_report_reconciliation(scope, observation, failed)
-          true -> perform_resource_reconciliation(scope, observation, source)
-        end
+        if is_nil(source),
+          do: perform_report_reconciliation(scope, observation),
+          else: perform_resource_reconciliation(scope, observation, source)
 
-      if owner == :atomic_host do
-        {reconcile_host_effects(result, scope, observation), owner}
+      if not report?(observation) and is_nil(observation.parent_observation_id) do
+        reconcile_host_effects(result, scope, observation)
       else
-        {result, owner}
+        result
       end
     rescue
       exception ->
-        # Recovery may return a historical success. Retain this turn's owner,
-        # never infer permission to run legacy effects from that success alone.
-        Repo.rollback({:turn_failed, exception, owner})
+        Repo.rollback({:turn_failed, exception})
     end
   end
 
@@ -224,11 +143,6 @@ defmodule Renga.Inventory.Reconciler do
         Inventory.get_source!(scope, observation.source_id)
     end
   end
-
-  defp turn_effect_owner(%Observation{parent_observation_id: nil}, %Source{kind: "host_agent"}),
-    do: :atomic_host
-
-  defp turn_effect_owner(_observation, _source), do: :post_commit
 
   # Current-state refreshes cannot be deferred past a host commit: an independent
   # IPAM edit may remove a transient condition before its finding was ever recorded.
@@ -255,12 +169,9 @@ defmodule Renga.Inventory.Reconciler do
 
   defp report?(%Observation{}), do: false
 
-  # Each derived observation reconciles once; a retry of the report retries
-  # only the ones that have not succeeded. One resource failing, such as an
-  # ambiguous identity, does not hold back the others, but it does stop its
-  # target from retiring anything. Resources in `failed` raised earlier in this
-  # call, so their recorded failure stands for this run.
-  defp perform_report_reconciliation(scope, report, failed) do
+  # Domain failures such as ambiguity retain successful members, but prohibit
+  # withdrawal for the failed target. Unexpected errors abort the whole report.
+  defp perform_report_reconciliation(scope, report) do
     source = Inventory.get_source!(scope, report.source_id)
     started_at = Renga.Time.utc_now_ms()
     attempt = next_attempt(scope, report.id)
@@ -268,13 +179,15 @@ defmodule Renga.Inventory.Reconciler do
     results =
       scope
       |> Inventory.list_derived_observations(report.id)
-      |> Enum.map(&{&1, derived_result(scope, &1, failed)})
+      |> Enum.map(&{&1, derived_result(scope, &1)})
 
     withdrawn = Collectors.apply_report!(scope, source, report, results)
+    failed? = Enum.any?(results, &match?({_, {:error, _}}, &1))
 
-    {:ok, _result} =
+    {:ok, result} =
       Inventory.create_observation_reconciliation(scope, report.id, %{
-        status: "succeeded",
+        status: if(failed?, do: "failed", else: "succeeded"),
+        errors: if(failed?, do: %{"processing" => "member_failed"}, else: %{}),
         attempt: attempt,
         metadata: %{
           "resources" => Enum.map(results, &report_resource_result/1),
@@ -284,16 +197,15 @@ defmodule Renga.Inventory.Reconciler do
         completed_at: Renga.Time.utc_now_ms()
       })
 
-    {:ok, report_resources(results), Enum.any?(results, &match?({_, {:ok, _, true}}, &1))}
+    if failed?,
+      do: {:error, result},
+      else: {:ok, report_resources(results), Enum.any?(results, &match?({_, {:ok, _, true}}, &1))}
   end
 
-  defp derived_result(scope, derived, failed) do
+  defp derived_result(scope, derived) do
     case latest_result(scope, derived.id) do
       %{status: "succeeded"} = result ->
         result_to_reconciliation(scope, result)
-
-      %{} = result when is_map_key(failed, derived.id) ->
-        {:error, result}
 
       _none_or_failed ->
         isolated_resource_reconciliation(derived, fn ->
@@ -306,11 +218,7 @@ defmodule Renga.Inventory.Reconciler do
     end
   end
 
-  # An unexpected failure, such as a database error, stays with its own
-  # resource: the report's transaction rolls back, and the caller records this
-  # resource as failed and runs the report again. A savepoint cannot undo it,
-  # since a failure inside a nested transaction aborts the whole transaction.
-  # A lost connection fails the whole report.
+  # Keep the failing member for diagnostics, without publishing partial effects.
   defp isolated_resource_reconciliation(derived, reconcile) do
     reconcile.()
   rescue
@@ -389,33 +297,9 @@ defmodule Renga.Inventory.Reconciler do
 
   defp result_to_reconciliation(_scope, result), do: {:error, result}
 
-  defp record_unexpected_failure_once(scope, observation, reason, authorize, owner \\ :none) do
-    attrs = unexpected_failure_attrs(reason)
-
-    result =
-      Repo.transaction(fn ->
-        authorize.()
-        Inventory.lock_organization!(scope.organization_id)
-
-        case latest_result(scope, observation.id) do
-          nil -> create_failure(scope, observation, attrs)
-          result -> result_to_reconciliation(scope, result)
-        end
-      end)
-      |> case do
-        {:ok, result} -> result
-        {:error, error} -> {:error, error}
-      end
-
-    # Report/derived ownership follows immutable observation shape even if the
-    # turn failed before classification. Unknown root ownership grants no effects.
-    owner =
-      if owner == :none and (report?(observation) or observation.parent_observation_id != nil),
-        do: :post_commit,
-        else: owner
-
-    {result, owner}
-  end
+  @doc false
+  def stored_result(scope, observation),
+    do: result_to_reconciliation(scope, latest_result(scope, observation.id))
 
   defp create_failure(scope, observation, attrs) do
     attrs = Map.put(attrs, :attempt, next_attempt(scope, observation.id))
@@ -426,72 +310,18 @@ defmodule Renga.Inventory.Reconciler do
     end
   end
 
-  defp record_unexpected_failure(scope, observation, exception, authorize) do
-    record_serialized_failure(
-      scope,
-      observation,
-      unexpected_failure_attrs(exception),
-      authorize
-    )
-  end
-
-  defp unexpected_failure_attrs(reason) do
+  @doc false
+  def record_failure_in_transaction(scope, observation, errors) do
+    unless Repo.in_transaction?(), do: raise(ArgumentError, "failure requires a transaction")
     now = Renga.Time.utc_now_ms()
 
-    %{
+    create_failure(scope, observation, %{
       status: "failed",
-      errors: %{"processing" => "projection_failed"},
-      metadata: %{"exception" => failure_type(reason)},
+      errors: errors,
       started_at: now,
       completed_at: now
-    }
+    })
   end
-
-  defp failure_type(%{__struct__: module}) when is_atom(module) do
-    module |> Module.split() |> Enum.join(".")
-  end
-
-  defp failure_type(reason) when is_atom(reason), do: Atom.to_string(reason)
-  defp failure_type(_reason), do: "unknown"
-
-  defp record_serialized_failure(scope, observation, attrs, authorize, retries \\ 1) do
-    Repo.transaction(fn ->
-      authorize.()
-      Inventory.lock_organization!(scope.organization_id)
-
-      case Inventory.create_observation_reconciliation(
-             scope,
-             observation.id,
-             Map.put(attrs, :attempt, next_attempt(scope, observation.id))
-           ) do
-        {:ok, result} -> result
-        {:error, changeset} -> Repo.rollback(changeset)
-      end
-    end)
-    |> case do
-      {:ok, result} ->
-        {:error, result}
-
-      {:error, changeset} when retries > 0 ->
-        if attempt_conflict?(changeset) do
-          record_serialized_failure(scope, observation, attrs, authorize, retries - 1)
-        else
-          {:error, changeset}
-        end
-
-      {:error, changeset} ->
-        {:error, changeset}
-    end
-  end
-
-  defp attempt_conflict?(%Ecto.Changeset{} = changeset) do
-    Enum.any?(changeset.errors, fn {_field, {_message, metadata}} ->
-      metadata[:constraint] == :unique and
-        metadata[:constraint_name] == "observation_reconciliations_observation_attempt_index"
-    end)
-  end
-
-  defp attempt_conflict?(_reason), do: false
 
   defp reconcile_resource(
          scope,

@@ -7,8 +7,8 @@ defmodule RengaWeb.Api.V1.Schemas.ObservationAccepted do
     %{
       title: "ObservationAccepted",
       description:
-        "The observation is stored. Reconciliation into inventory runs once inline; a " <>
-          "failure there does not reject the observation, which stays stored for retry.",
+        "Immutable evidence and its ordered processing obligation are durably stored. " <>
+          "The receipt stays fixed on replay; processing runs independently and may still be pending.",
       type: :object,
       properties: %{
         status: %{const: "accepted"},
@@ -16,33 +16,19 @@ defmodule RengaWeb.Api.V1.Schemas.ObservationAccepted do
           type: :boolean,
           description: "True when this observation ID was already stored with the same payload."
         },
-        reconciliation: %{
+        receipt: %{
           type: :object,
           properties: %{
-            status: %{type: :string, enum: ["succeeded", "failed"]},
-            matched_resource_id:
-              uuid(
-                "The inventory resource a host observation matched, when known. Absent " <>
-                  "for scoped reports, which list `resources` instead."
-              )
-              |> nullable(),
-            resources: %{
-              type: :array,
-              description:
-                "For a scoped report: how each of its resources reconciled, in report order.",
-              items: %{
-                type: :object,
-                properties: %{
-                  status: %{type: :string, enum: ["succeeded", "failed"]},
-                  resource_id: uuid("The inventory resource it matched or created."),
-                  errors: free_object("Why it failed to reconcile.")
-                },
-                required: [:status],
-                additionalProperties: false
-              }
-            },
-            errors: free_object("Why reconciliation failed, keyed by field or stage.")
+            id: uuid("The immutable first work receipt."),
+            position: %{type: :integer, minimum: 1},
+            accepted_at: timestamp()
           },
+          required: [:id, :position, :accepted_at],
+          additionalProperties: false
+        },
+        processing: %{
+          type: :object,
+          properties: %{status: %{type: :string, enum: ["pending", "succeeded", "quarantined"]}},
           required: [:status],
           additionalProperties: false
         },
@@ -58,7 +44,7 @@ defmodule RengaWeb.Api.V1.Schemas.ObservationAccepted do
           additionalProperties: false
         }
       },
-      required: [:status, :duplicate, :reconciliation, :observation],
+      required: [:status, :duplicate, :receipt, :processing, :observation],
       additionalProperties: false
     }
   end

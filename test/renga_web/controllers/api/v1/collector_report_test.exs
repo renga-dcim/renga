@@ -163,7 +163,7 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
                  ]
                },
                "observation" => %{"id" => report_id}
-             } = valid_api_response(conn, 202)
+             } = observation_result(conn, 202)
 
       refute first_id == second_id
       assert Inventory.get_resource!(scope, first_id).kind == "switch"
@@ -171,6 +171,14 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
       derived = Inventory.list_derived_observations(scope, report_id)
       assert Enum.map(derived, & &1.resource_index) == [0, 1]
       assert Enum.map(derived, & &1.payload["target"]) == ["10.0.0.1", "10.0.0.2"]
+
+      # ID-based entrypoints dispatch the parent obligation but return only the
+      # requested member, never the report's whole resource list.
+      for {member, expected_id} <- Enum.zip(derived, [first_id, second_id]),
+          entry <- [:reconcile_observation_once, :reconcile_observation] do
+        assert {:ok, %Inventory.Resource{id: ^expected_id}, false} =
+                 apply(Inventory, entry, [scope, member.id])
+      end
 
       # Each derived observation carries only the collector's normalized
       # identity; the rest of the collector object stays in the raw report.
@@ -203,7 +211,7 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
       assert %{
                "duplicate" => true,
                "reconciliation" => %{"resources" => [_first, _second]}
-             } = valid_api_response(duplicate, 200)
+             } = observation_result(duplicate, 200)
 
       assert length(Inventory.list_derived_observations(scope, report_id)) == 2
     end
@@ -213,10 +221,10 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
       second = post_observation(token, switch_report([switch("10.0.0.7", "SER-1")]))
 
       assert %{"reconciliation" => %{"resources" => [%{"resource_id" => id}]}} =
-               valid_api_response(first, 202)
+               observation_result(first, 202)
 
       assert %{"reconciliation" => %{"resources" => [%{"resource_id" => ^id}]}} =
-               valid_api_response(second, 202)
+               observation_result(second, 202)
     end
 
     for order <- [:host_first, :collector_first],
@@ -247,7 +255,7 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
             &Map.delete(&1, "machine_id")
           )
 
-        post = fn report -> token |> post_observation(report) |> valid_api_response(202) end
+        post = fn report -> token |> post_observation(report) |> observation_result(202) end
 
         hosts = fn ->
           Enum.map([same_mac, same_name], &post.(&1)["reconciliation"]["matched_resource_id"])
@@ -285,13 +293,13 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
         post_observation(token, host_report(dmi_uuid: "4c4c4544-0000-1111-2222-333344445555"))
 
       assert %{"reconciliation" => %{"matched_resource_id" => guest_id}} =
-               valid_api_response(host, 202)
+               observation_result(host, 202)
 
       report =
         post_observation(token, hypervisor_report([vm("4c4c4544-0000-1111-2222-333344445555")]))
 
       assert %{"reconciliation" => %{"resources" => [%{"resource_id" => ^guest_id}]}} =
-               valid_api_response(report, 202)
+               observation_result(report, 202)
     end
 
     test "a server its BMC reports reconciles to the host agent's server", %{
@@ -303,7 +311,7 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
         post_observation(token, host_report(dmi_uuid: "4c4c4544-0042-3510-8052-b4c04f4c4d32"))
 
       assert %{"reconciliation" => %{"matched_resource_id" => server_id}} =
-               valid_api_response(host, 202)
+               observation_result(host, 202)
 
       resource = "test/fixtures/collectors/recorded_bmc.json" |> File.read!() |> Jason.decode!()
 
@@ -318,7 +326,7 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
         )
 
       assert %{"reconciliation" => %{"resources" => [%{"resource_id" => ^server_id}]}} =
-               valid_api_response(report, 202)
+               observation_result(report, 202)
 
       assert Enum.any?(Collectors.list_streams(scope), &(&1.kind == "bmc_power"))
     end
@@ -634,7 +642,7 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
                  |> post_observation(
                    host_report(dmi_uuid: uuid, observed_at: "2026-08-13T07:00:00Z")
                  )
-                 |> valid_api_response(202)
+                 |> observation_result(202)
 
         assert resource_id == member.resource_id
         assert inventory_current(scope, resource_id) == "true"
@@ -667,7 +675,7 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
         |> post_observation(
           switch_report([switch("10.0.0.1", "SER-1")], observed_at: "2026-08-13T09:00:00Z")
         )
-        |> valid_api_response(202)
+        |> observation_result(202)
 
       {:ok, _condition} = Inventory.mark_resource_stale(scope, switch_id)
 
@@ -719,10 +727,10 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
 
       assert %{
                "reconciliation" => %{
-                 "status" => "succeeded",
+                 "status" => "failed",
                  "resources" => [%{"status" => "failed"}, %{"status" => "succeeded"}]
                }
-             } = valid_api_response(conn, 202)
+             } = observation_result(conn, 202)
 
       [stream] = Collectors.list_streams(scope)
       assert Enum.all?(Collectors.list_target_resources(scope, stream.id), &present?/1)
@@ -786,7 +794,7 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
         )
 
       assert %{"reconciliation" => %{"resources" => [%{"resource_id" => vm_id}]}} =
-               valid_api_response(report, 202)
+               observation_result(report, 202)
 
       # With no hostname to go on, the VM is named after its domain.
       assert Repo.get!(Inventory.Resource, vm_id).name == "web-1"
@@ -816,7 +824,7 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
                } =
                  token
                  |> post_observation(switch_report([resource], complete: true))
-                 |> valid_api_response(202)
+                 |> observation_result(202)
 
         assert Inventory.get_resource!(scope, id).kind == "switch"
       end
@@ -838,7 +846,7 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
                    complete: true
                  )
                )
-               |> valid_api_response(202)
+               |> observation_result(202)
 
       assert Inventory.get_resource!(scope, id).kind == "pdu"
       assert [%{kind: "power_poller"}] = Collectors.list_streams(scope)
@@ -858,10 +866,10 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
         )
 
       assert %{"reconciliation" => %{"resources" => [%{"resource_id" => id}]}} =
-               valid_api_response(first, 202)
+               observation_result(first, 202)
 
       assert %{"reconciliation" => %{"resources" => [%{"resource_id" => ^id}]}} =
-               valid_api_response(second, 202)
+               observation_result(second, 202)
 
       streams = Collectors.list_streams(scope)
       assert length(streams) == 2
@@ -881,14 +889,14 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
       assert %{"reconciliation" => %{"resources" => [%{"resource_id" => id}]}} =
                token
                |> post_observation(switch_report([switch], complete: true))
-               |> valid_api_response(202)
+               |> observation_result(202)
 
       identity_only = Map.delete(switch, "interfaces")
 
       assert %{"reconciliation" => %{"resources" => [%{"resource_id" => ^id}]}} =
                token
                |> post_observation(switch_report([identity_only], complete: true))
-               |> valid_api_response(202)
+               |> observation_result(202)
 
       assert [%{name: "Ethernet1", status: "up"}] = Inventory.list_interfaces(scope, id)
     end
@@ -929,7 +937,7 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
         })
 
       assert %{"reconciliation" => %{"resources" => [%{"resource_id" => id}]}} =
-               token |> post_observation(report) |> valid_api_response(202)
+               token |> post_observation(report) |> observation_result(202)
 
       [interface] = Inventory.list_interfaces(scope, id)
       assert interface.name == "Te1/1/1"
@@ -956,6 +964,7 @@ defmodule RengaWeb.Api.V1.CollectorReportTest do
       Keyword.get(opts, :installation_id, @installation_id)
     )
     |> post(~p"/api/v1/observations", payload)
+    |> settle_observation()
   end
 
   defp host_report(opts \\ []) do

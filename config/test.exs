@@ -69,6 +69,7 @@ config :phoenix_test,
 config :renga, Renga.Mailer, adapter: Swoosh.Adapters.Test
 
 # Tests invoke deterministic expiry sweeps directly under the SQL sandbox.
+config :renga, :reconciliation_worker_enabled, false
 config :renga, :neighbor_expiry_worker_enabled, false
 config :renga, :intake_contact_worker_enabled, false
 config :renga, :same_machine_sweeper_enabled, false

@@ -101,8 +101,7 @@ defmodule RengaWeb.IntakeAuth do
   end
 
   defp admit(conn, organization_id, installation_id) do
-    # The admission permit spans both acceptance and inline reconciliation,
-    # not just their individual database transactions.
+    # Observation permits end at durable acceptance, independently of worker capacity.
     result =
       IntakeCapacity.authentication(
         fn ->
@@ -133,6 +132,10 @@ defmodule RengaWeb.IntakeAuth do
 
   defp lane(%{path_info: ["api", "v1", "agent", "checkins"]}), do: :maintenance
   defp lane(%{path_info: ["api", "v1", "agent", "jobs", _id, "events"]}), do: :maintenance
+
+  defp lane(%{method: "GET", path_info: ["api", "v1", "observations", "receipt"]}),
+    do: :maintenance
+
   defp lane(_conn), do: :bulk
 
   defp admission_class(%{path_info: ["api", "v1", "agent", "jobs", "lease"]}), do: :lease

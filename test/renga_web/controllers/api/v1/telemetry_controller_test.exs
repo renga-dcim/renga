@@ -90,9 +90,10 @@ defmodule RengaWeb.Api.V1.TelemetryControllerTest do
         |> put_req_header("authorization", "Bearer #{token}")
         |> put_req_header("x-renga-installation-id", @installation_id)
         |> post(~p"/api/v1/observations", report)
+        |> settle_observation()
 
       assert %{"reconciliation" => %{"matched_resource_id" => resource_id}} =
-               valid_api_response(observation, 202)
+               observation_result(observation, 202)
 
       valid_api_response(post_batch(token, host_batch([sample(value: 300)])), 202)
 
@@ -156,7 +157,8 @@ defmodule RengaWeb.Api.V1.TelemetryControllerTest do
                |> put_req_header("authorization", "Bearer #{token}")
                |> put_req_header("x-renga-installation-id", @installation_id)
                |> post(~p"/api/v1/observations", report)
-               |> valid_api_response(202)
+               |> settle_observation()
+               |> observation_result(202)
 
       assert Inventory.get_resource!(scope, pdu_id).kind == "pdu"
 

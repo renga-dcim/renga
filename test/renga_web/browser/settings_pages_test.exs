@@ -838,6 +838,7 @@ defmodule RengaWeb.Browser.SettingsPagesTest do
       |> put_req_header("authorization", "Bearer #{token}")
       |> put_req_header("x-renga-installation-id", "67e55044-10b1-426f-9247-bb680e5fe0c8")
       |> post("/api/v1/observations", payload)
+      |> RengaWeb.ConnCase.settle_observation()
 
     assert response.status == 202
   end
