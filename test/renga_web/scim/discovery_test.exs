@@ -1,5 +1,6 @@
 defmodule RengaWeb.Scim.DiscoveryTest do
-  use RengaWeb.ConnCase, async: true
+  # Provider changes hold a deployment-wide advisory lock until Sandbox teardown.
+  use RengaWeb.ConnCase, async: false
 
   import Renga.InventoryFixtures
   import Renga.JobsFixtures, only: [member_scope: 2]

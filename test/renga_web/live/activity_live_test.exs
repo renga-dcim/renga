@@ -1,5 +1,6 @@
 defmodule RengaWeb.ActivityLiveTest do
-  use RengaWeb.ConnCase, async: true
+  # Real background sweeps share a node-wide permit, not just tenant-local data.
+  use RengaWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
   import Renga.AccountsFixtures
