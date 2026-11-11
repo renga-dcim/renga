@@ -357,6 +357,8 @@ defmodule Renga.Transfers.RecordTypes do
     "topology_findings_neighbor_storage" =>
       "physical storage behind exported current finding view",
     "agent_leases" => "runtime state; agents take new leases at the destination",
+    "job_evidence_reservations" =>
+      "deployment-local attempt credentials and protected allowance; never portable execution authority",
     "cable_endpoint_terminations" => "maintained by a trigger when a cable is inserted",
     "current_interface_adjacency_endpoints" =>
       "maintained by a trigger when an adjacency is inserted",

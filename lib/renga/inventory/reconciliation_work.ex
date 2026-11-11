@@ -69,6 +69,8 @@ defmodule Renga.Inventory.ReconciliationWork do
     field :original_key_id, Ecto.UUID
     field :installation_agent_id, Ecto.UUID
     field :installation_id, Ecto.UUID
+    field :job_reservation_id, Ecto.UUID
+    field :job_body_digest, :string
     field :run_after, :utc_datetime_usec
     field :quarantine_kind, :string
     field :error, :map, default: %{}
@@ -178,6 +180,61 @@ defmodule Renga.Inventory.ReconciliationWork do
 
       {:error, :idempotency_conflict, observation} ->
         Repo.rollback({:idempotency_conflict, observation})
+
+      {:error, reason} ->
+        Repo.rollback(reason)
+    end
+  end
+
+  @doc false
+  # The caller holds fresh attempt authority and the protected capacity lock.
+  # Host-only scope is the current inventory.collect capability's entire output.
+  def accept_job_evidence!(scope, key, agent, reservation, digest, params) do
+    authority =
+      require_authority!(
+        scope.organization_id,
+        key.id,
+        agent.id,
+        agent.installation_id,
+        agent.source_id
+      )
+
+    if authority.key.token_hash != key.token_hash, do: Repo.rollback(:intake_credential_changed)
+    attrs = validated_attrs!(params, authority.source)
+    if AgentPayload.scoped_report?(attrs.payload), do: Repo.rollback(:evidence_not_allowed)
+
+    case Inventory.accept_observation(
+           scope,
+           agent.source_id,
+           Map.put(attrs, :intake_api_key_id, key.id)
+         ) do
+      {:ok, observation, :created} ->
+        reserve!(
+          lock_lane!(scope.organization_id),
+          observation,
+          key.id,
+          agent.id,
+          agent.installation_id,
+          nil,
+          "intake",
+          {reservation, digest}
+        )
+
+        {observation, :created}
+
+      {:ok, observation, :duplicate} ->
+        reservation_id = reservation.id
+
+        case first_work(scope.organization_id, observation.id) do
+          %{job_reservation_id: ^reservation_id, job_body_digest: ^digest} ->
+            {observation, :duplicate}
+
+          _ ->
+            Repo.rollback(:idempotency_conflict)
+        end
+
+      {:error, :idempotency_conflict, _} ->
+        Repo.rollback(:idempotency_conflict)
 
       {:error, reason} ->
         Repo.rollback(reason)
@@ -729,14 +786,32 @@ defmodule Renga.Inventory.ReconciliationWork do
          agent_id,
          installation_id,
          limits,
-         origin \\ "intake"
+         origin \\ "intake",
+         protected \\ nil
        ) do
     units = reserved_units(observation.payload)
     bytes = reserved_bytes(observation.payload)
 
-    if lane.pending_units + units > limits.max_units or
-         lane.pending_bytes + bytes > limits.max_bytes,
-       do: Repo.rollback(:capacity)
+    {reservation_id, digest, ordinary_units, ordinary_bytes} =
+      case protected do
+        nil ->
+          if lane.pending_units + units > limits.max_units or
+               lane.pending_bytes + bytes > limits.max_bytes,
+             do: Repo.rollback(:capacity)
+
+          {nil, nil, units, bytes}
+
+        {reservation, digest} ->
+          if units > reservation.remaining_items or bytes > reservation.remaining_bytes,
+            do: Repo.rollback(:evidence_limit_exceeded)
+
+          change!(reservation,
+            remaining_items: reservation.remaining_items - units,
+            remaining_bytes: reservation.remaining_bytes - bytes
+          )
+
+          {reservation.id, digest, 0, 0}
+      end
 
     now = database_now()
 
@@ -752,14 +827,16 @@ defmodule Renga.Inventory.ReconciliationWork do
         original_key_id: original_key_id,
         installation_agent_id: agent_id,
         installation_id: installation_id,
+        job_reservation_id: reservation_id,
+        job_body_digest: digest,
         run_after: now,
         inserted_at: now
       })
 
     change!(lane,
       position: work.position,
-      pending_units: lane.pending_units + units,
-      pending_bytes: lane.pending_bytes + bytes
+      pending_units: lane.pending_units + ordinary_units,
+      pending_bytes: lane.pending_bytes + ordinary_bytes
     )
 
     work
@@ -1018,7 +1095,11 @@ defmodule Renga.Inventory.ReconciliationWork do
       error: %{}
     )
 
-    {units, bytes} = if status == "succeeded", do: {work.units, work.bytes}, else: {0, 0}
+    {units, bytes} =
+      if status == "succeeded" and is_nil(work.job_reservation_id),
+        do: {work.units, work.bytes},
+        else: {0, 0}
+
     release_owned_lane!(claim, lane, units, bytes)
     value
   end

@@ -133,6 +133,11 @@ defmodule RengaWeb.IntakeAuth do
   defp lane(%{path_info: ["api", "v1", "agent", "checkins"]}), do: :maintenance
   defp lane(%{path_info: ["api", "v1", "agent", "jobs", _id, "events"]}), do: :maintenance
 
+  defp lane(%{path_info: ["api", "v1", "agent", "jobs", _id, "evidence"]}), do: :maintenance
+
+  defp lane(%{path_info: ["api", "v1", "agent", "jobs", _id, "evidence", "receipt"]}),
+    do: :maintenance
+
   defp lane(%{method: "GET", path_info: ["api", "v1", "observations", "receipt"]}),
     do: :maintenance
 

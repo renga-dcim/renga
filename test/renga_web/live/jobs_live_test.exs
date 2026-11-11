@@ -83,9 +83,20 @@ defmodule RengaWeb.JobsLiveTest do
     end
   end
 
-  defp run(%{system_scope: system_scope, agent: agent}, type, payload) do
+  defp run(%{system_scope: system_scope, agent: agent, scope: scope}, type, payload) do
     {:ok, [{job, token}]} = Jobs.lease_jobs(system_scope, agent, [@collect], 1)
     {:ok, _} = Jobs.report(system_scope, agent, job.id, token, "started", %{})
+
+    if type == "succeeded",
+      do:
+        accepted_job_evidence_fixture(
+          scope,
+          agent,
+          job,
+          token,
+          payload["result"]["observation_id"]
+        )
+
     {:ok, job} = Jobs.report(system_scope, agent, job.id, token, type, payload)
     job
   end

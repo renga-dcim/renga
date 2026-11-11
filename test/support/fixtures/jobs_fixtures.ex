@@ -44,6 +44,40 @@ defmodule Renga.JobsFixtures do
     agent
   end
 
+  @doc "Host evidence durably accepted for a held inventory job attempt."
+  def accepted_job_evidence_fixture(scope, agent, job, token, id \\ Ecto.UUID.generate()) do
+    {:ok, {key, _token}} = Inventory.create_intake_api_key(scope, %{name: "Job evidence"})
+
+    body =
+      Jason.encode!(%{
+        observation_id: id,
+        observed_at: Renga.Time.utc_now_ms(),
+        resources: [
+          %{
+            kind: "server",
+            identifiers: %{hostname: "job-host"},
+            attributes: %{hostname: "job-host"}
+          }
+        ]
+      })
+
+    digest = :crypto.hash(:sha256, body) |> Base.encode16(case: :lower)
+
+    {:ok, {_observation, :created}} =
+      Renga.Jobs.Evidence.submit(
+        Accounts.scope_for(scope.organization),
+        key,
+        agent.installation_id,
+        job.id,
+        job.attempts,
+        token,
+        digest,
+        body
+      )
+
+    id
+  end
+
   @doc "A server resource that `agent` reports on, through a claim from its source."
   def reported_resource_fixture(organization, agent, name \\ "compute-01") do
     scope = Accounts.scope_for(organization)

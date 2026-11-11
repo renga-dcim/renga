@@ -49,6 +49,12 @@ defmodule Renga.Jobs.Capability do
   @doc "Total bytes of agent-supplied event payloads one job may record."
   @callback output_limit_bytes() :: pos_integer()
 
+  @doc "Protected observation count and encoded bytes reserved before leasing an attempt."
+  @callback evidence_limit() :: %{items: non_neg_integer(), bytes: non_neg_integer()}
+
+  @doc "Observation IDs whose job-bound durable acceptance a successful result requires."
+  @callback result_evidence_ids(map()) :: [String.t()]
+
   @doc "Whether output must be hidden from people who may not request the job."
   @callback sensitive_output?() :: boolean()
 
@@ -102,6 +108,12 @@ defmodule Renga.Jobs.Capability do
       def output_limit_bytes, do: unquote(@default_output_limit_bytes)
 
       @impl Renga.Jobs.Capability
+      def evidence_limit, do: %{items: 0, bytes: 0}
+
+      @impl Renga.Jobs.Capability
+      def result_evidence_ids(_result), do: []
+
+      @impl Renga.Jobs.Capability
       def sensitive_output?, do: false
 
       @impl Renga.Jobs.Capability
@@ -119,6 +131,8 @@ defmodule Renga.Jobs.Capability do
       defoverridable title: 0,
                      noun: 0,
                      output_limit_bytes: 0,
+                     evidence_limit: 0,
+                     result_evidence_ids: 1,
                      sensitive_output?: 0,
                      required_permissions: 0,
                      allowed_by_default?: 0,

@@ -136,6 +136,21 @@ defmodule Renga.Limits do
       description: "Root and bounded derived payload bytes reserved before acceptance.",
       usage: &Renga.Inventory.ReconciliationWork.pending_bytes/1
     },
+    job_evidence_items: %{
+      env: "LIMIT_JOB_EVIDENCE_ITEMS",
+      default: 10_000,
+      unit: "protected pending evidence items",
+      description: "Unused job allowances plus accepted evidence awaiting successful processing.",
+      usage: {Renga.Jobs.Evidence, :usage, [:items]}
+    },
+    job_evidence_bytes: %{
+      env: "LIMIT_JOB_EVIDENCE_BYTES",
+      default: 1_024_000_000,
+      unit: "protected pending evidence bytes",
+      description:
+        "Independent of ordinary intake; job completion releases only unused allowance.",
+      usage: {Renga.Jobs.Evidence, :usage, [:bytes]}
+    },
     job_creation_rate: %{
       env: "LIMIT_JOB_CREATION_RATE",
       default: 10_000,

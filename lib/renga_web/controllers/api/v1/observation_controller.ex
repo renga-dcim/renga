@@ -125,7 +125,8 @@ defmodule RengaWeb.Api.V1.ObservationController do
 
   defp reported_from(_conn), do: nil
 
-  defp respond_to_accepted_observation(conn, observation, disposition) do
+  @doc false
+  def respond_to_accepted_observation(conn, observation, disposition) do
     accepted = ReconciliationWork.accepted(conn.assigns.current_scope, observation)
 
     conn

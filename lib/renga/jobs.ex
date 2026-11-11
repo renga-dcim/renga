@@ -936,7 +936,16 @@ defmodule Renga.Jobs do
         now
       )
 
-    {job, token}
+    reservation = Renga.Jobs.Evidence.reserve!(job, agent, token)
+
+    {%{
+       job
+       | evidence_reservation: %{
+           id: reservation.id,
+           items: reservation.remaining_items,
+           bytes: reservation.remaining_bytes
+         }
+     }, token}
   end
 
   @doc """
@@ -1121,6 +1130,7 @@ defmodule Renga.Jobs do
         {:error, changeset} -> Repo.rollback(changeset)
       end
 
+    Renga.Jobs.Evidence.require_result!(job, result)
     {finish(%{state: "succeeded", result: result}, now), %{"result" => result}}
   end
 
@@ -1539,6 +1549,10 @@ defmodule Renga.Jobs do
   # transaction.
   defp apply!(%Job{} = job, changes, events, now) do
     attempt = Map.get(changes, :attempts, job.attempts)
+
+    if job.state in Job.leased_states() and
+         Map.get(changes, :state, job.state) not in Job.leased_states(),
+       do: Renga.Jobs.Evidence.release_unused!(job)
 
     entries =
       events

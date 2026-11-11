@@ -48,6 +48,7 @@ defmodule Renga.Jobs.Job do
     field :failure_reason, :string
     field :output_bytes, :integer, default: 0
     field :output_limit_bytes, :integer
+    field :evidence_reservation, :map, virtual: true
     field :timeout_ms, :integer
     field :last_sequence, :integer, default: 0
     # Privileged jobs only (RFD 13): the binding requested under, and the

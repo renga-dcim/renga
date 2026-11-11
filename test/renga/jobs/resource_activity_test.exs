@@ -30,6 +30,17 @@ defmodule Renga.Jobs.ResourceActivityTest do
   defp run(context, type, payload) do
     {:ok, [{job, token}]} = Jobs.lease_jobs(context.system_scope, context.agent, [@collect], 1)
     {:ok, _} = Jobs.report(context.system_scope, context.agent, job.id, token, "started", %{})
+
+    if type == "succeeded",
+      do:
+        accepted_job_evidence_fixture(
+          context.scope,
+          context.agent,
+          job,
+          token,
+          payload["result"]["observation_id"]
+        )
+
     Jobs.report(context.system_scope, context.agent, job.id, token, type, payload)
   end
 

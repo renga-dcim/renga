@@ -43,7 +43,8 @@ defmodule Renga.Jobs.ReportSequenceTest do
 
   test "a retried final report returns the recorded outcome after the lease is released",
        context do
-    result = %{"result" => %{"observation_id" => Ecto.UUID.generate()}}
+    id = accepted_job_evidence_fixture(context.scope, context.agent, context.job, context.token)
+    result = %{"result" => %{"observation_id" => id}}
 
     {:ok, _running} = report(context, "started", %{}, 1)
     assert {:ok, %{state: "succeeded"} = done} = report(context, "succeeded", result, 2)

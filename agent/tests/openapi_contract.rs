@@ -758,7 +758,8 @@ fn the_agent_decodes_documented_responses() {
                 "lease_expires_at": "2026-10-14T12:01:00.000Z",
                 "not_after": "2026-10-14T13:00:00.000Z",
                 "timeout_ms": 300000,
-                "output_limit_bytes": 65536
+                "output_limit_bytes": 65536,
+                "evidence_reservation": {"id": "8ea9ae04-bf9b-4c34-8192-4f617eade95e", "items": 1, "bytes": 256000}
             }]
         }),
     );
@@ -794,7 +795,8 @@ fn the_agent_decodes_documented_responses() {
             "lease_expires_at": "2026-10-14T12:01:00.000Z",
             "not_after": "2026-10-14T13:00:00.000Z",
             "timeout_ms": 300000,
-            "output_limit_bytes": 65536
+            "output_limit_bytes": 65536,
+            "evidence_reservation": {"id": "8ea9ae04-bf9b-4c34-8192-4f617eade95e", "items": 0, "bytes": 0}
         }),
     );
     assert_eq!(claimed.parameters["service"], "sshd");
