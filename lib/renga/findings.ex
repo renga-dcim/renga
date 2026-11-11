@@ -858,7 +858,7 @@ defmodule Renga.Findings do
     )
   end
 
-  defp build_findings(rows, %Scope{organization_id: organization_id}, now) do
+  defp build_findings(rows, %Scope{organization_id: organization_id} = scope, now) do
     workflows =
       rows
       |> Enum.map(& &1.workflow)
@@ -878,7 +878,7 @@ defmodule Renga.Findings do
         state: state(row.status, workflow, now),
         status: row.status,
         message: row.message,
-        details: row.details,
+        details: finding_details(row, scope),
         resolution_key: row.resolution_key,
         subject_id: row.subject_id,
         resource: result.resource,
@@ -891,6 +891,15 @@ defmodule Renga.Findings do
       }
     end)
   end
+
+  defp finding_details(%{domain: "quota", resolution_key: "resources", details: details}, scope) do
+    case Renga.Inventory.ReconciliationWork.list_quota_deferred(scope) do
+      {[], 0} -> details
+      {items, total} -> Map.put(details, "quota_deferred", %{items: items, total: total})
+    end
+  end
+
+  defp finding_details(row, _scope), do: row.details
 
   # People named on a finding without a global email get the address the
   # organization's provider asserts, as in the assignee picker (RFD 15).

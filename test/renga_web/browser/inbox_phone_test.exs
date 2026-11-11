@@ -50,7 +50,7 @@ defmodule RengaWeb.Browser.InboxPhoneTest do
         RengaWeb.Endpoint.session_options()
       )
 
-    %{conn: conn, user: user, drift: drift, other: other}
+    %{conn: conn, user: user, drift: drift, other: other, organization: organization}
   end
 
   test "reads, assigns, snoozes, and excepts a finding at phone width", context do
@@ -77,6 +77,83 @@ defmodule RengaWeb.Browser.InboxPhoneTest do
     |> click_button("Accept as exception")
     |> assert_has("#finding-exception", text: "Chassis is being replaced")
     |> refute_has("#findings-#{other.id}")
+  end
+
+  test "owner can scroll deferred evidence and page it with touch-sized controls", context do
+    owner = Renga.JobsFixtures.member_scope(context.organization, "owner")
+    {:ok, {key, _}} = Inventory.create_intake_api_key(owner, %{name: "Deferred fleet"})
+    installation_id = Ecto.UUID.generate()
+    {:ok, {agent, _}} = Inventory.record_intake_agent_check_in(owner, key, installation_id)
+
+    for n <- 1..21 do
+      params = %{
+        "observation_id" => "phone-deferred-#{n}",
+        "observed_at" => "2026-10-30T00:00:00Z",
+        "resources" => [%{"kind" => "server", "identifiers" => %{"machine_id" => "phone-#{n}"}}]
+      }
+
+      {:ok, _} =
+        Renga.Inventory.ReconciliationWork.admit(
+          owner,
+          key,
+          installation_id,
+          agent.source_id,
+          params,
+          %{max_units: 100, max_bytes: 1_000_000}
+        )
+
+      {:ok, claim} =
+        Renga.Inventory.ReconciliationWork.claim_next(organization_id: owner.organization_id)
+
+      {:ok, _} =
+        Renga.Inventory.ReconciliationWork.fail(claim, :quota, %{}, backoff_ms: 60_000)
+    end
+
+    {[finding], 1} = Renga.Findings.list_findings(owner, domain: "quota")
+
+    conn =
+      add_session_cookie(
+        context.conn,
+        [
+          value: %{
+            user_token: Renga.Accounts.generate_user_session_token(owner.user),
+            current_organization_id: context.organization.id
+          }
+        ],
+        RengaWeb.Endpoint.session_options()
+      )
+
+    conn
+    |> visit("/inbox?finding=quota:#{finding.id}")
+    |> assert_has("#quota-deferred-next")
+    |> evaluate(fits_screen_js("#finding-panel [role=dialog]"), &assert(&1 == true))
+    |> evaluate(
+      "document.querySelector('#quota-deferred-next').getBoundingClientRect().height",
+      &assert(&1 >= 44)
+    )
+    |> press("#quota-deferred-next", "Shift+Tab")
+    |> assert_has("#finding-details pre:focus")
+    |> press("#finding-details pre", "PageDown")
+    |> evaluate(
+      """
+      new Promise(resolve => {
+        const pre = document.querySelector('#finding-details pre');
+        if (pre.scrollTop > 0) return resolve(true);
+        pre.addEventListener('scroll', () => resolve(pre.scrollTop > 0), {once: true});
+        setTimeout(() => resolve(false), 1000);
+      })
+      """,
+      &assert(&1)
+    )
+    |> click("#quota-deferred-next")
+    |> assert_has("#quota-deferred-pagination", text: "page 2")
+    |> refute_has("#quota-deferred-next")
+    |> evaluate(
+      "document.querySelector('#quota-deferred-previous').getBoundingClientRect().height",
+      &assert(&1 >= 44)
+    )
+    |> click("#quota-deferred-previous")
+    |> assert_has("#quota-deferred-pagination", text: "page 1")
   end
 
   # The dialog stays within the screen and the page never scrolls sideways.

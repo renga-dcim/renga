@@ -39,7 +39,7 @@ const SPEC: &str = include_str!(concat!(
 #[test]
 fn durable_observation_receipts_match_the_agent_decoder() {
     for (status, duplicate) in [(202, false), (200, true)] {
-        for processing in ["pending", "succeeded", "quarantined"] {
+        for processing in ["pending", "succeeded", "quarantined", "quota_deferred"] {
             let body = json!({
                 "status": "accepted",
                 "duplicate": duplicate,

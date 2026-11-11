@@ -28,7 +28,12 @@ defmodule RengaWeb.Api.V1.Schemas.ObservationAccepted do
         },
         processing: %{
           type: :object,
-          properties: %{status: %{type: :string, enum: ["pending", "succeeded", "quarantined"]}},
+          properties: %{
+            status: %{
+              type: :string,
+              enum: ["pending", "succeeded", "quarantined", "quota_deferred"]
+            }
+          },
           required: [:status],
           additionalProperties: false
         },

@@ -91,10 +91,9 @@ defmodule Renga.Inventory.ReconciliationWorker do
         result
 
       {:error, reason} ->
-        kind = if transient?(reason), do: :backoff, else: :domain
-        error = %{"processing" => "projection_failed"}
+        {kind, error, delay} = failure(reason)
 
-        case Work.fail(claim, kind, error, backoff_ms: 1_000, record_attempt: true) do
+        case Work.fail(claim, kind, error, backoff_ms: delay, record_attempt: true) do
           {:ok, work} ->
             scope = %Renga.Accounts.Scope{organization_id: work.organization_id}
             observation = Renga.Inventory.get_observation!(scope, work.observation_id)
@@ -103,6 +102,24 @@ defmodule Renga.Inventory.ReconciliationWorker do
           error ->
             error
         end
+    end
+  end
+
+  defp failure({:turn_failed, reason}), do: failure(reason)
+  defp failure({:resource_failed, _observation, reason}), do: failure(reason)
+
+  defp failure(reason) do
+    cond do
+      Renga.Quotas.exceeded?(reason, :resources) ->
+        # Periodic rediscovery covers missed deletion/limit-change notifications
+        # and restarts. This is a scheduling bound, not capacity evidence.
+        {:quota, %{"processing" => "quota_deferred", "quota" => "resources"}, 30_000}
+
+      transient?(reason) ->
+        {:backoff, %{"processing" => "projection_failed"}, 1_000}
+
+      true ->
+        {:domain, %{"processing" => "projection_failed"}, 0}
     end
   end
 
@@ -120,7 +137,5 @@ defmodule Renga.Inventory.ReconciliationWorker do
         :too_many_connections
       ]
 
-  defp transient?({:turn_failed, reason}), do: transient?(reason)
-  defp transient?({:resource_failed, _observation, reason}), do: transient?(reason)
   defp transient?(_reason), do: false
 end

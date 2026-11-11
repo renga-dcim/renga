@@ -47,6 +47,7 @@ pub enum ProcessingStatus {
     Pending,
     Succeeded,
     Quarantined,
+    QuotaDeferred,
 }
 
 #[derive(Debug, Serialize)]

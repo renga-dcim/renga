@@ -105,7 +105,7 @@ defmodule Renga.Quotas do
 
   def owner?(_scope), do: false
 
-  @doc "Owner-only quota findings, opened at 80% and resolved when usage falls."
+  @doc "Owner-only findings for 80% quota usage or resource work waiting for capacity."
   def findings(%Scope{organization_id: organization_id} = scope) do
     if owner?(scope) do
       %{rows: rows} =

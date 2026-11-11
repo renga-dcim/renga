@@ -1358,6 +1358,51 @@ defmodule RengaWeb.Api.V1.ObservationControllerTest do
                Inventory.list_observation_reconciliations(scope, observation_id)
     end
 
+    test "quota-deferred POST replay and receipt lookup keep acceptance without retrying", %{
+      conn: conn
+    } do
+      %{scope: scope, source: source, token: token} = source_fixture()
+      payload = valid_observation_payload(source)
+
+      first =
+        conn
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", payload)
+        |> valid_api_response(202)
+
+      {:ok, claim} = ReconciliationWork.claim_next(organization_id: scope.organization_id)
+
+      assert {:ok, deferred} =
+               ReconciliationWork.fail(
+                 claim,
+                 :quota,
+                 %{"processing" => "quota_deferred", "quota" => "resources"},
+                 backoff_ms: 30_000
+               )
+
+      replay =
+        build_conn()
+        |> authorize(token)
+        |> post(~p"/api/v1/observations", payload)
+        |> valid_api_response(200)
+
+      lookup =
+        build_conn()
+        |> authorize(token)
+        |> get(~p"/api/v1/observations/receipt?#{[observation_id: payload["observation_id"]]}")
+        |> valid_api_response(200)
+
+      for response <- [replay, lookup] do
+        assert response["receipt"] == first["receipt"]
+        assert response["processing"] == %{"status" => "quota_deferred"}
+      end
+
+      assert ReconciliationWork.get(scope, deferred.id) == deferred
+
+      assert [%{attempt: 1, status: "failed", errors: %{"processing" => "quota_deferred"}}] =
+               Inventory.list_observation_reconciliations(scope, deferred.observation_id)
+    end
+
     test "accepts identical reports when their idempotency keys differ", %{conn: conn} do
       %{source: source, token: token} = source_fixture()
       payload = valid_observation_payload(source, %{"observation_id" => "report-1"})
