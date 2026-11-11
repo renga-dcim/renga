@@ -13,7 +13,6 @@ defmodule Renga.Release.CLI do
   alias Renga.Limits
   alias Renga.Operators
   alias Renga.Transfers
-  alias Renga.Transfers.Export
   alias Renga.Transfers.Import
 
   @usage """
@@ -313,26 +312,39 @@ defmodule Renga.Release.CLI do
       File.chmod!(staging, 0o700)
       File.touch!(partial)
       File.chmod!(partial, 0o600)
-      {:ok, summary} = Export.write(organization, partial, parts: parts)
 
-      case File.ln(partial, output) do
-        :ok ->
-          :ok = DeploymentAudit.succeeded(context, "organization.export", details)
-          :ok = Transfers.record_operator_export(organization, context)
+      result =
+        Transfers.write_operator_export(organization, partial,
+          parts: parts,
+          tmp_dir: staging
+        )
 
-          IO.puts(
-            "Exported #{organization.slug} (#{summary.records} records, snapshot at " <>
-              "#{DateTime.to_iso8601(summary.snapshot_at)}) to #{output}."
-          )
+      case result do
+        {:ok, summary} ->
+          case File.ln(partial, output) do
+            :ok ->
+              :ok = DeploymentAudit.succeeded(context, "organization.export", details)
+              :ok = Transfers.record_operator_export(organization, context)
 
-          0
+              IO.puts(
+                "Exported #{organization.slug} (#{summary.records} records, snapshot at " <>
+                  "#{DateTime.to_iso8601(summary.snapshot_at)}) to #{output}."
+              )
 
-        {:error, :eexist} ->
-          DeploymentAudit.reject(context, "organization.export", :output_exists, details)
-          error("#{output} was created during the export and was left as it is")
+              0
+
+            {:error, :eexist} ->
+              DeploymentAudit.reject(context, "organization.export", :output_exists, details)
+              error("#{output} was created during the export and was left as it is")
+
+            {:error, reason} ->
+              raise File.LinkError, reason: reason, action: "link", existing: partial, new: output
+          end
 
         {:error, reason} ->
-          raise File.LinkError, reason: reason, action: "link", existing: partial, new: output
+          code = if match?({:quota_exceeded, _}, reason), do: :quota_exceeded, else: :unavailable
+          DeploymentAudit.reject(context, "organization.export", code, details)
+          error("export refused: #{inspect(reason)}")
       end
     rescue
       exception ->

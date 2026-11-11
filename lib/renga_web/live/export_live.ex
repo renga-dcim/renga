@@ -50,6 +50,14 @@ defmodule RengaWeb.ExportLive do
       {:error, :already_running} ->
         {:noreply, put_flash(socket, :error, "An export is already running.")}
 
+      {:error, {:quota_exceeded, :export_archive_bytes}} ->
+        {:noreply,
+         put_flash(
+           socket,
+           :error,
+           "Export archive quota exhausted. Revoke an archive or contact the deployment operator, then retry."
+         )}
+
       {:error, :forbidden} ->
         {:noreply, forbidden(socket)}
     end

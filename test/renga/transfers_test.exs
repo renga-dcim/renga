@@ -252,6 +252,83 @@ defmodule Renga.TransfersTest do
     assert {:error, :already_running} = Transfers.start_export(owner, [], &url/0)
   end
 
+  test "archive capacity is reserved before generation and retained until deletion", %{
+    owner: owner,
+    organization: organization
+  } do
+    context = Renga.DeploymentAudit.operator("test")
+    maximum = Transfers.export_maximum_bytes()
+    :ok = Renga.Limits.set(organization, [export_archive_bytes: maximum - 1], context)
+
+    assert {:error, {:quota_exceeded, :export_archive_bytes}} =
+             Transfers.start_export(owner, [], &url/0)
+
+    assert Transfers.archive_usage(organization.id) == 0
+    assert Repo.aggregate(OrganizationExport, :count) == 0
+
+    :ok = Renga.Limits.set(organization, [export_archive_bytes: maximum], context)
+    export = start!(owner)
+    assert export.maximum_bytes == maximum
+    assert Transfers.archive_usage(organization.id) == export.bytes
+    assert export.bytes > 0 and export.bytes < maximum
+
+    # A lowered quota cannot delete an archive, but cannot fund a new one.
+    :ok = Renga.Limits.set(organization, [export_archive_bytes: 0], context)
+    assert {:ok, _} = Transfers.authorize_download(owner, export.id)
+
+    assert {:error, {:quota_exceeded, :export_archive_bytes}} =
+             Transfers.start_export(owner, [], &url/0)
+
+    assert {:ok, _} = Transfers.revoke_export(owner, export.id)
+    assert Transfers.archive_usage(organization.id) == 0
+  end
+
+  test "an in-flight reservation survives a lowered limit and only terminal cleanup releases it",
+       %{owner: owner, organization: organization} do
+    maximum = Transfers.export_maximum_bytes()
+
+    export =
+      Repo.insert!(%OrganizationExport{
+        organization_id: organization.id,
+        requested_by_user_id: owner.user.id,
+        status: "running",
+        maximum_bytes: maximum
+      })
+
+    assert Transfers.archive_usage(organization.id) == maximum
+
+    :ok =
+      Renga.Limits.set(
+        organization,
+        [export_archive_bytes: 0],
+        Renga.DeploymentAudit.operator("test")
+      )
+
+    assert :ok = Transfers.run(export.id, &url/0)
+    ready = Repo.reload!(export)
+    assert ready.status == "ready"
+    assert Transfers.archive_usage(organization.id) == ready.bytes
+    assert Transfers.sweep(DateTime.add(ready.expires_at, 1)) == 1
+    assert Transfers.archive_usage(organization.id) == 0
+    assert Transfers.sweep(DateTime.add(ready.expires_at, 1)) == 0
+  end
+
+  test "exceeding a declared maximum fails without retaining unreserved bytes", %{
+    organization: organization
+  } do
+    export =
+      Repo.insert!(%OrganizationExport{
+        organization_id: organization.id,
+        status: "running",
+        maximum_bytes: 1
+      })
+
+    assert capture_log(fn -> Transfers.run(export.id, &url/0) end) =~ "reserved maximum"
+    assert Repo.reload!(export).status == "failed"
+    assert chunk_count(export) == 0
+    assert Transfers.archive_usage(organization.id) == 0
+  end
+
   test "revoking deletes the archive and ends downloads", %{owner: owner} = context do
     export = start!(owner)
     assert chunk_count(export) > 0
@@ -317,6 +394,28 @@ defmodule Renga.TransfersTest do
 
     good = Repo.insert!(%OrganizationExport{organization_id: quiet.id, status: "running"})
 
+    handler = "export-database-#{Ecto.UUID.generate()}"
+
+    :telemetry.attach(
+      handler,
+      [:renga, :repo, :query],
+      fn _, _, metadata, pid ->
+        query = metadata.query
+
+        kind =
+          cond do
+            String.contains?(query, "jsonb_build_object") -> :snapshot
+            String.contains?(query, "INSERT INTO organization_export_chunks") -> :chunks
+            true -> nil
+          end
+
+        if kind, do: send(pid, {:export_database, Renga.UsageTelemetry.organization_id(), kind})
+      end,
+      self()
+    )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
     Repo.query!("DELETE FROM background_cursors WHERE worker = 'export_generation'")
     {:ok, reserve} = Renga.IntakeCapacity.acquire(:export_background, 1)
     assert Transfers.generate_queued() == []
@@ -334,6 +433,9 @@ defmodule Renga.TransfersTest do
       Transfers.generate_queued()
       assert Repo.reload!(good).status == "ready"
       assert chunk_count(good) > 0
+      quiet_id = quiet.id
+      assert_receive {:export_database, ^quiet_id, :snapshot}
+      assert_receive {:export_database, ^quiet_id, :chunks}
     after
       Renga.IntakeCapacity.release(general)
     end
@@ -354,6 +456,46 @@ defmodule Renga.TransfersTest do
     assert chunk_count(export) == 0
     assert Transfers.generate_queued() == []
     assert activity(organization) == [{"export_failed", nil}]
+  end
+
+  test "operator generation competes for archive bytes and releases failed or crashed reservations",
+       %{
+         organization: organization,
+         owner: owner,
+         tmp_dir: tmp
+       } do
+    export = start!(owner)
+    maximum = Transfers.export_maximum_bytes()
+    context = Renga.DeploymentAudit.operator("operator-export")
+    :ok = Renga.Limits.set(organization, [export_archive_bytes: maximum], context)
+    path = Path.join(tmp, "operator.tar.zst")
+
+    assert {:error, {:quota_exceeded, :export_archive_bytes}} =
+             Transfers.write_operator_export(organization, path)
+
+    assert {:ok, _} = Transfers.revoke_export(owner, export.id)
+
+    assert {:error, _} = Transfers.write_operator_export(organization, path, parts: ["invalid"])
+    assert Transfers.archive_usage(organization.id) == 0
+    assert {:ok, _} = Transfers.write_operator_export(organization, path)
+    assert Transfers.archive_usage(organization.id) == 0
+    assert File.stat!(path).size > 0
+    assert {:ok, managed} = Transfers.list_exports(owner)
+    assert Enum.all?(managed, &(&1.storage == "managed"))
+
+    crashed =
+      Repo.insert!(%OrganizationExport{
+        organization_id: organization.id,
+        status: "running",
+        storage: "operator",
+        maximum_bytes: maximum,
+        processing_deadline: DateTime.add(Renga.Time.utc_now_ms(), -1)
+      })
+
+    assert Transfers.archive_usage(organization.id) == maximum
+    Transfers.generate_queued()
+    assert Repo.reload!(crashed).status == "failed"
+    assert Transfers.archive_usage(organization.id) == 0
   end
 
   test "the sweep expires archives after seven days and fails abandoned exports", context do

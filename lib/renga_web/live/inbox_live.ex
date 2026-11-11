@@ -1414,7 +1414,7 @@ defmodule RengaWeb.InboxLive do
     >
       <div class="space-y-6">
         <.properties id="finding-properties" title="Finding">
-          <:item label="Resource">
+          <:item label={if @finding.resource, do: "Resource", else: "Organization"}>
             <.link navigate={resource_path(@finding)} class="text-link hover:underline">
               {resource_name(@finding.resource)}
             </.link>
@@ -1706,6 +1706,7 @@ defmodule RengaWeb.InboxLive do
   defp domain_label("address"), do: "IP addresses"
   defp domain_label("collector"), do: "Collectors"
   defp domain_label("power"), do: "Power"
+  defp domain_label("quota"), do: "Organization capacity"
 
   defp state_label(%{state: :open}), do: "Open"
   defp state_label(%{state: :snoozed}), do: "Snoozed"
@@ -1741,9 +1742,12 @@ defmodule RengaWeb.InboxLive do
   defp assignee(%{workflow: %{assignee_user: %{} = user}}), do: user
   defp assignee(_finding), do: nil
 
+  defp resource_name(nil), do: "Organization quota"
   defp resource_name(resource), do: resource.display_name || resource.name
 
   # Each finding opens the resource tab where its evidence lives.
+  defp resource_path(%{domain: "quota"}), do: ~p"/settings/limits"
+
   defp resource_path(%{domain: domain, resource: resource})
        when domain in ["component", "hardware_match"],
        do: ~p"/inventory/#{resource}/hardware"

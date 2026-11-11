@@ -142,6 +142,8 @@ defmodule Renga.Inventory.Agent do
     )
     |> assoc_constraint(:organization)
     |> assoc_constraint(:source, name: :agents_organization_source_fkey)
+    |> Renga.Quotas.constrain(:agents, :name)
+    |> Renga.Quotas.constrain(:installation_identities, :name)
     |> unique_constraint([:organization_id, :source_id])
     |> unique_constraint(:installation_id,
       name: :agents_organization_installation_id_index

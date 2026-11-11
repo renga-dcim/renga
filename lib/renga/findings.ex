@@ -35,6 +35,8 @@ defmodule Renga.Findings do
   alias Renga.Inventory.Resource
   alias Renga.IPAM.AddressFinding
   alias Renga.Power.Finding, as: PowerFinding
+  alias Renga.Quotas
+  alias Renga.Quotas.Finding, as: QuotaFinding
   alias Renga.Repo
   alias Renga.Topology.TopologyFinding
 
@@ -261,10 +263,15 @@ defmodule Renga.Findings do
   end
 
   @doc "Workflow changes recorded for a finding's identity, newest first."
-  def list_history(%Scope{organization_id: organization_id}, %Finding{workflow: %Workflow{} = w}) do
+  def list_history(%Scope{organization_id: organization_id} = scope, %Finding{
+        workflow: %Workflow{} = w
+      }) do
+    visible? = w.domain != "quota" or Quotas.owner?(scope)
+
     ChangeEvent
     |> where([event], event.organization_id == ^organization_id)
     |> where([event], event.finding_workflow_id == ^w.id)
+    |> where(^visible?)
     |> order_by([event], desc: event.occurred_at, desc: event.id)
     |> preload(:actor_user)
     |> Repo.all()
@@ -437,7 +444,7 @@ defmodule Renga.Findings do
       resolution_key: finding.resolution_key
     ]
 
-    %Workflow{resource_id: finding.resource.id}
+    %Workflow{resource_id: finding.resource && finding.resource.id}
     |> struct(identity)
     |> Repo.insert!(
       on_conflict: :nothing,
@@ -454,7 +461,7 @@ defmodule Renga.Findings do
     Inventory.create_change_event(scope, %{
       kind: kind,
       field: "#{finding.domain}.#{finding.kind}",
-      resource_id: finding.resource.id,
+      resource_id: finding.resource && finding.resource.id,
       finding_workflow_id: after_.id,
       old_value: audit_state(kind, before),
       new_value: audit_state(kind, after_),
@@ -528,10 +535,10 @@ defmodule Renga.Findings do
     |> filter_kind(Keyword.get(opts, :kind))
   end
 
-  defp base_query(%Scope{organization_id: organization_id}) do
-    from finding in subquery(findings_union(organization_id)),
+  defp base_query(%Scope{organization_id: organization_id} = scope) do
+    from finding in subquery(findings_union(organization_id, Quotas.owner?(scope))),
       as: :finding,
-      join: resource in Resource,
+      left_join: resource in Resource,
       as: :resource,
       on: resource.id == finding.resource_id and resource.organization_id == ^organization_id,
       left_join: interface in Interface,
@@ -545,9 +552,10 @@ defmodule Renga.Findings do
           workflow.resolution_key == finding.resolution_key
   end
 
-  # The seven finding tables in one shape. Topology and address findings
-  # belong to an interface; their resource is the interface's resource.
-  defp findings_union(organization_id) do
+  # Resource and organization findings share workflow without inventing a
+  # resource for an organization quota. Owner visibility applies before
+  # listing, counting, direct reads, and mutation reloads.
+  defp findings_union(organization_id, owner?) do
     component =
       from finding in ComponentFinding,
         where: finding.organization_id == ^organization_id,
@@ -707,6 +715,38 @@ defmodule Renga.Findings do
           resolved_at: finding.resolved_at
         }
 
+    quota =
+      from finding in QuotaFinding,
+        where: finding.organization_id == ^organization_id and ^owner?,
+        select: %{
+          domain: type(^"quota", :string),
+          id: finding.id,
+          resource_id: type(^nil, :binary_id),
+          subject_id: finding.organization_id,
+          interface_id: type(^nil, :binary_id),
+          kind: type(^"quota_near_capacity", :string),
+          resolution_key: finding.name,
+          status:
+            fragment("CASE WHEN ? IS NULL THEN 'open' ELSE 'resolved' END", finding.resolved_at),
+          message:
+            fragment(
+              "? || ' quota: ' || ? || ' of ' || ? || ' in use. Contact this deployment''s operator.'",
+              finding.name,
+              finding.used,
+              finding.capacity
+            ),
+          details:
+            fragment(
+              "jsonb_build_object('quota', ?, 'used', ?, 'capacity', ?)",
+              finding.name,
+              finding.used,
+              finding.capacity
+            ),
+          opened_at: finding.opened_at,
+          last_observed_at: finding.last_observed_at,
+          resolved_at: finding.resolved_at
+        }
+
     component
     |> union_all(^hardware_match)
     |> union_all(^placement)
@@ -714,6 +754,7 @@ defmodule Renga.Findings do
     |> union_all(^address)
     |> union_all(^collector)
     |> union_all(^power)
+    |> union_all(^quota)
   end
 
   defp state_filter("snoozed", now) do
