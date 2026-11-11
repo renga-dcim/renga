@@ -116,8 +116,25 @@ defmodule Renga.Limits do
       default: :pool_fraction,
       unit: "operations per lane per node",
       description:
-        "Admitted operations held through reconciliation; defaults to half an intake lane, sized from the database pool.",
+        "Admitted operations held through durable acceptance; defaults to half an intake lane, sized from the database pool.",
       usage: &Renga.IntakeCapacity.concurrency_usage/1
+    },
+    # Provisional development bounds. The full asynchronous fleet capacity gate
+    # must establish release defaults; these numbers are not capacity evidence.
+    pending_work_units: %{
+      env: "LIMIT_PENDING_WORK_UNITS",
+      default: 1_000_000,
+      unit: "pending report, resource and target units",
+      description:
+        "Durably reserved until processing completes, including backoff and quarantine.",
+      usage: &Renga.Inventory.ReconciliationWork.pending_units/1
+    },
+    pending_work_bytes: %{
+      env: "LIMIT_PENDING_WORK_BYTES",
+      default: 4_294_967_296,
+      unit: "pending encoded evidence bytes",
+      description: "Root and bounded derived payload bytes reserved before acceptance.",
+      usage: &Renga.Inventory.ReconciliationWork.pending_bytes/1
     },
     job_creation_rate: %{
       env: "LIMIT_JOB_CREATION_RATE",

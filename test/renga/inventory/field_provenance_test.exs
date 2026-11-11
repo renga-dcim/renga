@@ -1,11 +1,21 @@
 defmodule Renga.Inventory.FieldProvenanceTest do
-  use Renga.DataCase, async: true
+  # Hundreds of durable turns need independent commits. A sandbox transaction
+  # would retain each turn's SET LOCAL deadline across the entire history.
+  use ExUnit.Case, async: false
 
+  import Ecto.Query
+  import Renga.DataCase
+
+  alias Ecto.Adapters.SQL.Sandbox
   alias Renga.Accounts
+  alias Renga.Accounts.OrganizationMembership
+  alias Renga.Accounts.User
   alias Renga.Inventory
   alias Renga.Inventory.Changes
+  alias Renga.Repo
 
   setup do
+    :ok = Sandbox.checkout(Repo, sandbox: false)
     suffix = System.unique_integer([:positive])
 
     {:ok, organization} =
@@ -14,6 +24,21 @@ defmodule Renga.Inventory.FieldProvenanceTest do
     scope = member_scope(organization, "admin")
     {:ok, agent} = Inventory.create_source(scope, %{kind: "host_agent", name: "agent-#{suffix}"})
     {:ok, bmc} = Inventory.create_source(scope, %{kind: "bmc", name: "bmc-#{suffix}"})
+
+    on_exit(fn ->
+      :ok = Sandbox.checkout(Repo, sandbox: false)
+
+      user_ids =
+        Repo.all(
+          from membership in OrganizationMembership,
+            where: membership.organization_id == ^organization.id,
+            select: membership.user_id
+        )
+
+      Repo.delete!(organization)
+      Repo.delete_all(from user in User, where: user.id in ^user_ids)
+      Sandbox.checkin(Repo)
+    end)
 
     %{organization: organization, scope: scope, agent: agent, bmc: bmc}
   end

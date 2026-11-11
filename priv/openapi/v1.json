@@ -1350,7 +1350,7 @@
       "ObservationAccepted": {
         "title": "ObservationAccepted",
         "additionalProperties": false,
-        "description": "The observation is stored. Reconciliation into inventory runs once inline; a failure there does not reject the observation, which stays stored for retry.",
+        "description": "Immutable evidence and its ordered processing obligation are durably stored. The receipt stays fixed on replay; processing runs independently and may still be pending.",
         "properties": {
           "duplicate": {
             "description": "True when this observation ID was already stored with the same payload.",
@@ -1384,60 +1384,44 @@
             ],
             "type": "object"
           },
-          "reconciliation": {
+          "processing": {
             "additionalProperties": false,
             "properties": {
-              "errors": {
-                "description": "Why reconciliation failed, keyed by field or stage.",
-                "type": "object"
-              },
-              "matched_resource_id": {
-                "description": "The inventory resource a host observation matched, when known. Absent for scoped reports, which list `resources` instead.",
-                "format": "uuid",
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "resources": {
-                "description": "For a scoped report: how each of its resources reconciled, in report order.",
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "errors": {
-                      "description": "Why it failed to reconcile.",
-                      "type": "object"
-                    },
-                    "resource_id": {
-                      "description": "The inventory resource it matched or created.",
-                      "format": "uuid",
-                      "type": "string"
-                    },
-                    "status": {
-                      "enum": [
-                        "succeeded",
-                        "failed"
-                      ],
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "status"
-                  ],
-                  "type": "object"
-                },
-                "type": "array"
-              },
               "status": {
                 "enum": [
+                  "pending",
                   "succeeded",
-                  "failed"
+                  "quarantined"
                 ],
                 "type": "string"
               }
             },
             "required": [
               "status"
+            ],
+            "type": "object"
+          },
+          "receipt": {
+            "additionalProperties": false,
+            "properties": {
+              "accepted_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "id": {
+                "description": "The immutable first work receipt.",
+                "format": "uuid",
+                "type": "string"
+              },
+              "position": {
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "position",
+              "accepted_at"
             ],
             "type": "object"
           },
@@ -1448,7 +1432,8 @@
         "required": [
           "status",
           "duplicate",
-          "reconciliation",
+          "receipt",
+          "processing",
           "observation"
         ],
         "type": "object"
@@ -2547,7 +2532,7 @@
             "description": "Capacity exhausted. Retry no earlier than Retry-After seconds."
           }
         },
-        "description": "Stores a point-in-time report about the collector's host, or from one of its collector modules, then reconciles it into inventory once. Retries are safe: resending an observation under the same `observation_id` returns the stored one.",
+        "description": "Stores a point-in-time report about the collector's host, or from one of its collector modules, with a durable receipt. Reconciliation runs independently. Identical replay reuses the first receipt without another pending reservation.",
         "operationId": "createObservation",
         "parameters": [
           {
@@ -2572,6 +2557,121 @@
           "required": true
         },
         "summary": "Submit an observation"
+      }
+    },
+    "/api/v1/observations/receipt": {
+      "get": {
+        "tags": [
+          "Intake"
+        ],
+        "security": [
+          {
+            "intakeKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ObservationAccepted"
+                }
+              }
+            },
+            "description": "The original receipt and current processing state."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "The intake key or installation header is missing or invalid, or the key changed while the request was in flight."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "Organization or installation is disabled."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "No receipt owned by this installation and stream."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "Installation has not registered."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "Missing or invalid observation ID."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "Retry no earlier than Retry-After seconds."
+          }
+        },
+        "description": "Read-only lookup scoped to the authenticated installation and an existing collector stream. Does not register a source, renew a lease or schedule processing. Only exact-body POST replay proves body acceptance.",
+        "operationId": "getObservationReceipt",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "observation_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "collector_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The collector installation's stable UUID. Within the intake key's organization it selects the collector, registering one on first use, so one key can enroll a whole fleet.",
+            "in": "header",
+            "name": "x-renga-installation-id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "summary": "Inspect an existing durable receipt"
       }
     },
     "/api/v1/telemetry": {

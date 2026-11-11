@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict 3XiL5p4tz4z69oeK397vsdiY84SdtxmUBdDruS91WR1Ck2t7U4zHUZUTJ66oHzv
+\restrict e7IMfL1euFikT4LgSSEkJMldoXCHxNGaWinAKZaz8TgRs7r8V0myZdDovY8LfXB
 
 -- Dumped from database version 18.6
 -- Dumped by pg_dump version 18.6
@@ -3462,13 +3462,15 @@ CREATE TABLE public.reconciliation_work (
     status character varying(255) DEFAULT 'pending'::character varying NOT NULL,
     checkpoint bigint DEFAULT 0 NOT NULL,
     generation bigint DEFAULT 0 NOT NULL,
-    original_key_id uuid NOT NULL,
-    installation_agent_id uuid NOT NULL,
-    installation_id uuid NOT NULL,
+    original_key_id uuid,
+    installation_agent_id uuid,
+    installation_id uuid,
     run_after timestamp without time zone NOT NULL,
     quarantine_kind character varying(255),
     error jsonb DEFAULT '{}'::jsonb NOT NULL,
     inserted_at timestamp without time zone NOT NULL,
+    origin character varying(255) DEFAULT 'intake'::character varying NOT NULL,
+    CONSTRAINT reconciliation_work_provenance CHECK (((((origin)::text = 'intake'::text) AND (original_key_id IS NOT NULL) AND (installation_agent_id IS NOT NULL) AND (installation_id IS NOT NULL)) OR (((origin)::text = 'maintenance'::text) AND (installation_agent_id IS NULL) AND (installation_id IS NULL)))),
     CONSTRAINT reconciliation_work_status CHECK (((((status)::text = ANY ((ARRAY['pending'::character varying, 'succeeded'::character varying])::text[])) AND (quarantine_kind IS NULL)) OR (((status)::text = 'quarantined'::text) AND ((quarantine_kind)::text = 'domain'::text)))),
     CONSTRAINT reconciliation_work_values CHECK ((("position" > 0) AND (units > 0) AND (bytes >= 0) AND (generation >= 0) AND (checkpoint >= 0)))
 );
@@ -12714,7 +12716,7 @@ ALTER TABLE ONLY public.webauthn_challenges
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 3XiL5p4tz4z69oeK397vsdiY84SdtxmUBdDruS91WR1Ck2t7U4zHUZUTJ66oHzv
+\unrestrict e7IMfL1euFikT4LgSSEkJMldoXCHxNGaWinAKZaz8TgRs7r8V0myZdDovY8LfXB
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);
@@ -12850,6 +12852,7 @@ INSERT INTO public."schema_migrations" (version) VALUES (20261106100000);
 INSERT INTO public."schema_migrations" (version) VALUES (20261106110000);
 INSERT INTO public."schema_migrations" (version) VALUES (20261106120000);
 INSERT INTO public."schema_migrations" (version) VALUES (20261106130000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261110093000);
 INSERT INTO public."schema_migrations" (version) VALUES (20261110100000);
 INSERT INTO public."schema_migrations" (version) VALUES (20261110102000);
 INSERT INTO public."schema_migrations" (version) VALUES (20261110103000);

@@ -16,9 +16,9 @@ use renga_agent::{
         CollectorResource, CollectorResourceKind, Component, DomainDisk, DomainInterface,
         DomainInterfaceType, DomainState, HostAttributes, HypervisorStatus, Identifiers, Interface,
         JobClaim, JobReport, KeyApproval, LeaseRequest, LeaseResponse, LeasedJob, Neighbor,
-        Observation, PowerSourceReport, PresentedKey, QueueReport, Reachability, ReportAck,
-        ReportScope, ReportType, ResourceKind, ScopedReport, SectionCompleteness, ServerResource,
-        TaggingMode, TargetStatus, VlanMembership, VmDomain,
+        Observation, ObservationAccepted, PowerSourceReport, PresentedKey, QueueReport,
+        Reachability, ReportAck, ReportScope, ReportType, ResourceKind, ScopedReport,
+        SectionCompleteness, ServerResource, TaggingMode, TargetStatus, VlanMembership, VmDomain,
     },
     power::{
         self, bmc,
@@ -35,6 +35,42 @@ const SPEC: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../priv/openapi/v1.json"
 ));
+
+#[test]
+fn durable_observation_receipts_match_the_agent_decoder() {
+    for (status, duplicate) in [(202, false), (200, true)] {
+        for processing in ["pending", "succeeded", "quarantined"] {
+            let body = json!({
+                "status": "accepted",
+                "duplicate": duplicate,
+                "observation": {
+                    "id": "2c9fe873-ce05-492f-a8ee-73bd6ff890c9",
+                    "source_id": "baf91ca0-ab90-49bf-ac57-cfd8edc13862",
+                    "observation_id": "e0d216f6-aa8a-47cc-ac34-b733aac739ea",
+                    "observed_at": "2026-11-10T09:00:00.123Z"
+                },
+                "receipt": {
+                    "id": "b064dce1-16e2-4f7b-adde-aaea21d90f33",
+                    "position": 17,
+                    "accepted_at": "2026-11-10T09:00:01.456789Z"
+                },
+                "processing": {"status": processing}
+            });
+            let accepted: ObservationAccepted = assert_decodes("ObservationAccepted", body.clone());
+            assert_eq!(accepted.receipt.position, 17);
+            let submitted = json!({
+                "observation_id": "e0d216f6-aa8a-47cc-ac34-b733aac739ea",
+                "observed_at": "2026-11-10T09:00:00.123999Z"
+            });
+            renga_agent::transport::validate_observation_receipt(
+                reqwest::StatusCode::from_u16(status).unwrap(),
+                &serde_json::to_vec(&submitted).unwrap(),
+                &serde_json::to_vec(&body).unwrap(),
+            )
+            .unwrap();
+        }
+    }
+}
 
 /// Lists where `body` violates the named schema under `#/components/schemas`.
 fn violations(schema: &str, body: &Value) -> Vec<String> {

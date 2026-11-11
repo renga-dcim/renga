@@ -8,8 +8,6 @@ defmodule Renga.Inventory do
 
   import Ecto.Query, warn: false
 
-  require Logger
-
   alias Renga.Accounts.Organization
   alias Renga.Accounts.Scope
   alias Renga.Authorization
@@ -340,9 +338,18 @@ defmodule Renga.Inventory do
             collector -> resolve_collector_stream!(agent, collector)
           end
 
-        {observation, disposition} = accept_intake_observation!(scope, source, observation_attrs)
+        {observation, disposition} =
+          Renga.Inventory.ReconciliationWork.accept_in_transaction!(
+            scope,
+            intake_api_key,
+            agent,
+            source,
+            observation_attrs
+          )
+
         {agent, lease, observation, disposition}
-      end
+      end,
+      durable: true
     )
     |> case do
       {:error, {:idempotency_conflict, observation}} ->
@@ -353,23 +360,42 @@ defmodule Renga.Inventory do
     end
   end
 
-  defp accept_intake_observation!(scope, source, attrs) do
-    case accept_observation(scope, source.id, attrs) do
-      {:ok, observation, :created} ->
-        if AgentPayload.scoped_report?(observation.payload),
-          do: create_derived_observations!(scope, observation)
+  @doc "Reads an existing installation-owned receipt without registration, lease renewal or work mutation."
+  def intake_observation_receipt(
+        %Scope{} = scope,
+        key,
+        installation_id,
+        observation_id,
+        collector_id
+      ) do
+    Repo.transaction(fn ->
+      ensure_intake_organization_active!(scope.organization_id)
+      ensure_intake_api_key_current!(scope.organization_id, key)
+      agent = lock_active_intake_agent!(scope.organization_id, installation_id)
 
-        {observation, :created}
+      source =
+        if is_nil(collector_id) do
+          Repo.get_by(Source, organization_id: scope.organization_id, id: agent.source_id)
+        else
+          Repo.get_by(Source,
+            organization_id: scope.organization_id,
+            agent_id: agent.id,
+            collector_id: collector_id
+          )
+        end
 
-      {:ok, observation, disposition} ->
-        {observation, disposition}
+      if is_nil(source), do: Repo.rollback(:not_found)
 
-      {:error, :idempotency_conflict, observation} ->
-        Repo.rollback({:idempotency_conflict, observation})
+      observation =
+        Repo.get_by(Observation,
+          organization_id: scope.organization_id,
+          source_id: source.id,
+          idempotency_key: observation_id
+        )
 
-      {:error, reason} ->
-        Repo.rollback(reason)
-    end
+      if is_nil(observation), do: Repo.rollback(:not_found)
+      Renga.Inventory.ReconciliationWork.accepted(scope, observation) || Repo.rollback(:not_found)
+    end)
   end
 
   # Runs under the installation lock taken by `with_intake_installation/5`, so
@@ -402,6 +428,18 @@ defmodule Renga.Inventory do
         })
         |> insert_or_rollback()
     end
+  end
+
+  @doc false
+  def materialize_observation_in_transaction!(%Scope{} = scope, report) do
+    unless Repo.in_transaction?(),
+      do: raise(ArgumentError, "materialization requires a transaction")
+
+    if AgentPayload.scoped_report?(report.payload) and
+         list_derived_observations(scope, report.id) == [],
+       do: create_derived_observations!(scope, report)
+
+    :ok
   end
 
   defp create_derived_observations!(%Scope{organization_id: organization_id}, report) do
@@ -481,16 +519,6 @@ defmodule Renga.Inventory do
       end
     end)
   end
-
-  defp authorized_reconciliation_observation(%Scope{} = scope, observation_id) do
-    Repo.transaction(fn ->
-      authorize_reconciliation!(scope)
-      get_observation!(scope, observation_id)
-    end)
-  end
-
-  defp authorize_reconciliation!(%Scope{} = scope),
-    do: Authorization.authorize!(scope, "inventory.reconcile")
 
   # Kinds that another context manages may only be created or changed
   # directly here by people who may edit inventory.
@@ -597,16 +625,22 @@ defmodule Renga.Inventory do
   end
 
   defp with_intake_installation(
-         %Scope{organization_id: organization_id},
+         %Scope{organization_id: organization_id} = scope,
          %IntakeApiKey{} = intake_api_key,
          installation_id,
          attrs,
-         operation
+         operation,
+         opts \\ []
        ) do
     now = Renga.Time.utc_now_ms()
     attrs = put_attr(attrs, :installation_id, installation_id)
 
-    Repo.transaction(fn ->
+    transaction =
+      if opts[:durable],
+        do: &Renga.Inventory.ReconciliationWork.acceptance_transaction(scope, &1),
+        else: &Repo.transaction/1
+
+    transaction.(fn ->
       ensure_intake_organization_active!(organization_id)
       ensure_intake_api_key_current!(organization_id, intake_api_key)
       lock_intake_installation!(organization_id, installation_id)
@@ -2283,190 +2317,21 @@ defmodule Renga.Inventory do
   end
 
   @doc """
-  Reconciles one immutable observation into canonical inventory.
-
-  Root host-agent observations commit transition-critical DB effects with the
-  canonical mutation. Their triage failures now block the commit, rather than
-  leaving a successfully reconciled host for later best-effort triage.
+  Requests an explicit reconciliation through durable ordering and ownership.
+  Immediate execution is possible only at the organization head; blocked work
+  stays reserved for the supervised worker instead of bypassing its predecessor.
   """
-  def reconcile_observation(%Scope{user: nil} = scope, observation_id) do
-    observation = get_observation!(scope, observation_id)
-
-    Reconciler.reconcile(scope, observation,
-      after_commit: fn
-        result, :post_commit ->
-          result
-          |> apply_triage_rules(scope)
-          |> reconcile_address_findings(scope)
-          |> reconcile_same_machine(scope, observation)
-          |> reconcile_collector_findings(scope, observation)
-
-        result, _owner ->
-          result
-      end
-    )
-    |> Changes.broadcast(scope.organization_id)
-  end
-
   def reconcile_observation(%Scope{} = scope, observation_id) do
-    with {:ok, observation} <- authorized_reconciliation_observation(scope, observation_id) do
-      Reconciler.reconcile(scope, observation,
-        authorize: fn -> authorize_reconciliation!(scope) end,
-        after_commit: fn
-          result, :post_commit ->
-            result
-            |> apply_triage_rules(scope)
-            |> reconcile_address_findings(scope)
-            |> reconcile_same_machine(scope, observation)
-            |> reconcile_collector_findings(scope, observation)
-            |> reconcile_collector_findings(scope, observation)
-
-          result, _owner ->
-            result
-        end
-      )
-      |> Changes.broadcast(scope.organization_id)
-    end
+    Reconciler.reconcile(scope, %Observation{id: observation_id})
   end
 
   @doc """
-  Reconciles one observation for ingestion, returning its existing terminal
-  result when another request has already attempted it.
+  Processes unattempted evidence through the same durable path, or reads its
+  stored disposition. Intake uses durable admission instead of this entry point.
   """
-  def reconcile_observation_once(%Scope{user: nil} = scope, observation_id) do
-    observation = get_observation!(scope, observation_id)
-
-    Reconciler.reconcile_once(scope, observation,
-      after_commit: fn
-        result, :post_commit ->
-          result
-          |> apply_triage_rules(scope)
-          |> reconcile_address_findings(scope)
-          |> reconcile_same_machine(scope, observation)
-          |> reconcile_collector_findings(scope, observation)
-
-        result, _owner ->
-          result
-      end
-    )
-    |> Changes.broadcast(scope.organization_id)
-  end
-
   def reconcile_observation_once(%Scope{} = scope, observation_id) do
-    with {:ok, observation} <- authorized_reconciliation_observation(scope, observation_id) do
-      Reconciler.reconcile_once(scope, observation,
-        authorize: fn -> authorize_reconciliation!(scope) end,
-        after_commit: fn
-          result, :post_commit ->
-            result
-            |> apply_triage_rules(scope)
-            |> reconcile_address_findings(scope)
-            |> reconcile_same_machine(scope, observation)
-            |> reconcile_collector_findings(scope, observation)
-            |> reconcile_collector_findings(scope, observation)
-
-          result, _owner ->
-            result
-        end
-      )
-      |> Changes.broadcast(scope.organization_id)
-    end
+    Reconciler.reconcile_once(scope, %Observation{id: observation_id})
   end
-
-  # Triage rules fill facts for what a collector just reported, after the
-  # report is committed so rules see its signals. A rule failing never fails
-  # the report: the resource stays in triage for a person instead.
-  defp apply_triage_rules({:ok, resources, _discovered?} = result, scope)
-       when is_list(resources) do
-    Enum.each(resources, &apply_triage_rules({:ok, &1, false}, scope))
-    result
-  end
-
-  defp apply_triage_rules({:ok, %Resource{} = resource, _discovered?} = result, scope) do
-    case Renga.TriageRules.apply_to_resource(scope.organization_id, resource.id) do
-      {:ok, _applied} ->
-        :ok
-
-      {:error, reason} ->
-        Logger.warning("triage rules did not apply to #{resource.id}: #{inspect(reason)}")
-    end
-
-    result
-  rescue
-    exception ->
-      Logger.error(
-        "triage rules failed for #{resource.id}: " <>
-          Exception.format(:error, exception, __STACKTRACE__)
-      )
-
-      result
-  end
-
-  defp apply_triage_rules(result, _scope), do: result
-
-  # What a collector reports opens and resolves address findings, after the
-  # report is committed. As with triage rules, a failure never fails the
-  # report; the next report or IPAM change reconciles again.
-  defp reconcile_address_findings({:ok, _resource_or_resources, _discovered?} = result, scope) do
-    {:ok, :ok} = Renga.IPAM.AddressFindings.reconcile(scope.organization_id)
-    result
-  rescue
-    exception ->
-      Logger.error(
-        "address findings failed for #{scope.organization_id}: " <>
-          Exception.format(:error, exception, __STACKTRACE__)
-      )
-
-      result
-  end
-
-  defp reconcile_address_findings(result, _scope), do: result
-
-  # RFD 11: possible-same-machine findings follow the evidence like address
-  # findings, after reconciliation commits; a failure is logged, never fatal.
-  # That holds only outside a transaction: a failure rescued inside one would
-  # still leave the enclosing transaction aborted, so callers must not wrap
-  # reconciliation in one.
-  defp reconcile_same_machine(
-         {:ok, _resource_or_resources, _discovered?} = result,
-         scope,
-         observation
-       ) do
-    {:ok, _} = Renga.Inventory.SameMachine.refresh_after!(scope, observation, result)
-    result
-  rescue
-    exception ->
-      Logger.error(
-        "same-machine findings failed for #{scope.organization_id}: " <>
-          Exception.format(:error, exception, __STACKTRACE__)
-      )
-
-      result
-  end
-
-  defp reconcile_same_machine(result, _scope, _observation), do: result
-
-  # RFD 11: a report can open or resolve the collector findings that time
-  # also changes, so they are refreshed as it commits rather than only at
-  # the next sweep. A failure is logged, never fatal.
-  defp reconcile_collector_findings(
-         {:ok, _resource_or_resources, _discovered?} = result,
-         scope,
-         observation
-       ) do
-    {:ok, _} = Renga.Inventory.CollectorFindings.refresh_after!(scope, observation, result)
-    result
-  rescue
-    exception ->
-      Logger.error(
-        "collector findings failed for #{scope.organization_id}: " <>
-          Exception.format(:error, exception, __STACKTRACE__)
-      )
-
-      result
-  end
-
-  defp reconcile_collector_findings(result, _scope, _observation), do: result
 
   @doc """
   Records a scoped reconciliation attempt without mutating raw evidence.
@@ -3670,7 +3535,8 @@ defmodule Renga.Inventory do
 
   defp validate_claim_identifier(changeset, nil), do: changeset
 
-  defp get_observation!(%Scope{organization_id: organization_id}, id) do
+  @doc "Fetches immutable evidence within its organization."
+  def get_observation!(%Scope{organization_id: organization_id}, id) do
     Observation
     |> where([observation], observation.organization_id == ^organization_id)
     |> Repo.get!(id)

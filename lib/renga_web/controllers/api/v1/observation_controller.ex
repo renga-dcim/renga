@@ -4,7 +4,7 @@ defmodule RengaWeb.Api.V1.ObservationController do
 
   alias Renga.Inventory
   alias Renga.Inventory.AgentPayload
-  alias Renga.Inventory.ObservationReconciliation
+  alias Renga.Inventory.ReconciliationWork
   alias Renga.Inventory.Source
   alias RengaWeb.Api.V1.Schemas
 
@@ -16,8 +16,8 @@ defmodule RengaWeb.Api.V1.ObservationController do
     summary: "Submit an observation",
     description:
       "Stores a point-in-time report about the collector's host, or from one of its " <>
-        "collector modules, then reconciles it into inventory once. Retries are safe: " <>
-        "resending an observation under the same `observation_id` returns the stored one.",
+        "collector modules, with a durable receipt. Reconciliation runs independently. " <>
+        "Identical replay reuses the first receipt without another pending reservation.",
     security: Schemas.intake_security(),
     request_body: Schemas.Observation,
     responses: [
@@ -65,6 +65,54 @@ defmodule RengaWeb.Api.V1.ObservationController do
     |> json(%{errors: [%{path: "source.kind", message: "must be host_agent"}]})
   end
 
+  operation :receipt,
+    operation_id: "getObservationReceipt",
+    summary: "Inspect an existing durable receipt",
+    description:
+      "Read-only lookup scoped to the authenticated installation and an existing collector stream. " <>
+        "Does not register a source, renew a lease or schedule processing. Only exact-body POST replay proves body acceptance.",
+    security: Schemas.intake_security(),
+    parameters: [
+      observation_id: [in: :query, required: true, schema: %{type: :string}],
+      collector_id: [in: :query, required: false, schema: %{type: :string}]
+    ],
+    responses: [
+      ok:
+        {Schemas.ObservationAccepted,
+         description: "The original receipt and current processing state."},
+      unauthorized: Schemas.unauthorized_response(),
+      forbidden: {Schemas.Rejected, description: "Organization or installation is disabled."},
+      not_found:
+        {Schemas.Rejected, description: "No receipt owned by this installation and stream."},
+      conflict: {Schemas.Rejected, description: "Installation has not registered."},
+      unprocessable_entity: {Schemas.Rejected, description: "Missing or invalid observation ID."},
+      too_many_requests:
+        {Schemas.Rejected, description: "Retry no earlier than Retry-After seconds."}
+    ]
+
+  def receipt(conn, %{"observation_id" => id} = params) when is_binary(id) do
+    collector = params["collector_id"]
+
+    if is_nil(collector) or is_binary(collector) do
+      case Inventory.intake_observation_receipt(
+             conn.assigns.current_scope,
+             conn.assigns.current_intake_api_key,
+             conn.assigns.current_installation_id,
+             id,
+             collector
+           ) do
+        {:ok, accepted} -> respond_to_accepted_observation(conn, accepted.observation, :duplicate)
+        error -> observation_error(conn, error)
+      end
+    else
+      receipt(conn, %{})
+    end
+  end
+
+  def receipt(conn, _params),
+    do:
+      observation_error(conn, {:error, [%{path: "observation_id", message: "must be a string"}]})
+
   # Collector reports are checked against the collector's kind; the stream
   # itself is resolved from the installation and collector ID at ingest.
   defp reported_kind(%{"collector" => %{"kind" => kind}}) when is_binary(kind), do: kind
@@ -78,15 +126,19 @@ defmodule RengaWeb.Api.V1.ObservationController do
   defp reported_from(_conn), do: nil
 
   defp respond_to_accepted_observation(conn, observation, disposition) do
-    reconciliation =
-      reconcile_observation(conn.assigns.current_scope, observation, disposition)
+    accepted = ReconciliationWork.accepted(conn.assigns.current_scope, observation)
 
     conn
     |> put_status(status_for(disposition))
     |> json(%{
       status: "accepted",
       duplicate: disposition == :duplicate,
-      reconciliation: reconciliation,
+      receipt: %{
+        id: accepted.receipt.work_id,
+        position: accepted.receipt.position,
+        accepted_at: accepted.receipt.accepted_at
+      },
+      processing: %{status: accepted.work.status},
       observation: %{
         id: observation.id,
         observation_id: observation.idempotency_key,
@@ -100,6 +152,37 @@ defmodule RengaWeb.Api.V1.ObservationController do
     conn
     |> put_status(:forbidden)
     |> json(%{status: "rejected", errors: [%{path: "organization", message: "is suspended"}]})
+  end
+
+  defp observation_error(conn, {:error, :forbidden}),
+    do: observation_error(conn, {:error, :organization_inactive})
+
+  defp observation_error(conn, {:error, :not_found}) do
+    conn
+    |> put_status(:not_found)
+    |> json(%{status: "rejected", errors: [%{path: "observation_id", message: "not found"}]})
+  end
+
+  defp observation_error(conn, {:error, :agent_not_registered}) do
+    conn
+    |> put_status(:conflict)
+    |> json(%{
+      status: "rejected",
+      errors: [%{path: "installation_id", message: "not registered"}]
+    })
+  end
+
+  defp observation_error(conn, {:error, :agent_disabled}) do
+    conn
+    |> put_status(:forbidden)
+    |> json(%{status: "rejected", errors: [%{path: "installation_id", message: "is disabled"}]})
+  end
+
+  defp observation_error(conn, {:error, :capacity}) do
+    conn
+    |> put_resp_header("retry-after", "1")
+    |> put_status(:too_many_requests)
+    |> json(%{status: "rejected", errors: [%{path: "capacity", message: "pending work is full"}]})
   end
 
   defp observation_error(conn, {:error, :intake_credential_changed}) do
@@ -119,6 +202,15 @@ defmodule RengaWeb.Api.V1.ObservationController do
           message: "collector credential is already enrolled by another installation"
         }
       ]
+    })
+  end
+
+  defp observation_error(conn, {:error, :unsupported_existing_observation}) do
+    conn
+    |> put_status(:conflict)
+    |> json(%{
+      status: "rejected",
+      errors: [%{path: "observation_id", message: "predates durable acceptance"}]
     })
   end
 
@@ -166,45 +258,6 @@ defmodule RengaWeb.Api.V1.ObservationController do
 
   defp status_for(:created), do: :accepted
   defp status_for(:duplicate), do: :ok
-
-  defp reconcile_observation(scope, observation, disposition) do
-    case Inventory.reconcile_observation_once(scope, observation.id) do
-      {:ok, resources, _discovered?} when is_list(resources) ->
-        %{status: "succeeded", resources: report_resources(scope, observation)}
-
-      {:ok, resource, _discovered?} ->
-        %{status: "succeeded", matched_resource_id: resource.id}
-
-      {:error, %ObservationReconciliation{} = result} when disposition == :duplicate ->
-        %{
-          status: "failed",
-          matched_resource_id: result.matched_resource_id,
-          errors: result.errors
-        }
-
-      {:error, %ObservationReconciliation{} = result} ->
-        %{status: "failed", errors: result.errors}
-
-      {:error, _reason} ->
-        %{status: "failed", errors: %{"processing" => "reconciliation_failed"}}
-    end
-  end
-
-  defp report_resources(scope, report) do
-    scope
-    |> Inventory.list_observation_reconciliations(report.id)
-    |> List.last()
-    |> Map.fetch!(:metadata)
-    |> Map.get("resources", [])
-    |> Enum.map(fn result ->
-      %{status: result["status"]}
-      |> maybe_put(:resource_id, result["resource_id"])
-      |> maybe_put(:errors, result["errors"])
-    end)
-  end
-
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp changeset_errors(changeset, prefix) do
     changeset

@@ -86,7 +86,8 @@ defmodule RengaWeb.Api.V1.CollectionClocksTest do
     agent = registered_agent(context)
 
     conn = post_observation(context, observation("first", "2026-07-31T12:00:00Z"))
-    assert %{"reconciliation" => %{"status" => "succeeded"}} = valid_api_response(conn, 202)
+    settle_observation(conn)
+    assert %{"reconciliation" => %{"status" => "succeeded"}} = observation_result(conn, 202)
 
     source_id = agent.source_id
 

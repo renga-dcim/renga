@@ -607,7 +607,8 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
             }
           ]
         })
-        |> valid_api_response(202)
+        |> settle_observation()
+        |> observation_result(202)
 
       resource_id
     end

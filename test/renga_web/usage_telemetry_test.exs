@@ -46,6 +46,14 @@ defmodule RengaWeb.UsageTelemetryTest do
     %{scope: scope, organization: organization} = job_organization_fixture()
     {:ok, {_key, token}} = Renga.Inventory.create_intake_api_key(scope, %{name: "telemetry test"})
     body = ~s({"invalid":"#{String.duplicate("x", 91)}"})
+    organization_id = organization.id
+
+    # Another async request can emit the same event before this request finishes.
+    :telemetry.execute(
+      [:renga, :intake, :request],
+      %{count: 1, bytes: 0},
+      %{organization_id: Ecto.UUID.generate(), status: 422}
+    )
 
     conn
     |> put_req_header("authorization", "Bearer #{token}")
@@ -55,10 +63,9 @@ defmodule RengaWeb.UsageTelemetryTest do
     |> valid_api_response(422)
 
     assert_receive {[:renga, :intake, :request], %{count: 1, bytes: bytes},
-                    %{organization_id: organization_id, status: 422}}
+                    %{organization_id: ^organization_id, status: 422}}
 
     assert bytes == byte_size(body)
-    assert organization_id == organization.id
 
     assert Renga.UsageTelemetry.organization_id() == nil
   end
