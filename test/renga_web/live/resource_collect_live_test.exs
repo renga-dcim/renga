@@ -32,10 +32,20 @@ defmodule RengaWeb.ResourceCollectLiveTest do
     |> put_session(:current_organization_id, organization.id)
   end
 
-  defp lease_and_report(%{system_scope: system_scope, agent: agent}, reports) do
+  defp lease_and_report(%{scope: scope, system_scope: system_scope, agent: agent}, reports) do
     {:ok, [{job, token}]} = Jobs.lease_jobs(system_scope, agent, [@collect], 1)
 
     for {type, payload} <- reports do
+      if type == "succeeded" do
+        accepted_job_evidence_fixture(
+          scope,
+          agent,
+          job,
+          token,
+          payload["result"]["observation_id"]
+        )
+      end
+
       {:ok, _} = Jobs.report(system_scope, agent, job.id, token, type, payload)
     end
 
@@ -63,9 +73,12 @@ defmodule RengaWeb.ResourceCollectLiveTest do
     send(view.pid, :reload)
     assert has_element?(view, "#collect-notice[data-state=running]", "Collecting inventory")
 
+    observation_id =
+      accepted_job_evidence_fixture(context.scope, context.agent, job, token)
+
     {:ok, _} =
       Jobs.report(context.system_scope, context.agent, job.id, token, "succeeded", %{
-        "result" => %{"observation_id" => Ecto.UUID.generate()}
+        "result" => %{"observation_id" => observation_id}
       })
 
     send(view.pid, :reload)

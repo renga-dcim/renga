@@ -923,6 +923,58 @@
         ],
         "type": "object"
       },
+      "JobEvidence": {
+        "title": "JobEvidence",
+        "description": "Attempt-bound host evidence. body is the exact encoded JSON observation (at most 256000 UTF-8 bytes), not an object. sha256 is its lowercase hexadecimal SHA-256. Only inventory.collect@1 may submit one host observation; collector/target reports are outside its output scope.",
+        "properties": {
+          "attempt": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "body": {
+            "type": "string"
+          },
+          "lease_token": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "lease_token",
+          "attempt",
+          "sha256",
+          "body"
+        ],
+        "type": "object"
+      },
+      "JobEvidenceReceipt": {
+        "title": "JobEvidenceReceipt",
+        "description": "Read-only exact-body receipt inspection, including after expiry or completion. The original attempt token is required; this cannot accept new evidence or renew a lease.",
+        "properties": {
+          "attempt": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "lease_token": {
+            "type": "string"
+          },
+          "observation_id": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "lease_token",
+          "attempt",
+          "sha256",
+          "observation_id"
+        ],
+        "type": "object"
+      },
       "JobLease": {
         "title": "JobLease",
         "additionalProperties": false,
@@ -1125,6 +1177,30 @@
             "description": "The `name@version` to run.",
             "type": "string"
           },
+          "evidence_reservation": {
+            "additionalProperties": false,
+            "description": "Protected allowance for this lease attempt, independent of ordinary intake.",
+            "properties": {
+              "bytes": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "items": {
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "items",
+              "bytes"
+            ],
+            "type": "object"
+          },
           "id": {
             "format": "uuid",
             "type": "string"
@@ -1164,6 +1240,7 @@
           "lease_expires_at",
           "not_after",
           "timeout_ms",
+          "evidence_reservation",
           "output_limit_bytes"
         ],
         "type": "object"
@@ -2439,6 +2516,261 @@
           "required": true
         },
         "summary": "Report on a leased job"
+      }
+    },
+    "/api/v1/agent/jobs/{id}/evidence": {
+      "post": {
+        "tags": [
+          "Jobs"
+        ],
+        "security": [
+          {
+            "intakeKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ObservationAccepted"
+                }
+              }
+            },
+            "description": "Exact replay of this attempt's evidence."
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ObservationAccepted"
+                }
+              }
+            },
+            "description": "Evidence and work durably accepted."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "The intake key or installation header is missing or invalid, or the key changed while the request was in flight."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "Organization or installation disabled."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "No job for this installation."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "Lease not held, identity conflict or installation not registered."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "Declared evidence allowance exceeded."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "Invalid digest, payload or capability scope."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "Maintenance capacity exhausted; obey Retry-After."
+          }
+        },
+        "description": "Uses the current attempt's pre-reserved allowance, never ordinary intake capacity. Exact replay returns the original receipt; a full ordinary backlog cannot refuse covered evidence. The job lease is checked under lock and is not renewed. After expiry use inspectJobEvidenceReceipt instead.",
+        "operationId": "submitJobEvidence",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The collector installation's stable UUID. Within the intake key's organization it selects the collector, registering one on first use, so one key can enroll a whole fleet.",
+            "in": "header",
+            "name": "x-renga-installation-id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JobEvidence"
+              }
+            }
+          },
+          "required": true
+        },
+        "summary": "Durably accept protected job evidence"
+      }
+    },
+    "/api/v1/agent/jobs/{id}/evidence/receipt": {
+      "post": {
+        "tags": [
+          "Jobs"
+        ],
+        "security": [
+          {
+            "intakeKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ObservationAccepted"
+                }
+              }
+            },
+            "description": "Previously accepted exact evidence; no renewal or admission."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "The intake key or installation header is missing or invalid, or the key changed while the request was in flight."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "Organization or installation disabled."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "No matching evidence for this attempt and digest."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "Attempt authority invalid or installation not registered."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "Invalid request fields."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rejected"
+                }
+              }
+            },
+            "description": "Maintenance capacity exhausted; obey Retry-After."
+          }
+        },
+        "operationId": "inspectJobEvidenceReceipt",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The collector installation's stable UUID. Within the intake key's organization it selects the collector, registering one on first use, so one key can enroll a whole fleet.",
+            "in": "header",
+            "name": "x-renga-installation-id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JobEvidenceReceipt"
+              }
+            }
+          },
+          "required": true
+        },
+        "summary": "Inspect exact protected evidence acceptance"
       }
     },
     "/api/v1/observations": {

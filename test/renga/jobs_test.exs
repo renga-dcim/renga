@@ -314,7 +314,7 @@ defmodule Renga.JobsTest do
       assert {:ok, _job} =
                Jobs.report(system_scope, agent, job.id, token, "progress", %{"step" => "dmi"})
 
-      observation_id = Ecto.UUID.generate()
+      observation_id = accepted_job_evidence_fixture(scope, agent, job, token)
 
       assert {:ok, done} =
                Jobs.report(system_scope, agent, job.id, token, "succeeded", %{

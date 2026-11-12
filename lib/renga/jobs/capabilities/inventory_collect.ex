@@ -2,10 +2,9 @@ defmodule Renga.Jobs.Capabilities.InventoryCollect do
   @moduledoc """
   `inventory.collect@1`: run the agent's normal inventory collection now.
 
-  The first job type is deliberately harmless (RFD 9). The agent delivers the
-  observation through its ordinary queue and reports only the observation's
-  ID, so the job adds no power over the host and running it again just
-  produces another, deduplicated observation.
+  The job adds no power over the host. Its one host observation uses an
+  attempt-bound protected reservation; success requires durable acceptance
+  of that exact observation, not local enqueue or canonical reconciliation.
   """
 
   use Renga.Jobs.Capability
@@ -32,6 +31,13 @@ defmodule Renga.Jobs.Capabilities.InventoryCollect do
 
   @impl true
   def timeout_ms, do: :timer.minutes(5)
+
+  @impl true
+  def evidence_limit,
+    do: %{items: 1, bytes: Renga.Inventory.AgentPayload.max_observation_bytes()}
+
+  @impl true
+  def result_evidence_ids(result), do: [result["observation_id"]]
 
   @impl true
   def parameters_changeset(params) do

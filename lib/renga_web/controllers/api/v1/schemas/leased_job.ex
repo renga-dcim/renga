@@ -20,6 +20,18 @@ defmodule RengaWeb.Api.V1.Schemas.LeasedJob do
         lease_expires_at: timestamp(),
         not_after: timestamp("After this time the job is no longer leased or retried."),
         timeout_ms: %{type: :integer},
+        evidence_reservation: %{
+          type: :object,
+          description:
+            "Protected allowance for this lease attempt, independent of ordinary intake.",
+          properties: %{
+            id: uuid(),
+            items: %{type: :integer, minimum: 0},
+            bytes: %{type: :integer, minimum: 0}
+          },
+          required: [:id, :items, :bytes],
+          additionalProperties: false
+        },
         output_limit_bytes: %{
           type: :integer,
           minimum: 0,
@@ -35,6 +47,7 @@ defmodule RengaWeb.Api.V1.Schemas.LeasedJob do
         :lease_expires_at,
         :not_after,
         :timeout_ms,
+        :evidence_reservation,
         :output_limit_bytes
       ],
       additionalProperties: false

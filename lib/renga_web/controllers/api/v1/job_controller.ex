@@ -301,7 +301,8 @@ defmodule RengaWeb.Api.V1.JobController do
       lease_expires_at: iso8601(job.lease_expires_at),
       not_after: iso8601(job.not_after),
       timeout_ms: job.timeout_ms,
-      output_limit_bytes: job.output_limit_bytes
+      output_limit_bytes: job.output_limit_bytes,
+      evidence_reservation: job.evidence_reservation
     }
   end
 
@@ -311,13 +312,14 @@ defmodule RengaWeb.Api.V1.JobController do
   # A rejected report tells the agent what to do next: 409s mean stop
   # reporting on this job (or resend the right sequence); 4xx validation
   # errors mean the agent itself is wrong.
-  defp rejected(conn, {:error, errors}) when is_list(errors),
+  @doc false
+  def rejected(conn, {:error, errors}) when is_list(errors),
     do: reject(conn, :unprocessable_entity, errors)
 
-  defp rejected(conn, {:error, %Ecto.Changeset{} = changeset}),
+  def rejected(conn, {:error, %Ecto.Changeset{} = changeset}),
     do: reject(conn, :unprocessable_entity, changeset_errors(changeset, "payload.result"))
 
-  defp rejected(conn, {:error, reason}) do
+  def rejected(conn, {:error, reason}) do
     {status, path, message} = rejection(reason)
     reject(conn, status, [%{path: path, message: message}])
   end
@@ -337,6 +339,33 @@ defmodule RengaWeb.Api.V1.JobController do
   defp rejection(:forbidden), do: {:forbidden, "authorization", "is not allowed"}
   defp rejection(:not_found), do: {:not_found, "id", "does not match a job"}
   defp rejection(:lease_not_held), do: {:conflict, "lease_token", "does not hold the job's lease"}
+
+  defp rejection(:evidence_capacity),
+    do: {:too_many_requests, "capacity", "protected evidence capacity is full"}
+
+  defp rejection(:evidence_limit_exceeded),
+    do: {:request_entity_too_large, "body", "exceeds the reserved evidence allowance"}
+
+  defp rejection(:evidence_not_accepted),
+    do: {:conflict, "result", "does not name this job's accepted evidence"}
+
+  defp rejection(:evidence_not_allowed),
+    do: {:unprocessable_entity, "body", "is outside the capability's evidence scope"}
+
+  defp rejection(:invalid_evidence),
+    do: {:unprocessable_entity, "body", "must match its SHA-256 digest and be valid JSON"}
+
+  defp rejection(:idempotency_conflict),
+    do: {:conflict, "observation_id", "was already used for different evidence or an attempt"}
+
+  defp rejection({:invalid_payload, errors}),
+    do: {:unprocessable_entity, "body", inspect(errors)}
+
+  defp rejection(:authority_unavailable),
+    do: {:conflict, "body", "intake authority is no longer available"}
+
+  defp rejection(:source_not_owned),
+    do: {:unprocessable_entity, "source", "is outside the installation's evidence scope"}
 
   defp rejection(:sequence_conflict),
     do: {:conflict, "sequence", "was already used for a different report"}
@@ -372,6 +401,9 @@ defmodule RengaWeb.Api.V1.JobController do
   defp rejection(:invalid_report), do: {:unprocessable_entity, "payload", "is invalid"}
 
   defp reject(conn, status, errors) do
+    conn =
+      if status == :too_many_requests, do: put_resp_header(conn, "retry-after", "1"), else: conn
+
     conn
     |> put_status(status)
     |> json(%{status: "rejected", errors: errors})

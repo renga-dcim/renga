@@ -208,7 +208,10 @@ defmodule RengaWeb.Api.V1.JobControllerTest do
                  200
                )
 
-      result = %{"result" => %{"observation_id" => Ecto.UUID.generate()}}
+      observation_id =
+        accepted_job_evidence_fixture(context.scope, context.agent, Repo.reload!(job), token)
+
+      result = %{"result" => %{"observation_id" => observation_id}}
 
       assert %{"job" => %{"state" => "succeeded", "lease_expires_at" => nil}} =
                valid_api_response(report(context, job.id, token, 3, "succeeded", result), 200)
