@@ -169,6 +169,64 @@ defmodule RengaWeb.InboxLiveTest do
     end
   end
 
+  test "owner quota panel pages deferred observations and rechecks owner access", context do
+    owner = Renga.JobsFixtures.member_scope(context.organization, "owner")
+    {:ok, {key, _}} = Inventory.create_intake_api_key(owner, %{name: "Deferred fleet"})
+    installation_id = Ecto.UUID.generate()
+    {:ok, {agent, _}} = Inventory.record_intake_agent_check_in(owner, key, installation_id)
+
+    works =
+      for n <- 1..21 do
+        params = %{
+          "observation_id" => "deferred-panel-#{n}",
+          "observed_at" => "2026-10-30T00:00:00Z",
+          "resources" => [%{"kind" => "server", "identifiers" => %{"machine_id" => "panel-#{n}"}}]
+        }
+
+        {:ok, %{work: work}} =
+          Renga.Inventory.ReconciliationWork.admit(
+            owner,
+            key,
+            installation_id,
+            agent.source_id,
+            params,
+            %{max_units: 100, max_bytes: 1_000_000}
+          )
+
+        {:ok, claim} =
+          Renga.Inventory.ReconciliationWork.claim_next(organization_id: owner.organization_id)
+
+        {:ok, _} =
+          Renga.Inventory.ReconciliationWork.fail(
+            claim,
+            :quota,
+            %{"processing" => "quota_deferred", "quota" => "resources"},
+            backoff_ms: 30_000
+          )
+
+        work
+      end
+
+    {[finding], 1} = Findings.list_findings(owner, domain: "quota")
+    conn = log_in(build_conn(), owner.user, context.organization)
+    {:ok, view, _} = live(conn, ~p"/inbox?finding=quota:#{finding.id}")
+    assert has_element?(view, "#finding-details", hd(works).observation_id)
+    refute has_element?(view, "#finding-details", List.last(works).observation_id)
+    view |> element("#quota-deferred-next") |> render_click()
+    assert_patch(view, ~p"/inbox?#{[quota_page: 2, finding: "quota:#{finding.id}"]}")
+    assert has_element?(view, "#finding-details", List.last(works).observation_id)
+    refute has_element?(view, "#finding-details", hd(works).observation_id)
+    refute has_element?(view, "#quota-deferred-next")
+    view |> element("#quota-deferred-previous") |> render_click()
+    assert has_element?(view, "#finding-details", hd(works).observation_id)
+
+    view |> element("#quota-deferred-next") |> render_click()
+    membership = Renga.Repo.get!(Renga.Accounts.OrganizationMembership, owner.membership_id)
+    {:ok, _} = Renga.Accounts.update_organization_membership(membership, %{role: "admin"})
+    view |> element("#quota-deferred-previous") |> render_click()
+    refute has_element?(view, "#finding-panel")
+  end
+
   @tag timeout: 45_000
   test "idle connected views refresh timed workflow expiry without broadcasts", context do
     snoozed = component_finding_fixture(context.resource, "component_drift")

@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict e7IMfL1euFikT4LgSSEkJMldoXCHxNGaWinAKZaz8TgRs7r8V0myZdDovY8LfXB
+\restrict Sgf8qgZjYxoHUmc4KcKzfUS7nraSNGRhdqnGR3khKl2dU27tiKFiDgJ77B6seEd
 
 -- Dumped from database version 18.6
 -- Dumped by pg_dump version 18.6
@@ -901,7 +901,11 @@ BEGIN
   IF NOT FOUND THEN RETURN; END IF;
   SELECT COALESCE((SELECT value FROM organization_limits WHERE organization_id = org AND name = quota), value)
     INTO cap FROM organization_quota_defaults WHERE name = quota;
-  IF held::numeric * 5 >= cap::numeric * 4 THEN
+  IF held::numeric * 5 >= cap::numeric * 4 OR (quota = 'resources' AND EXISTS (
+  SELECT 1 FROM reconciliation_quota_retries retry
+  JOIN reconciliation_work work ON work.id = retry.work_id
+  WHERE work.organization_id = org))
+ THEN
     INSERT INTO organization_quota_findings (organization_id, name, used, capacity, opened_at)
     VALUES (org, quota, held, cap, timezone('UTC', clock_timestamp()))
     ON CONFLICT (organization_id, name) DO UPDATE SET
@@ -918,6 +922,29 @@ BEGIN
       resolved_at = COALESCE(resolved_at, timezone('UTC', clock_timestamp()))
       WHERE organization_id = org AND name = quota;
   END IF;
+END $$;
+
+
+--
+-- Name: renga_refresh_retry_quota_finding(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.renga_refresh_retry_quota_finding() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE org uuid;
+BEGIN
+  SELECT organization_id INTO org FROM reconciliation_work
+    WHERE id = CASE WHEN TG_OP = 'DELETE' THEN OLD.work_id ELSE NEW.work_id END;
+  -- The organization and work can already be gone during tenant cascade.
+  IF org IS NOT NULL AND EXISTS (SELECT 1 FROM organizations WHERE id = org) THEN
+    -- A rejected first report rolls back its usage row too. Establish zero
+    -- accounting before refresh; rejected envelopes are never charged.
+    INSERT INTO organization_quota_usage(organization_id, name) VALUES (org, 'resources')
+      ON CONFLICT DO NOTHING;
+    PERFORM renga_refresh_quota_finding(org, 'resources');
+  END IF;
+  RETURN NULL;
 END $$;
 
 
@@ -3448,6 +3475,17 @@ CREATE TABLE public.reconciliation_lanes (
 
 
 --
+-- Name: reconciliation_quota_retries; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.reconciliation_quota_retries (
+    work_id uuid NOT NULL,
+    observation_id uuid NOT NULL,
+    inserted_at timestamp without time zone NOT NULL
+);
+
+
+--
 -- Name: reconciliation_work; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -3471,7 +3509,7 @@ CREATE TABLE public.reconciliation_work (
     inserted_at timestamp without time zone NOT NULL,
     origin character varying(255) DEFAULT 'intake'::character varying NOT NULL,
     CONSTRAINT reconciliation_work_provenance CHECK (((((origin)::text = 'intake'::text) AND (original_key_id IS NOT NULL) AND (installation_agent_id IS NOT NULL) AND (installation_id IS NOT NULL)) OR (((origin)::text = 'maintenance'::text) AND (installation_agent_id IS NULL) AND (installation_id IS NULL)))),
-    CONSTRAINT reconciliation_work_status CHECK (((((status)::text = ANY ((ARRAY['pending'::character varying, 'succeeded'::character varying])::text[])) AND (quarantine_kind IS NULL)) OR (((status)::text = 'quarantined'::text) AND ((quarantine_kind)::text = 'domain'::text)))),
+    CONSTRAINT reconciliation_work_status CHECK (((((status)::text = ANY ((ARRAY['pending'::character varying, 'succeeded'::character varying, 'quota_deferred'::character varying])::text[])) AND (quarantine_kind IS NULL)) OR (((status)::text = 'quarantined'::text) AND ((quarantine_kind)::text = 'domain'::text)))),
     CONSTRAINT reconciliation_work_values CHECK ((("position" > 0) AND (units > 0) AND (bytes >= 0) AND (generation >= 0) AND (checkpoint >= 0)))
 );
 
@@ -5398,6 +5436,14 @@ ALTER TABLE ONLY public.racks
 
 ALTER TABLE ONLY public.reconciliation_lanes
     ADD CONSTRAINT reconciliation_lanes_pkey PRIMARY KEY (organization_id);
+
+
+--
+-- Name: reconciliation_quota_retries reconciliation_quota_retries_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.reconciliation_quota_retries
+    ADD CONSTRAINT reconciliation_quota_retries_pkey PRIMARY KEY (work_id);
 
 
 --
@@ -7980,6 +8026,20 @@ CREATE INDEX reconciliation_lanes_work_id_organization_id_index ON public.reconc
 
 
 --
+-- Name: reconciliation_quota_retries_observation_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX reconciliation_quota_retries_observation_id_index ON public.reconciliation_quota_retries USING btree (observation_id);
+
+
+--
+-- Name: reconciliation_work_id_observation_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX reconciliation_work_id_observation_id_index ON public.reconciliation_work USING btree (id, observation_id);
+
+
+--
 -- Name: reconciliation_work_id_organization_id_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -9230,6 +9290,13 @@ CREATE TRIGGER organization_quota_defaults_changed AFTER UPDATE ON public.organi
 --
 
 CREATE TRIGGER reconciliation_lanes_history BEFORE DELETE OR UPDATE ON public.reconciliation_lanes FOR EACH ROW EXECUTE FUNCTION public.guard_reconciliation_history();
+
+
+--
+-- Name: reconciliation_quota_retries reconciliation_quota_retry_finding; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER reconciliation_quota_retry_finding AFTER INSERT OR DELETE ON public.reconciliation_quota_retries FOR EACH ROW EXECUTE FUNCTION public.renga_refresh_retry_quota_finding();
 
 
 --
@@ -11713,6 +11780,14 @@ ALTER TABLE ONLY public.reconciliation_lanes
 
 
 --
+-- Name: reconciliation_quota_retries reconciliation_quota_retry_work_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.reconciliation_quota_retries
+    ADD CONSTRAINT reconciliation_quota_retry_work_fkey FOREIGN KEY (work_id, observation_id) REFERENCES public.reconciliation_work(id, observation_id) ON DELETE CASCADE;
+
+
+--
 -- Name: reconciliation_work reconciliation_work_evidence_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -12716,7 +12791,7 @@ ALTER TABLE ONLY public.webauthn_challenges
 -- PostgreSQL database dump complete
 --
 
-\unrestrict e7IMfL1euFikT4LgSSEkJMldoXCHxNGaWinAKZaz8TgRs7r8V0myZdDovY8LfXB
+\unrestrict Sgf8qgZjYxoHUmc4KcKzfUS7nraSNGRhdqnGR3khKl2dU27tiKFiDgJ77B6seEd
 
 INSERT INTO public."schema_migrations" (version) VALUES (20260730221344);
 INSERT INTO public."schema_migrations" (version) VALUES (20260730222025);
@@ -12857,3 +12932,4 @@ INSERT INTO public."schema_migrations" (version) VALUES (20261110100000);
 INSERT INTO public."schema_migrations" (version) VALUES (20261110102000);
 INSERT INTO public."schema_migrations" (version) VALUES (20261110103000);
 INSERT INTO public."schema_migrations" (version) VALUES (20261110120000);
+INSERT INTO public."schema_migrations" (version) VALUES (20261110130000);

@@ -34,6 +34,7 @@ defmodule RengaWeb.InboxLive do
   alias Renga.Teams
   alias Renga.Triage
   alias Renga.Inventory.Changes
+  alias Renga.Inventory.ReconciliationWork
   alias RengaWeb.Format
 
   @reload_after_ms 400
@@ -542,13 +543,22 @@ defmodule RengaWeb.InboxLive do
 
       finding ->
         assign(socket,
-          selected: finding,
+          selected: quota_page(finding, scope, socket.assigns.query.quota_page),
           history: Findings.list_history(scope, finding),
           exception_form: socket.assigns.exception_form || exception_form(finding),
           adoption_request: adoption_request(scope, finding)
         )
     end
   end
+
+  defp quota_page(%{domain: "quota", resolution_key: "resources"} = finding, scope, page)
+       when page > 1 do
+    {items, total} = ReconciliationWork.list_quota_deferred(scope, page: page)
+    details = Map.put(finding.details, "quota_deferred", %{items: items, total: total})
+    %{finding | details: details}
+  end
+
+  defp quota_page(finding, _scope, _page), do: finding
 
   defp adoption_request(scope, finding) do
     case adoptable_address(finding) do
@@ -757,6 +767,7 @@ defmodule RengaWeb.InboxLive do
       resource: uuid(params["resource"]),
       interface: uuid(params["interface_id"]),
       page: page(params["page"]),
+      quota_page: page(params["quota_page"]),
       finding: finding_param(params["finding"])
     }
   end
@@ -780,6 +791,11 @@ defmodule RengaWeb.InboxLive do
   defp assignee_option(_all, _scope), do: nil
 
   defp inbox_path(query, changes) do
+    query =
+      if Keyword.has_key?(changes, :finding) and changes[:finding] != query.finding,
+        do: %{query | quota_page: 1},
+        else: query
+
     query = Enum.into(changes, query)
 
     params =
@@ -793,6 +809,7 @@ defmodule RengaWeb.InboxLive do
         interface_id: query.interface,
         status: if(query.status != "open", do: query.status),
         page: if(query.page > 1, do: query.page),
+        quota_page: if(query.quota_page > 1, do: query.quota_page),
         finding: finding_value(query.finding),
         request: query.request,
         missing: query.missing && Atom.to_string(query.missing),
@@ -1452,7 +1469,44 @@ defmodule RengaWeb.InboxLive do
 
         <section :if={@finding.details != %{}} id="finding-details" class="space-y-2">
           <h3 class="text-xs font-medium text-fg-muted">Diagnostic evidence</h3>
-          <pre class="max-w-full overflow-x-auto whitespace-pre-wrap break-all rounded-md border border-edge bg-sunken p-3 font-mono text-xs text-fg-muted">{Jason.encode!(@finding.details, pretty: true)}</pre>
+          <pre
+            tabindex={@finding.details["quota_deferred"] && "0"}
+            class={[
+              "max-w-full overflow-x-auto whitespace-pre-wrap break-all rounded-md border border-edge bg-sunken p-3 font-mono text-xs text-fg-muted",
+              @finding.details["quota_deferred"] &&
+                "max-h-96 overflow-y-auto focus-visible:ring-4 focus-visible:ring-ring"
+            ]}
+          >{Jason.encode!(@finding.details, pretty: true)}</pre>
+          <nav
+            :if={
+              @finding.details["quota_deferred"] &&
+                (@finding.details["quota_deferred"].total > 20 or @query.quota_page > 1)
+            }
+            id="quota-deferred-pagination"
+            aria-label="Deferred observation pages"
+            class="flex items-center justify-between text-sm"
+          >
+            <.link
+              :if={@query.quota_page > 1}
+              id="quota-deferred-previous"
+              patch={inbox_path(@query, quota_page: @query.quota_page - 1)}
+              class="inline-flex min-h-tap items-center text-link hover:underline focus-visible:ring-4 focus-visible:ring-ring"
+            >
+              Previous
+            </.link>
+            <span :if={@query.quota_page == 1} />
+            <span class="text-fg-muted">
+              Deferred observations · page {@query.quota_page}
+            </span>
+            <.link
+              :if={@query.quota_page * 20 < @finding.details["quota_deferred"].total}
+              id="quota-deferred-next"
+              patch={inbox_path(@query, quota_page: @query.quota_page + 1)}
+              class="inline-flex min-h-tap items-center text-link hover:underline focus-visible:ring-4 focus-visible:ring-ring"
+            >
+              Next
+            </.link>
+          </nav>
         </section>
 
         <div

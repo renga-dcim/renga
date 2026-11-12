@@ -49,6 +49,7 @@ defmodule Renga.Inventory.ReconciliationWork do
   alias Renga.Inventory.Observation
   alias Renga.Inventory.ReconciliationAdmission
   alias Renga.Inventory.ReconciliationLane
+  alias Renga.Inventory.ReconciliationQuotaRetry
   alias Renga.Inventory.Reconciler
   alias Renga.Inventory.Source
   alias Renga.Repo
@@ -220,6 +221,42 @@ defmodule Renga.Inventory.ReconciliationWork do
   def get(%Scope{organization_id: organization_id}, work_id),
     do: Repo.get_by(__MODULE__, organization_id: organization_id, id: work_id)
 
+  @doc "Owner-only, bounded resource quota retry listing in original acceptance order."
+  def list_quota_deferred(%Scope{} = scope, opts \\ []) do
+    if Renga.Quotas.owner?(scope) do
+      query =
+        from retry in ReconciliationQuotaRetry,
+          join: work in __MODULE__,
+          on: work.id == retry.work_id,
+          where: work.organization_id == ^scope.organization_id
+
+      count = Repo.aggregate(query, :count)
+      limit = opts |> Keyword.get(:limit, 20) |> max(1) |> min(100)
+      offset = (max(Keyword.get(opts, :page, 1), 1) - 1) * limit
+
+      items =
+        Repo.all(
+          from [retry, work] in query,
+            order_by: work.position,
+            offset: ^offset,
+            limit: ^limit,
+            select: %{
+              work_id: work.id,
+              observation_id: work.observation_id,
+              source_id: work.source_id,
+              position: work.position,
+              status: work.status,
+              run_after: work.run_after,
+              deferred_at: retry.inserted_at
+            }
+        )
+
+      {items, count}
+    else
+      {[], 0}
+    end
+  end
+
   @doc """
   Internal maintenance/operator entry point. Even immediate execution must
   reserve durable work and claim the organization head; it cannot jump a barrier.
@@ -283,7 +320,7 @@ defmodule Renga.Inventory.ReconciliationWork do
   end
 
   defp terminal_disposition?(%{status: status}, _legacy),
-    do: status in ["succeeded", "quarantined"]
+    do: status in ["succeeded", "quarantined", "quota_deferred"]
 
   defp terminal_disposition?(nil, %{status: status}), do: status in ["succeeded", "failed"]
   defp terminal_disposition?(nil, nil), do: false
@@ -342,7 +379,7 @@ defmodule Renga.Inventory.ReconciliationWork do
       {:ok, idle} when idle in [:idle, :busy] ->
         # Another bounded caller may have completed this exact obligation
         # while we waited for the slot. Reading it grants no retry authority.
-        if get(scope, work.id).status in ["succeeded", "quarantined"],
+        if get(scope, work.id).status in ["succeeded", "quarantined", "quota_deferred"],
           do:
             Reconciler.stored_result(
               scope,
@@ -363,8 +400,12 @@ defmodule Renga.Inventory.ReconciliationWork do
   @doc """
   Rediscover and claim one ready organization head without notifications.
 
-  Readiness is tested AFTER choosing the earliest of all unresolved work, so a
-  delayed or quarantined head blocks later work. Locked organizations are skipped
+  Readiness is tested AFTER choosing the earliest unresolved work, so ordinary
+  backoff and quarantine block later work. Only quota deferrals waiting for their
+  next pass may be skipped: matching existing resources must remain possible at
+  capacity. Due quota retries regain their original position, preventing arrivals
+  from starving them, and use the explicit audited retry transition before claim.
+  Locked organizations are skipped
   rather than waited on. last_turn_at advances at claim, including turns that
   crash/fail afterward; it is persistent scheduling preference, not strict rounds.
   """
@@ -451,14 +492,16 @@ defmodule Renga.Inventory.ReconciliationWork do
   Post-rollback bookkeeping, conditional on the SAME unexpired ownership and
   unadvanced checkpoint. `:backoff` retains pending work; `:domain` permanently
   quarantines it until explicit operator retry, retaining evidence and charge.
+  `:quota` records a failed quota_deferred attempt and one durable retry without
+  another reservation. Repeated quota failures retain the same retry item.
   """
-  def fail(claim, kind, error, opts \\ []) when kind in [:backoff, :domain] and is_map(error) do
+  def fail(claim, kind, error, opts \\ [])
+      when kind in [:backoff, :domain, :quota] and is_map(error) do
     transaction(
       fn ->
         {lane, work, _source} = lock_turn!(claim)
 
-        {status, quarantine_kind} =
-          if kind == :backoff, do: {"pending", nil}, else: {"quarantined", "domain"}
+        {status, quarantine_kind} = failure_disposition(kind)
 
         changes = [
           status: status,
@@ -467,12 +510,13 @@ defmodule Renga.Inventory.ReconciliationWork do
           run_after: DateTime.add(database_now(), Keyword.get(opts, :backoff_ms, 0), :millisecond)
         ]
 
-        if opts[:record_attempt] do
+        if opts[:record_attempt] || kind == :quota do
           scope = Accounts.scope_for(Repo.get!(Organization, work.organization_id))
           observation = Repo.get!(Observation, work.observation_id)
           Reconciler.record_failure_in_transaction(scope, observation, error)
         end
 
+        update_quota_retry!(work, kind)
         update_owned_work!(claim, changes)
         release_owned_lane!(claim, lane, 0, 0)
         Repo.get!(__MODULE__, work.id)
@@ -480,6 +524,24 @@ defmodule Renga.Inventory.ReconciliationWork do
       opts
     )
   end
+
+  defp failure_disposition(:backoff), do: {"pending", nil}
+  defp failure_disposition(:domain), do: {"quarantined", "domain"}
+  defp failure_disposition(:quota), do: {"quota_deferred", nil}
+
+  defp update_quota_retry!(work, :quota) do
+    Repo.insert!(
+      %ReconciliationQuotaRetry{work_id: work.id, observation_id: work.observation_id},
+      on_conflict: :nothing,
+      conflict_target: :observation_id
+    )
+  end
+
+  defp update_quota_retry!(work, :domain), do: delete_quota_retry!(work)
+  defp update_quota_retry!(_work, :backoff), do: :ok
+
+  defp delete_quota_retry!(work),
+    do: Repo.delete_all(from retry in ReconciliationQuotaRetry, where: retry.work_id == ^work.id)
 
   @doc "Explicit retry of the named outstanding obligation: new generation, no new charge."
   def retry(%Scope{} = scope, work_id, generation) do
@@ -491,24 +553,33 @@ defmodule Renga.Inventory.ReconciliationWork do
       require_generation!(work, generation)
       if work.status == "succeeded", do: Repo.rollback(:terminal_work)
 
-      audit!(
-        scope,
-        work,
-        "reconciliation_retry",
-        %{"generation" => generation, "status" => work.status},
-        %{"generation" => generation + 1, "status" => "pending"}
-      )
+      {_lane, work} = retry_work!(scope, lane, work, "reconciliation_retry")
+      work
+    end)
+  end
 
-      invalidate_lane!(lane)
+  # Both human and periodic quota retries explicitly advance authority and audit
+  # the transition. Receipt reads and reconcile_once never revive a deferral.
+  defp retry_work!(scope, lane, work, field) do
+    generation = work.generation + 1
 
+    audit!(scope, work, field, %{"generation" => work.generation, "status" => work.status}, %{
+      "generation" => generation,
+      "status" => "pending"
+    })
+
+    lane = invalidate_lane!(lane)
+
+    work =
       change!(work,
-        generation: generation + 1,
+        generation: generation,
         status: "pending",
         run_after: database_now(),
         quarantine_kind: nil,
         error: %{}
       )
-    end)
+
+    {lane, work}
   end
 
   @doc "Admits a NEW obligation for the latest terminal work; the first receipt stays fixed."
@@ -748,11 +819,12 @@ defmodule Renga.Inventory.ReconciliationWork do
     }
 
   defp candidate(organization_id, work_id) do
-    # Take the head over ALL outstanding states before applying readiness.
+    # Quota-only delays may be bypassed; ordinary delays/quarantine stay barriers.
     head =
       from work in __MODULE__,
         where: work.organization_id == parent_as(:lane).organization_id,
         where: work.status != "succeeded",
+        where: work.status != "quota_deferred" or work.run_after <= fragment("clock_timestamp()"),
         order_by: work.position,
         limit: 1
 
@@ -764,7 +836,7 @@ defmodule Renga.Inventory.ReconciliationWork do
         on: lane.organization_id == org.id,
         inner_lateral_join: work in subquery(head),
         on: true,
-        where: org.status == "active" and work.status == "pending",
+        where: org.status == "active" and work.status in ["pending", "quota_deferred"],
         where: work.run_after <= fragment("clock_timestamp()"),
         where: is_nil(lane.expires_at) or lane.expires_at <= fragment("clock_timestamp()"),
         order_by: [asc_nulls_first: lane.last_turn_at, asc: org.id],
@@ -824,6 +896,7 @@ defmodule Renga.Inventory.ReconciliationWork do
     Repo.one!(
       from work in __MODULE__,
         where: work.organization_id == ^organization_id and work.status != "succeeded",
+        where: work.status != "quota_deferred" or work.run_after <= fragment("clock_timestamp()"),
         order_by: work.position,
         limit: 1
     )
@@ -836,10 +909,22 @@ defmodule Renga.Inventory.ReconciliationWork do
     work = lock_work!(organization_id, head.id, nowait: true)
     now = database_now()
 
-    if work.id != head_work!(organization_id).id or work.status != "pending" or
+    # A quota retry can become due after candidate selection without a write.
+    # Exact-report calls must not execute that newly eligible older obligation.
+    if (not is_nil(opts[:work_id]) and work.id != opts[:work_id]) or
+         work.id != head_work!(organization_id).id or
+         work.status not in ["pending", "quota_deferred"] or
          DateTime.compare(work.run_after, now) == :gt or
          (lane.expires_at && DateTime.compare(lane.expires_at, now) == :gt),
        do: Repo.rollback(:head_changed)
+
+    {lane, work} =
+      if work.status == "quota_deferred" do
+        scope = Accounts.scope_for(Repo.get!(Organization, organization_id))
+        retry_work!(scope, lane, work, "reconciliation_quota_retry")
+      else
+        {lane, work}
+      end
 
     token = Ecto.UUID.generate()
     version = lane.version + 1
@@ -924,6 +1009,8 @@ defmodule Renga.Inventory.ReconciliationWork do
   end
 
   defp finish!(claim, lane, work, status, value) do
+    if status in ["succeeded", "quarantined"], do: delete_quota_retry!(work)
+
     update_owned_work!(claim,
       status: status,
       quarantine_kind: if(status == "quarantined", do: "domain"),

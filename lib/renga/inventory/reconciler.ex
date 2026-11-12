@@ -543,15 +543,15 @@ defmodule Renga.Inventory.Reconciler do
     kind = Map.get(resource_payload(observation.payload), "kind", "server")
     name = resource_name(scope, observation, identifiers, kind)
 
-    {:ok, resource} =
-      Inventory.create_resource(scope, %{
-        kind: kind,
-        name: name,
-        display_name: display_name(identifiers),
-        lifecycle_state: "unknown"
-      })
-
-    {resource, true}
+    case Inventory.create_resource(scope, %{
+           kind: kind,
+           name: name,
+           display_name: display_name(identifiers),
+           lifecycle_state: "unknown"
+         }) do
+      {:ok, resource} -> {resource, true}
+      {:error, reason} -> Repo.rollback(reason)
+    end
   end
 
   defp ensure_resource(_scope, _observation, _identifiers, %Resource{} = resource),

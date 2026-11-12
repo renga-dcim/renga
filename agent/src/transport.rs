@@ -1281,7 +1281,7 @@ mod tests {
             ("2026-10-14T12:00:00Z", "2026-10-14T12:00:00.000Z"),
         ] {
             for (status, duplicate) in [(202, false), (200, true)] {
-                for processing in ["pending", "succeeded", "quarantined"] {
+                for processing in ["pending", "succeeded", "quarantined", "quota_deferred"] {
                     let mut response = receipt(duplicate, processing);
                     response["observation"]["observed_at"] = json!(response_time);
                     let body = json!({ "observation_id": "first", "observed_at": request_time });

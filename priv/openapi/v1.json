@@ -1391,7 +1391,8 @@
                 "enum": [
                   "pending",
                   "succeeded",
-                  "quarantined"
+                  "quarantined",
+                  "quota_deferred"
                 ],
                 "type": "string"
               }

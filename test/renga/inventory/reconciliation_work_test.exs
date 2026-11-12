@@ -29,6 +29,13 @@ defmodule Renga.Inventory.ReconciliationWorkTest do
     on_exit(fn ->
       :ok = Sandbox.checkout(Repo, sandbox: false)
 
+      # Deployment audit intentionally outlives organizations; committed test
+      # fixtures must remove their own audit rows instead of relying on cascade.
+      Repo.delete_all(
+        from event in Renga.DeploymentAudit.Event,
+          where: event.organization_id == ^fixture.scope.organization_id
+      )
+
       Repo.delete_all(
         from org in Accounts.Organization, where: org.id == ^fixture.scope.organization_id
       )
@@ -1270,6 +1277,367 @@ defmodule Renga.Inventory.ReconciliationWorkTest do
     {:ok, recovered} = claim(context)
     assert {:ok, {:ok, _, true}} = Work.execute_host(recovered)
     assert lane(context).pending_bytes == 0
+  end
+
+  for recovery <- [:deletion, :limit_increase] do
+    @tag recovery: recovery
+    test "quota deferral retains one retry and reservation across restart and #{recovery}",
+         context do
+      recovery = context.recovery
+      set_resource_quota!(context, 1)
+
+      {:ok, occupied} =
+        Inventory.create_resource(context.scope, %{kind: "server", name: "occupied"})
+
+      params = host("quota-restart")
+      {:ok, %{work: work, receipt: receipt}} = admit(context, params)
+
+      for generation <- 0..1 do
+        if generation > 0, do: make_quota_due!(context, work)
+
+        assert {:ok, {:error, %{status: "failed", errors: errors}}} =
+                 Renga.Inventory.ReconciliationWorker.run_once(
+                   organization_id: context.scope.organization_id
+                 )
+
+        assert errors == %{"processing" => "quota_deferred", "quota" => "resources"}
+        deferred = Work.get(context.scope, work.id)
+        assert deferred.status == "quota_deferred"
+        assert deferred.generation == generation
+        assert deferred.checkpoint == 0
+        assert Repo.aggregate(Inventory.ReconciliationQuotaRetry, :count) == 1
+        assert Renga.Quotas.usage(context.scope.organization_id, :resources) == 1
+        assert lane(context).pending_units == work.units
+        assert lane(context).pending_bytes == work.bytes
+        assert Work.receipt(context.scope, work.observation_id) == receipt
+        assert {:ok, %{receipt: ^receipt, disposition: :duplicate}} = admit(context, params)
+      end
+
+      assert Enum.map(
+               Inventory.list_observation_reconciliations(context.scope, work.observation_id),
+               & &1.attempt
+             ) == [1, 2]
+
+      case recovery do
+        :deletion -> Repo.delete!(occupied)
+        :limit_increase -> set_resource_quota!(context, 2)
+      end
+
+      make_quota_due!(context, work)
+      Sandbox.checkin(Repo)
+      Sandbox.mode(Repo, :auto)
+      {:ok, worker} = Renga.Inventory.ReconciliationWorker.start_link(name: nil, interval: 10)
+
+      try do
+        await_succeeded!(context, work.id)
+        assert Repo.aggregate(Inventory.ReconciliationQuotaRetry, :count) == 0
+        assert Work.get(context.scope, work.id).generation == 2
+        assert Work.receipt(context.scope, work.observation_id) == receipt
+        assert Repo.get!(Observation, work.observation_id).payload == params
+        assert Repo.aggregate(Work, :count) == 1
+        assert lane(context).pending_units == 0
+        assert lane(context).pending_bytes == 0
+        expected_usage = if recovery == :deletion, do: 1, else: 2
+        assert Renga.Quotas.usage(context.scope.organization_id, :resources) == expected_usage
+
+        assert Repo.aggregate(
+                 from(event in ChangeEvent,
+                   where:
+                     event.organization_id == ^context.scope.organization_id and
+                       event.field == "reconciliation_quota_retry"
+                 ),
+                 :count
+               ) == 2
+      after
+        GenServer.stop(worker)
+        Sandbox.mode(Repo, :manual)
+        :ok = Sandbox.checkout(Repo, sandbox: false)
+      end
+    end
+  end
+
+  test "exact report dispatch cannot switch to an older deferral that becomes due", context do
+    {:ok, %{work: older}} = admit(context, host("older-boundary"))
+    {:ok, older_claim} = claim(context)
+    assert {:ok, _} = Work.fail(older_claim, :quota, %{}, backoff_ms: 60_000)
+    {:ok, %{work: requested}} = admit(context, host("requested-boundary"))
+    before_events = Repo.aggregate(ChangeEvent, :count)
+    parent = self()
+    handler = "exact-dispatch-#{Ecto.UUID.generate()}"
+
+    :telemetry.attach(
+      handler,
+      [:renga, :repo, :query],
+      fn _, _, metadata, {parent, handler} ->
+        # Pause after candidate selection, before the first clock-sensitive
+        # head reread. Only this dispatch task participates in the barrier.
+        if Process.get(handler) && String.ends_with?(metadata.query, "SKIP LOCKED") do
+          send(parent, {:candidate_selected, self()})
+
+          receive do
+            {:continue_dispatch, ^handler} -> :ok
+          after
+            5_000 -> raise "dispatch barrier was not released"
+          end
+        end
+      end,
+      {parent, handler}
+    )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    dispatch =
+      concurrent(fn ->
+        Process.put(handler, true)
+        Inventory.reconcile_observation_once(context.scope, requested.observation_id)
+      end)
+
+    assert_receive {:candidate_selected, caller}, 1_000
+    make_quota_due!(context, older)
+    send(caller, {:continue_dispatch, handler})
+    assert {:error, :head_changed} = Task.await(dispatch)
+    assert Work.get(context.scope, requested.id).status == "pending"
+    assert %{status: "quota_deferred", generation: 0} = Work.get(context.scope, older.id)
+    assert Repo.aggregate(ChangeEvent, :count) == before_events
+    assert Inventory.list_resources(context.scope) == []
+    assert {:ok, %{work_id: id, generation: 1}} = claim(context)
+    assert id == older.id
+  end
+
+  test "quota delays permit matching updates; an older retry cannot overwrite newer evidence",
+       context do
+    set_resource_quota!(context, 0)
+
+    old =
+      put_in(host("older"), ["resources", Access.at(0), "identifiers", "machine_id"], "same-host")
+
+    {:ok, %{work: deferred}} = admit(context, old)
+
+    assert {:ok, {:error, %{status: "failed"}}} =
+             Renga.Inventory.ReconciliationWorker.run_once(
+               organization_id: context.scope.organization_id
+             )
+
+    set_resource_quota!(context, 1)
+
+    newer =
+      old
+      |> Map.put("observation_id", "newer")
+      |> Map.put("observed_at", "2026-10-31T00:00:00Z")
+      |> put_in(["resources", Access.at(0), "attributes", "hostname"], "newer")
+
+    {:ok, %{work: newest}} = admit(context, newer)
+
+    assert {:ok, {:ok, resource, true}} =
+             Renga.Inventory.ReconciliationWorker.run_once(
+               organization_id: context.scope.organization_id
+             )
+
+    assert Work.get(context.scope, newest.id).status == "succeeded"
+    assert Work.get(context.scope, deferred.id).status == "quota_deferred"
+    observation = Inventory.get_observation!(context.scope, deferred.observation_id)
+    make_quota_due!(context, deferred)
+
+    assert {:error, %{errors: %{"processing" => "quota_deferred"}}} =
+             Reconciler.reconcile_once(context.scope, observation)
+
+    assert Work.get(context.scope, deferred.id).generation == 0
+    # Move the next pass back out while exercising the no-growth update.
+    Work.get(context.scope, deferred.id)
+    |> Ecto.Changeset.change(run_after: DateTime.add(Renga.Time.utc_now_ms(), 30))
+    |> Repo.update!()
+
+    # New evidence that needs no envelope remains executable at the full quota.
+    update = Map.put(newer, "observation_id", "at-capacity-update")
+    {:ok, _} = admit(context, update)
+
+    assert {:ok, {:ok, same_resource, false}} =
+             Renga.Inventory.ReconciliationWorker.run_once(
+               organization_id: context.scope.organization_id
+             )
+
+    assert same_resource.id == resource.id
+    make_quota_due!(context, deferred)
+    {:ok, %{work: later}} = admit(context, host("later-arrival"))
+    assert {:ok, claim} = claim(context)
+    assert claim.work_id == deferred.id
+    assert claim.generation == 1
+    assert {:ok, {:ok, matched, false}} = Work.execute_report(claim)
+    assert matched.id == resource.id
+    assert Inventory.get_host_by_resource!(context.scope, resource.id).hostname == "newer"
+    assert Work.get(context.scope, later.id).status == "pending"
+    assert Renga.Quotas.usage(context.scope.organization_id, :resources) == 1
+    assert Repo.aggregate(Inventory.ReconciliationQuotaRetry, :count) == 0
+    assert lane(context).pending_bytes == later.bytes
+  end
+
+  test "a later report member hitting quota rolls back all members before durable deferral",
+       context do
+    # A deployment default, not an org override: the failed first report also
+    # rolls back the first resources usage row. The retry must establish zero.
+    [[previous]] =
+      Repo.query!("SELECT value FROM organization_quota_defaults WHERE name = 'resources'").rows
+
+    Repo.query!("UPDATE organization_quota_defaults SET value = 1 WHERE name = 'resources'")
+
+    on_exit(fn ->
+      :ok = Sandbox.checkout(Repo, sandbox: false)
+
+      Repo.query!("UPDATE organization_quota_defaults SET value = $1 WHERE name = 'resources'", [
+        previous
+      ])
+
+      Sandbox.checkin(Repo)
+    end)
+
+    assert Repo.query!(
+             "SELECT used FROM organization_quota_usage WHERE organization_id = $1 AND name = 'resources'",
+             [Ecto.UUID.dump!(context.scope.organization_id)]
+           ).rows == []
+
+    source =
+      Repo.insert!(%Inventory.Source{
+        organization_id: context.scope.organization_id,
+        agent_id: context.agent.id,
+        collector_id: "quota-switches",
+        kind: "switch_poller",
+        name: "Quota stream",
+        status: "active"
+      })
+
+    params = %{
+      "observation_id" => "quota-report",
+      "observed_at" => "2026-10-30T00:00:00Z",
+      "scope" => "targets",
+      "collector" => %{"id" => "quota-switches", "kind" => "switch_poller"},
+      "complete" => true,
+      "targets" => Enum.map(1..2, &%{"address" => "10.0.0.#{&1}", "status" => "reachable"}),
+      "resources" =>
+        Enum.map(
+          1..2,
+          &%{
+            "kind" => "switch",
+            "target" => "10.0.0.#{&1}",
+            "identifiers" => %{"serial_number" => "quota-#{&1}"},
+            "interfaces" => []
+          }
+        )
+    }
+
+    {:ok, %{work: work}} =
+      Work.admit(context.scope, context.key, context.installation_id, source.id, params, @limits)
+
+    assert {:ok, {:error, %{errors: %{"processing" => "quota_deferred"}}}} =
+             Renga.Inventory.ReconciliationWorker.run_once(
+               organization_id: context.scope.organization_id
+             )
+
+    assert Inventory.list_resources(context.scope) == []
+    assert Inventory.list_derived_observations(context.scope, work.observation_id) == []
+    assert Inventory.Collectors.list_targets(context.scope, source.id) == []
+    assert Renga.Quotas.usage(context.scope.organization_id, :resources) == 0
+    assert Repo.aggregate(Inventory.ReconciliationQuotaRetry, :count) == 1
+
+    finding =
+      Repo.get_by!(Renga.Quotas.Finding,
+        organization_id: context.scope.organization_id,
+        name: "resources"
+      )
+
+    assert finding.used == 0
+    assert finding.capacity == 1
+    assert finding.resolved_at == nil
+    assert lane(context).pending_units == work.units
+    assert lane(context).pending_bytes == work.bytes
+    set_resource_quota!(context, 2)
+    make_quota_due!(context, work)
+
+    assert {:ok, {:ok, resources, true}} =
+             Renga.Inventory.ReconciliationWorker.run_once(
+               organization_id: context.scope.organization_id
+             )
+
+    assert length(resources) == 2
+    assert Renga.Quotas.usage(context.scope.organization_id, :resources) == 2
+    assert Repo.aggregate(Inventory.ReconciliationQuotaRetry, :count) == 0
+    assert lane(context).pending_units == 0
+    assert lane(context).pending_bytes == 0
+  end
+
+  test "quota retry items survive transient errors but not non-quota terminal results", context do
+    {:ok, %{work: work}} = admit(context, host("quota-lifecycle"))
+    {:ok, claim} = claim(context)
+    error = %{"processing" => "quota_deferred", "quota" => "resources"}
+    assert {:ok, _} = Work.fail(claim, :quota, error)
+    assert {:error, :stale_claim} = Work.fail(claim, :quota, error)
+    assert Repo.aggregate(Inventory.ReconciliationQuotaRetry, :count) == 1
+    {:ok, claim} = claim(context)
+    assert claim.generation == 1
+    assert {:ok, _} = Work.fail(claim, :backoff, %{"processing" => "projection_failed"})
+    assert Repo.aggregate(Inventory.ReconciliationQuotaRetry, :count) == 1
+    {:ok, claim} = claim(context)
+    assert {:ok, _} = Work.fail(claim, :domain, %{"processing" => "projection_failed"})
+    assert Repo.aggregate(Inventory.ReconciliationQuotaRetry, :count) == 0
+    assert Work.get(context.scope, work.id).status == "quarantined"
+    assert lane(context).pending_bytes == work.bytes
+
+    assert Repo.get_by!(Renga.Quotas.Finding,
+             organization_id: context.scope.organization_id,
+             name: "resources"
+           ).resolved_at
+  end
+
+  test "owner quota findings list tenant-scoped durable items in bounded acceptance order",
+       context do
+    set_resource_quota!(context, 0)
+
+    works =
+      for n <- 1..3 do
+        {:ok, %{work: work}} = admit(context, host("quota-list-#{n}"))
+
+        assert {:ok, {:error, _}} =
+                 Renga.Inventory.ReconciliationWorker.run_once(
+                   organization_id: context.scope.organization_id
+                 )
+
+        work
+      end
+
+    assert {[], 0} = Work.list_quota_deferred(context.scope)
+    membership = Repo.get!(Accounts.OrganizationMembership, context.scope.membership_id)
+    {:ok, _} = Accounts.update_organization_membership(membership, %{role: "owner"})
+    assert {[first], 3} = Work.list_quota_deferred(context.scope, limit: 1)
+    assert first.work_id == hd(works).id
+    assert {[second], 3} = Work.list_quota_deferred(context.scope, limit: 1, page: 2)
+    assert second.work_id == Enum.at(works, 1).id
+    assert {[third], 3} = Work.list_quota_deferred(context.scope, limit: 2, page: 2)
+    assert third.work_id == Enum.at(works, 2).id
+    other = other_installation()
+    membership = Repo.get!(Accounts.OrganizationMembership, other.scope.membership_id)
+    {:ok, _} = Accounts.update_organization_membership(membership, %{role: "owner"})
+    assert {[], 0} = Work.list_quota_deferred(other.scope)
+    assert {[finding], 1} = Renga.Findings.list_findings(context.scope, domain: "quota")
+    assert finding.details["quota_deferred"].total == 3
+
+    assert Enum.map(finding.details["quota_deferred"].items, & &1.work_id) ==
+             Enum.map(works, & &1.id)
+  end
+
+  defp set_resource_quota!(context, limit) do
+    :ok =
+      Renga.Limits.set(
+        context.scope.organization,
+        [resources: limit],
+        Renga.DeploymentAudit.operator("durable-quota-test")
+      )
+  end
+
+  # Exercise rediscovery without sleeping for the deployment's periodic interval.
+  defp make_quota_due!(context, work) do
+    context.scope
+    |> Work.get(work.id)
+    |> Ecto.Changeset.change(run_after: DateTime.add(Renga.Time.utc_now_ms(), -1))
+    |> Repo.update!()
   end
 
   defp other_installation do
