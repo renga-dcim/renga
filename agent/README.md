@@ -133,8 +133,15 @@ body unchanged so Renga recognizes a repeat by its observation ID. An entry is
 removed once Renga accepts it, or when Renga rejects the payload itself as
 malformed, oversized, or reusing an observation ID; network, server, credential,
 and enrollment failures leave it queued. The queue keeps at most 512
-observations, 64 MiB, and seven days, dropping the oldest first when a limit is
-reached. Each delivery pass that leaves or removes anything logs an
+observations, 64 MiB, and seven days. A full queue refuses new evidence instead
+of replacing older reports; entries older than seven days still expire explicitly.
+Host inventory and optional discovery pause at 80% of either count or byte
+capacity and resume only when both fall to 50% or below, with jitter. Deferred
+collection is logged separately and does not advance collection freshness.
+To resume, restore delivery connectivity or authorization and let the queue drain
+below its low watermark; deleting pending evidence is not the normal recovery path.
+No local snapshot replacement is attempted without stream/target/section coverage.
+Each delivery pass that leaves or removes anything logs an
 `observation queue` line with the backlog's size, its oldest entry's age, and
 counts of observations dropped for space, expired, or rejected. Every check-in
 reports the same health, and Renga shows the last reported health in the
@@ -146,6 +153,11 @@ an agent at a different Renga, it delivers its backlog there.
 If the queue cannot open or make room, check-ins continue and new inventory is
 sent directly without durability. Delivery work retries opening the queue on
 later inventory and flush passes; periodic check-ins never wait for that retry.
+Queue ownership is released during HTTP and retry sleeps; per-entry file claims
+prevent concurrent delivery/removal of the same entry across processes. Ordinary
+drains have a 30-second total delivery budget. Flushes give telemetry an independent,
+capped delivery opportunity even after an observation failure, within a 45-second
+whole-flush budget. Telemetry retains its separate bounded oldest-reading policy.
 
 `--dry-run` collects once and prints pretty JSON without loading configuration or
 using the network. `--once` loads configuration and attempts both a check-in and

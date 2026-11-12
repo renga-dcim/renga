@@ -100,7 +100,7 @@ impl Drop for Module {
 }
 
 fn run_module(collector: &LibvirtCollector, stop: &Cancellation, sink: &Sink, virsh: Virsh<'_>) {
-    while !stop.cancelled() {
+    while crate::switch_report::wait_for_capacity(sink, stop) {
         let started = Instant::now();
         let poll = poll(&collector.id, stop, virsh);
         if stop.cancelled() {
@@ -113,7 +113,7 @@ fn run_module(collector: &LibvirtCollector, stop: &Cancellation, sink: &Sink, vi
         let complete = poll.complete;
         let reports = reports(collector, poll);
         for (observation_id, body) in &reports {
-            sink(*observation_id, body);
+            sink.send(*observation_id, body);
         }
         info!(
             collector = %collector.id,

@@ -278,7 +278,7 @@ fn scrape(
     }
     let batch = batch(&readings, failed, now);
     match serde_json::to_vec(&batch) {
-        Ok(body) if body.len() <= MAX_TELEMETRY_BYTES => sink(batch.replay_id, &body),
+        Ok(body) if body.len() <= MAX_TELEMETRY_BYTES => sink.send(batch.replay_id, &body),
         Ok(body) => warn!(
             exporter = source,
             bytes = body.len(),

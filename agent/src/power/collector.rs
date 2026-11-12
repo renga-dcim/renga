@@ -351,7 +351,7 @@ pub fn run(
     let fresh_for = fresh_for_seconds(interval);
     let mut known = Known::new();
     let mut reported: Option<(Instant, Shown)> = None;
-    while !stop.cancelled() {
+    while crate::switch_report::wait_for_capacity(&sinks.observations, stop) {
         let started = Instant::now();
         let outcomes = poll(stop);
         if stop.cancelled() {
@@ -370,7 +370,7 @@ pub fn run(
 
         for batch in batches(collector, &outcomes, &mut known, fresh_for) {
             match serde_json::to_vec(&batch) {
-                Ok(body) => (sinks.telemetry)(batch.replay_id, &body),
+                Ok(body) => sinks.telemetry.send(batch.replay_id, &body),
                 Err(error) => {
                     warn!(collector = %collector.id, %error, "cannot encode power readings")
                 }
@@ -383,7 +383,7 @@ pub fn run(
             .is_none_or(|(at, before)| *before != now_shown || at.elapsed() >= INVENTORY_INTERVAL);
         if due {
             for (observation_id, body) in reports(collector, &outcomes) {
-                (sinks.observations)(observation_id, &body);
+                sinks.observations.send(observation_id, &body);
             }
             reported = Some((Instant::now(), now_shown));
         }

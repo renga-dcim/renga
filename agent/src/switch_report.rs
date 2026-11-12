@@ -45,7 +45,39 @@ pub struct TargetOutcome {
 }
 
 /// Where finished reports go: the agent's on-disk queue, which delivers them oldest first.
-pub type Sink = Arc<dyn Fn(Uuid, &[u8]) + Send + Sync>;
+pub type Sink = Arc<dyn ReportSink>;
+
+/// Admission is checked before polling, not only after expensive evidence is collected.
+pub trait ReportSink: Send + Sync {
+    fn send(&self, id: Uuid, body: &[u8]);
+    fn ready(&self) -> bool {
+        true
+    }
+}
+
+impl<F: Fn(Uuid, &[u8]) + Send + Sync> ReportSink for F {
+    fn send(&self, id: Uuid, body: &[u8]) {
+        self(id, body)
+    }
+}
+
+pub fn wait_for_capacity(sink: &Sink, stop: &Cancellation) -> bool {
+    let mut deferred = false;
+    while !stop.cancelled() && !sink.ready() {
+        if !deferred {
+            info!("optional collection deferred by ordinary queue pressure");
+            deferred = true;
+        }
+        // Desynchronize optional pollers after a shared outage without advancing freshness.
+        thread::sleep(Duration::from_millis(
+            250 + (Uuid::new_v4().as_u128() % 750) as u64,
+        ));
+    }
+    if deferred && !stop.cancelled() {
+        info!("optional collection resumed after ordinary queue pressure");
+    }
+    !stop.cancelled()
+}
 
 /// How long a poll's neighbor evidence lasts, in seconds, for a module polling every `interval`.
 pub fn neighbor_ttl(interval: Duration) -> u32 {
@@ -86,7 +118,7 @@ pub fn run(
     sink: &Sink,
     poll: &dyn Fn() -> Vec<TargetOutcome>,
 ) {
-    while !stop.cancelled() {
+    while wait_for_capacity(sink, stop) {
         let started = Instant::now();
         let outcomes = poll();
         if stop.cancelled() {
@@ -104,7 +136,7 @@ pub fn run(
         }
         let reports = reports(collector_id, outcomes);
         for (observation_id, body) in &reports {
-            sink(*observation_id, body);
+            sink.send(*observation_id, body);
         }
         info!(
             collector = %collector_id,
@@ -223,4 +255,60 @@ fn encode(collector_id: &str, outcomes: &[TargetOutcome]) -> Option<(Uuid, Vec<u
     });
     let body = serde_json::to_vec(&report).ok()?;
     (body.len() <= MAX_OBSERVATION_BYTES).then_some((report.observation_id, body))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    };
+
+    #[test]
+    fn optional_polling_waits_for_capacity_before_reading_targets() {
+        struct Gate(AtomicBool, mpsc::Sender<()>);
+        impl ReportSink for Gate {
+            fn ready(&self) -> bool {
+                let ready = self.0.load(Ordering::SeqCst);
+                if !ready {
+                    self.1.send(()).unwrap();
+                }
+                ready
+            }
+            fn send(&self, _id: Uuid, _body: &[u8]) {
+                panic!("the stopped poll must not publish evidence");
+            }
+        }
+        let (paused, waiting) = mpsc::channel();
+        let gate = Arc::new(Gate(AtomicBool::new(false), paused));
+        let sink: Sink = gate.clone();
+        let stopped = Cancellation::default();
+        let stop = stopped.clone();
+        let (polled, observed) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            run(
+                "switch",
+                "test",
+                Duration::from_secs(60),
+                &stop,
+                &sink,
+                &|| {
+                    polled.send(()).unwrap();
+                    stop.cancel();
+                    Vec::new()
+                },
+            );
+        });
+        waiting.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(
+            observed.try_recv().is_err(),
+            "paused collection must not read targets"
+        );
+        gate.0.store(true, Ordering::SeqCst);
+        let resumed = observed.recv_timeout(Duration::from_secs(2));
+        stopped.cancel();
+        worker.join().unwrap();
+        resumed.expect("collection should resume after capacity returns");
+    }
 }

@@ -8,10 +8,9 @@
 //!
 //! Each [`QueueKind`] has its own directory and limits, and its directory fixes the entries'
 //! payload type and destination, so a telemetry backlog can never evict an observation (RFD 10,
-//! "Measured history"). Limits on entries, bytes, and age keep each directory bounded. When a new
-//! entry would exceed them the oldest entries go first: a host agent's observation is a full
-//! snapshot whose newest copy carries the most current state, and recent readings matter more
-//! than old ones.
+//! "Measured history"). Limits on entries, bytes, and age keep each directory bounded. Ordinary
+//! evidence is never replaced merely because it is older: a full queue refuses the new entry
+//! explicitly. Telemetry retains its documented oldest-reading expiry policy.
 
 use crate::{
     cancellation::Cancellation,
@@ -19,9 +18,12 @@ use crate::{
 };
 use std::{
     fmt, fs,
-    io::{self, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, PoisonError},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, PoisonError,
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tracing::warn;
@@ -145,7 +147,7 @@ impl QueueHealth {
 /// The queue's health as of its last change, readable while a delivery pass holds the queue
 /// itself, so lease check-ins can report it without waiting.
 #[derive(Clone, Default)]
-pub struct QueueMonitor(Arc<Mutex<Option<QueueHealth>>>);
+pub struct QueueMonitor(Arc<Mutex<Option<QueueHealth>>>, Arc<AtomicBool>);
 
 impl QueueMonitor {
     pub fn latest(&self) -> Option<QueueHealth> {
@@ -157,6 +159,22 @@ impl QueueMonitor {
 
     fn publish(&self, health: QueueHealth) {
         *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(health);
+    }
+
+    /// Hysteresis prevents every producer from restarting at the high-water boundary.
+    pub fn collection_deferred(&self, limits: QueueLimits) -> bool {
+        let Some(health) = self.latest() else {
+            return false;
+        };
+        let paused = self.1.load(Ordering::SeqCst);
+        let deferred = if paused {
+            health.entries > limits.max_entries / 2 || health.bytes > limits.max_bytes / 2
+        } else {
+            health.entries >= limits.max_entries.saturating_mul(4).div_ceil(5)
+                || health.bytes >= limits.max_bytes.saturating_mul(4).div_ceil(5)
+        };
+        self.1.store(deferred, Ordering::SeqCst);
+        deferred
     }
 }
 
@@ -199,12 +217,13 @@ impl Entry {
     }
 }
 
+#[derive(Clone)]
 pub struct DiskQueue {
     kind: QueueKind,
     directory: PathBuf,
     limits: QueueLimits,
     next_sequence: u64,
-    counters: QueueCounters,
+    counters: Arc<Mutex<QueueCounters>>,
     monitor: QueueMonitor,
 }
 
@@ -237,9 +256,10 @@ impl DiskQueue {
             directory,
             limits,
             next_sequence: 0,
-            counters: QueueCounters::default(),
+            counters: Arc::new(Mutex::new(QueueCounters::default())),
             monitor,
         };
+        let _directory = queue.lock_directory()?;
         queue.remove_abandoned_temporaries(SystemTime::now())?;
         queue.next_sequence = queue
             .entries()?
@@ -257,6 +277,12 @@ impl DiskQueue {
         self.monitor.clone()
     }
 
+    /// Refresh from disk so another agent process's backlog also pauses producers.
+    pub fn collection_ready(&self) -> Result<bool, QueueError> {
+        self.monitor.publish(self.health()?);
+        Ok(!self.monitor.collection_deferred(self.limits))
+    }
+
     /// Persists an encoded payload, durably, behind every entry already queued. `entry_id` is
     /// the payload's observation or replay ID.
     pub fn enqueue(
@@ -265,6 +291,7 @@ impl DiskQueue {
         body: &[u8],
         now: SystemTime,
     ) -> Result<(), QueueError> {
+        let _directory = self.lock_directory()?;
         let size = body.len() as u64;
         if size > self.limits.max_bytes {
             return Err(QueueError(format!(
@@ -280,6 +307,19 @@ impl DiskQueue {
 
         let mut remaining = entries.len();
         let mut bytes: u64 = entries.iter().map(|entry| entry.bytes).sum();
+        if self.kind == QueueKind::Observations
+            && (remaining >= self.limits.max_entries || bytes + size > self.limits.max_bytes)
+        {
+            {
+                let mut counters = self.counters.lock().unwrap_or_else(PoisonError::into_inner);
+                counters.dropped_for_space += 1;
+                counters.note_dropped(now);
+            }
+            self.publish_health();
+            return Err(QueueError(
+                "observation queue full; new evidence was not persisted".into(),
+            ));
+        }
         for oldest in &entries {
             if remaining < self.limits.max_entries && bytes + size <= self.limits.max_bytes {
                 break;
@@ -289,13 +329,22 @@ impl DiskQueue {
                 entry = %oldest.path.display(),
                 "queue full; dropping its oldest entry"
             );
+            let Some(_claim) = self.claim(oldest)? else {
+                continue;
+            };
             if remove(&oldest.path)? {
-                self.counters.dropped_for_space += 1;
-                self.counters.note_dropped(oldest.queued_at);
+                let mut counters = self.counters.lock().unwrap_or_else(PoisonError::into_inner);
+                counters.dropped_for_space += 1;
+                counters.note_dropped(oldest.queued_at);
             }
             self.publish_health();
             remaining -= 1;
             bytes -= oldest.bytes;
+        }
+        if remaining >= self.limits.max_entries || bytes + size > self.limits.max_bytes {
+            return Err(QueueError(
+                "queue full with in-flight entries; new payload was not persisted".into(),
+            ));
         }
 
         let path = self.directory.join(entry_name(sequence, now, entry_id));
@@ -329,37 +378,52 @@ impl DiskQueue {
     ) -> Result<Drained, QueueError> {
         let mut drained = Drained::default();
         let mut offered = 0;
-        for entry in self.expire(self.entries()?, now)? {
+        let entries = {
+            let _directory = self.lock_directory()?;
+            self.expire(self.entries()?, now)?
+        };
+        for entry in entries {
             if cancellation.cancelled() || offered >= limit {
                 break;
             }
-            let body = match fs::read(&entry.path) {
-                Ok(body) => body,
-                // Another agent process sharing this state directory delivered it first.
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    self.publish_health();
-                    continue;
-                }
+            let claim = {
+                let _directory = self.lock_directory()?;
+                self.claim(&entry)?
+            };
+            let Some(mut claim) = claim else { continue };
+            let mut body = Vec::new();
+            match claim.read_to_end(&mut body) {
+                Ok(_) => {}
                 Err(error) => {
                     warn!(queue = self.kind.name(), entry = %entry.path.display(), %error, "dropping unreadable queued entry");
+                    let _directory = self.lock_directory()?;
                     if remove(&entry.path)? {
-                        self.counters.unreadable += 1;
+                        self.counters
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .unreadable += 1;
                     }
                     self.publish_health();
                     continue;
                 }
-            };
+            }
             offered += 1;
             match deliver(&body) {
                 Ok(()) => {
+                    // Selection must finish claiming the inode before it can be unlinked.
+                    let _directory = self.lock_directory()?;
                     remove(&entry.path)?;
                     drained.delivered += 1;
                     self.publish_health();
                 }
                 Err(error) if error.kind() == FailureKind::PayloadRejected => {
                     warn!(queue = self.kind.name(), entry = %entry.path.display(), %error, "server rejected queued entry; dropping it");
+                    let _directory = self.lock_directory()?;
                     if remove(&entry.path)? {
-                        self.counters.rejected += 1;
+                        self.counters
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .rejected += 1;
                         drained.rejected += 1;
                     }
                     self.publish_health();
@@ -380,7 +444,7 @@ impl DiskQueue {
             entries: entries.len(),
             bytes: entries.iter().map(|entry| entry.bytes).sum(),
             oldest_queued_at: entries.first().map(|entry| entry.queued_at),
-            counters: self.counters,
+            counters: *self.counters.lock().unwrap_or_else(PoisonError::into_inner),
         })
     }
 
@@ -419,18 +483,57 @@ impl DiskQueue {
     }
 
     fn expire(&mut self, entries: Vec<Entry>, now: SystemTime) -> Result<Vec<Entry>, QueueError> {
-        let (expired, current): (Vec<_>, Vec<_>) = entries
+        let (expired, mut current): (Vec<_>, Vec<_>) = entries
             .into_iter()
             .partition(|entry| entry.age(now) > self.limits.max_age);
         for entry in expired {
+            let Some(_claim) = self.claim(&entry)? else {
+                current.push(entry);
+                continue;
+            };
             warn!(queue = self.kind.name(), entry = %entry.path.display(), "dropping queued entry older than the queue's age limit");
             if remove(&entry.path)? {
-                self.counters.expired += 1;
-                self.counters.note_dropped(entry.queued_at);
+                let mut counters = self.counters.lock().unwrap_or_else(PoisonError::into_inner);
+                counters.expired += 1;
+                counters.note_dropped(entry.queued_at);
             }
             self.publish_health();
         }
+        current
+            .sort_by(|left, right| (left.sequence, &left.path).cmp(&(right.sequence, &right.path)));
         Ok(current)
+    }
+
+    // All admission/accounting mutations use the same short cross-process fence.
+    // Entry claims, not this directory fence, survive the HTTP request.
+    fn lock_directory(&self) -> Result<fs::File, QueueError> {
+        let path = self.directory.join(".lock");
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .map_err(|error| io_error("open queue lock", &path, error))?;
+        set_mode(&path, 0o600)?;
+        file.lock()
+            .map_err(|error| io_error("lock queue", &path, error))?;
+        Ok(file)
+    }
+
+    fn claim(&self, entry: &Entry) -> Result<Option<fs::File>, QueueError> {
+        let file = match fs::File::open(&entry.path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(io_error("open queued entry", &entry.path, error)),
+        };
+        match file.try_lock() {
+            Ok(()) => Ok(Some(file)),
+            Err(fs::TryLockError::WouldBlock) => Ok(None),
+            Err(fs::TryLockError::Error(error)) => {
+                Err(io_error("claim queued entry", &entry.path, error))
+            }
+        }
     }
 
     fn write_atomically(&self, path: &Path, body: &[u8]) -> Result<(), QueueError> {
@@ -619,6 +722,158 @@ mod tests {
     }
 
     #[test]
+    fn collection_pauses_at_high_water_and_resumes_only_at_low_water() {
+        let fixture = Fixture::new();
+        let mut queue = fixture.open(limits(10, 1_000, 60));
+        for _ in 0..7 {
+            enqueue(&mut queue, "x", at(0));
+        }
+        assert!(queue.collection_ready().unwrap());
+        enqueue(&mut queue, "x", at(0));
+        assert!(!queue.collection_ready().unwrap());
+        queue
+            .drain_at_most(at(1), 1, &Cancellation::default(), |_| Ok(()))
+            .unwrap();
+        assert!(
+            !queue.collection_ready().unwrap(),
+            "seven entries remain paused"
+        );
+        queue
+            .drain_at_most(at(1), 2, &Cancellation::default(), |_| Ok(()))
+            .unwrap();
+        assert!(
+            queue.collection_ready().unwrap(),
+            "five entries resume collection"
+        );
+
+        let bytes = Fixture::new();
+        let mut queue = bytes.open(limits(100, 100, 60));
+        enqueue(&mut queue, &"x".repeat(40), at(0));
+        assert!(queue.collection_ready().unwrap());
+        enqueue(&mut queue, &"x".repeat(40), at(0));
+        assert!(
+            !queue.collection_ready().unwrap(),
+            "bytes alone pause collection"
+        );
+        queue
+            .drain_at_most(at(1), 1, &Cancellation::default(), |_| Ok(()))
+            .unwrap();
+        assert!(queue.collection_ready().unwrap());
+    }
+
+    #[test]
+    fn independent_handles_admit_only_one_last_slot() {
+        let fixture = Fixture::new();
+        let first = fixture.open(limits(1, 100, 60));
+        let second = fixture.open(limits(1, 100, 60));
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let workers: Vec<_> = [first, second]
+            .into_iter()
+            .map(|mut queue| {
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    queue.enqueue(Uuid::new_v4(), b"last-slot", at(0))
+                })
+            })
+            .collect();
+        let admitted = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .filter(Result::is_ok)
+            .count();
+        assert_eq!(admitted, 1);
+        let health = fixture.open(limits(1, 100, 60)).health().unwrap();
+        assert_eq!((health.entries, health.bytes), (1, 9));
+    }
+
+    #[test]
+    fn an_inflight_entry_does_not_block_enqueue_or_get_delivered_twice() {
+        let fixture = Fixture::new();
+        let mut first = fixture.open(limits(2, 100, 60));
+        enqueue(&mut first, "first", at(0));
+        let mut second = fixture.open(limits(2, 100, 60));
+        let (entered, waiting) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let delivery = std::thread::spawn(move || {
+            first.drain(at(1), &Cancellation::default(), |body| {
+                assert_eq!(body, b"first");
+                entered.send(()).unwrap();
+                released.recv_timeout(Duration::from_secs(5)).unwrap();
+                Ok(())
+            })
+        });
+        waiting.recv_timeout(Duration::from_secs(2)).unwrap();
+        let (progress, observed) = std::sync::mpsc::channel();
+        let concurrent = std::thread::spawn(move || {
+            enqueue(&mut second, "second", at(1));
+            let (drained, offered) = drain_with(&mut second, at(1), |_| {
+                Err(failure(FailureKind::PayloadRejected))
+            });
+            progress.send((drained.rejected, offered)).unwrap();
+            second
+        });
+        let progress = observed.recv_timeout(Duration::from_secs(2));
+        release.send(()).unwrap();
+        assert_eq!(delivery.join().unwrap().unwrap().delivered, 1);
+        let second = concurrent.join().unwrap();
+        assert_eq!(progress.unwrap(), (1, vec!["second".to_string()]));
+        let health = second.health().unwrap();
+        assert_eq!(
+            (health.entries, health.bytes, health.counters.rejected),
+            (0, 0, 1)
+        );
+    }
+
+    #[test]
+    fn acknowledgement_waits_for_an_open_entry_to_be_claimed() {
+        for rejected in [false, true] {
+            let fixture = Fixture::new();
+            let mut first = fixture.open(limits(2, 100, 60));
+            enqueue(&mut first, "first", at(0));
+            let mut second = fixture.open(limits(2, 100, 60));
+            let entry = second.entries().unwrap().remove(0);
+            let (entered, waiting) = std::sync::mpsc::channel();
+            let (release, released) = std::sync::mpsc::channel();
+            let (finished, completion) = std::sync::mpsc::channel();
+            let delivery = std::thread::spawn(move || {
+                let result = first.drain(at(1), &Cancellation::default(), |_| {
+                    entered.send(()).unwrap();
+                    released.recv_timeout(Duration::from_secs(5)).unwrap();
+                    if rejected {
+                        Err(failure(FailureKind::PayloadRejected))
+                    } else {
+                        Ok(())
+                    }
+                });
+                finished.send(()).unwrap();
+                result
+            });
+            waiting.recv_timeout(Duration::from_secs(2)).unwrap();
+
+            // Pause selection between opening the entry and acquiring its claim.
+            let directory = second.lock_directory().unwrap();
+            let opened = fs::File::open(&entry.path).unwrap();
+            release.send(()).unwrap();
+            let premature = completion.recv_timeout(Duration::from_millis(200));
+            let still_claimed = matches!(opened.try_lock(), Err(fs::TryLockError::WouldBlock));
+            let still_present = entry.path.exists();
+            drop(opened);
+            drop(directory);
+
+            let drained = delivery.join().unwrap().unwrap();
+            assert!(premature.is_err(), "removal raced with entry selection");
+            assert!(still_claimed && still_present);
+            assert_eq!(
+                (drained.delivered, drained.rejected),
+                if rejected { (0, 1) } else { (1, 0) }
+            );
+            assert!(drain_with(&mut second, at(1), accept).1.is_empty());
+            assert_eq!(second.health().unwrap().entries, 0);
+        }
+    }
+
+    #[test]
     fn entries_survive_a_restart_and_deliver_oldest_first() {
         let fixture = Fixture::new();
         let mut queue = fixture.open(QueueLimits::default());
@@ -687,25 +942,27 @@ mod tests {
     }
 
     #[test]
-    fn the_entry_limit_drops_the_oldest_observations() {
+    fn the_entry_limit_refuses_new_evidence_without_evicting_pending_observations() {
         let fixture = Fixture::new();
         let mut queue = fixture.open(limits(2, 1_000, 3_600));
-        for body in ["first", "second", "third"] {
+        for body in ["first", "second"] {
             enqueue(&mut queue, body, at(0));
         }
 
+        assert!(queue.enqueue(Uuid::new_v4(), b"third", at(1)).is_err());
         assert_eq!(queue.health().unwrap().counters.dropped_for_space, 1);
         let (_drained, offered) = drain_with(&mut queue, at(0), accept);
-        assert_eq!(offered, ["second", "third"]);
+        assert_eq!(offered, ["first", "second"]);
     }
 
     #[test]
-    fn the_byte_limit_drops_the_oldest_observations_before_writing() {
+    fn the_byte_limit_refuses_new_evidence_without_disturbing_pending_observations() {
         let fixture = Fixture::new();
         let mut queue = fixture.open(limits(100, 10, 3_600));
-        for body in ["aaaa", "bbbb", "cccc"] {
+        for body in ["aaaa", "bbbb"] {
             enqueue(&mut queue, body, at(0));
         }
+        assert!(queue.enqueue(Uuid::new_v4(), b"cccc", at(0)).is_err());
 
         let health = queue.health().unwrap();
         assert_eq!((health.entries, health.bytes), (2, 8));
@@ -716,7 +973,7 @@ mod tests {
             .enqueue(Uuid::new_v4(), b"far too large", at(0))
             .is_err());
         let (_drained, offered) = drain_with(&mut queue, at(0), accept);
-        assert_eq!(offered, ["bbbb", "cccc"]);
+        assert_eq!(offered, ["aaaa", "bbbb"]);
     }
 
     #[test]
@@ -735,7 +992,7 @@ mod tests {
     #[test]
     fn dropped_entries_report_when_they_were_queued() {
         let fixture = Fixture::new();
-        let mut queue = fixture.open(limits(2, 1_000, 60));
+        let mut queue = fixture.open_kind(QueueKind::Telemetry, limits(2, 1_000, 60));
         enqueue(&mut queue, "first", at(0));
         enqueue(&mut queue, "second", at(10));
         enqueue(&mut queue, "third", at(20));
@@ -818,14 +1075,14 @@ mod tests {
         }
         for now in [at(0), at(61)] {
             let fixture = Fixture::new();
-            let mut queue = fixture.open(limits(1, 10, 60));
+            let mut queue = fixture.open_kind(QueueKind::Telemetry, limits(1, 10, 60));
             enqueue(&mut queue, "old", at(0));
-            set_mode(&fixture.directory(), 0o500).unwrap();
+            set_mode(&queue.directory, 0o500).unwrap();
 
             let result = queue.enqueue(Uuid::new_v4(), b"new", now);
             let drained = queue.drain(now, &Cancellation::default(), |_| Ok(()));
             let health = queue.health().unwrap();
-            set_mode(&fixture.directory(), 0o700).unwrap();
+            set_mode(&queue.directory, 0o700).unwrap();
 
             assert!(result.is_err());
             assert!(drained.is_err());
@@ -869,10 +1126,10 @@ mod tests {
         let monitor = queue.monitor();
         assert_eq!(monitor.latest().unwrap().entries, 1);
 
-        enqueue(&mut queue, "newer", at(10));
+        assert!(queue.enqueue(Uuid::new_v4(), b"newer", at(10)).is_err());
         let health = monitor.latest().unwrap();
         assert_eq!(health.entries, 1);
-        assert_eq!(health.oldest_queued_at, Some(at(10)));
+        assert_eq!(health.oldest_queued_at, Some(at(0)));
         assert_eq!(health.counters.dropped_for_space, 1);
 
         drain_with(&mut queue, at(20), accept);
