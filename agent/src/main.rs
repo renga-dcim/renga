@@ -8,17 +8,19 @@ use renga_agent::{
     home::{self, Home},
     installation_key::InstallationKey,
     jobs::{
+        evidence::{Evidence, OutputStore},
         inventory_collect::InventoryCollect,
         queries,
         worker::{PolicyGeneration, Worker},
-        Capability, Catalog, JobPolicy,
+        Capability, Catalog, JobFailure, JobPolicy,
     },
     libvirt::worker::Module as LibvirtModule,
     logging,
     notices::{Listener, Notices},
     osquery::{self, OsqueryConfig},
     payload::{
-        CheckIn, CheckInAck, KeyApproval, KeyStatus, Observation, PresentedKey, QueueReport,
+        CheckIn, CheckInAck, KeyApproval, KeyStatus, LeasedJob, Observation, PresentedKey,
+        QueueReport,
     },
     power::{bmc, collector::Sinks, pdu, PowerModule, PowerSources},
     queue::{
@@ -769,12 +771,11 @@ fn job_catalog(
 ) -> Catalog {
     let client = client.clone();
     let labels = labels.clone();
-    let queue = Arc::clone(queue);
-    // The collection runs through the ordinary queue, so a job's observation
-    // needs its own durable receipt, just like a scheduled one. Enqueueing it or
-    // accepting an older queue entry does not complete the job.
-    let collect = move |cancellation: &Cancellation| {
-        send_inventory(&client, cancellation, &labels, &queue).map_err(|error| error.to_string())
+    let state_directory = lock(queue).state_directory.clone();
+    // Leased work bypasses the ordinary FIFO entirely. Its reserved slot holds
+    // exact bytes and old attempt authority across restart and lost responses.
+    let collect = move |job: &LeasedJob, cancellation: &Cancellation| {
+        send_job_inventory(&client, job, cancellation, &labels, &state_directory)
     };
     let mut capabilities: Vec<Arc<dyn Capability>> =
         vec![Arc::new(InventoryCollect::new(Box::new(collect)))];
@@ -987,6 +988,77 @@ fn send_inventory(
         return Err("observation delivery cancelled".into());
     }
     deliver_observation(client, stopped, queue, observation_id, &body)
+}
+
+fn send_job_inventory(
+    client: &HttpClient,
+    job: &LeasedJob,
+    cancellation: &Cancellation,
+    labels: &BTreeMap<String, String>,
+    state: &Path,
+) -> Result<uuid::Uuid, JobFailure> {
+    let failed = |error: String| JobFailure::Failed(error);
+    let saved = OutputStore::load(state, job.id).map_err(|error| failed(error.to_string()))?;
+    let mut evidence = match saved {
+        Some(evidence) => evidence,
+        None => {
+            let observation = Observation::new(
+                collectors::collect(cancellation).map_err(|error| failed(error.to_string()))?,
+            )
+            .with_labels(labels);
+            let body =
+                encode_observation(&observation).map_err(|error| failed(error.to_string()))?;
+            let sha256 = ring::digest::digest(&ring::digest::SHA256, &body)
+                .as_ref()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            let evidence = Evidence {
+                attempt: job.attempt,
+                lease_token: job.lease_token.clone(),
+                observation_id: observation.observation_id,
+                sha256,
+                body: String::from_utf8(body).map_err(|error| failed(error.to_string()))?,
+                accepted: false,
+            };
+            OutputStore::save(state, job.id, evidence.clone())
+                .map_err(|error| failed(error.to_string()))?;
+            evidence
+        }
+    };
+    if evidence.accepted {
+        return Ok(evidence.observation_id);
+    }
+    if cancellation.cancelled() {
+        return Err(JobFailure::Cancelled);
+    }
+    // A prior attempt may have committed before its response was lost. Only an
+    // exact historical lookup may establish that after authority expired.
+    if evidence.attempt != job.attempt {
+        match client.job_evidence(job.id, &evidence, true, cancellation) {
+            Ok(()) => evidence.accepted = true,
+            Err(error) if error.status() == Some(reqwest::StatusCode::NOT_FOUND) => {
+                evidence.attempt = job.attempt;
+                evidence.lease_token = job.lease_token.clone();
+                OutputStore::save(state, job.id, evidence.clone())
+                    .map_err(|error| failed(error.to_string()))?;
+            }
+            Err(error) => {
+                warn!(job_id = %job.id, %error, "protected receipt recovery deferred");
+                return Err(JobFailure::Cancelled);
+            }
+        }
+    }
+    if !evidence.accepted {
+        if let Err(error) = client.job_evidence(job.id, &evidence, false, cancellation) {
+            warn!(job_id = %job.id, %error, "protected evidence retained for retry; no successful collection");
+            return Err(JobFailure::Cancelled);
+        }
+        evidence.accepted = true;
+    }
+    OutputStore::save(state, job.id, evidence.clone())
+        .map_err(|error| failed(error.to_string()))?;
+    Ok(evidence.observation_id)
 }
 
 /// Queues collector module reports on disk; the inventory and flush passes deliver them with the
@@ -1323,9 +1395,11 @@ mod tests {
         stub_responses(statuses.into_iter().map(|status| (status, "")).collect())
     }
 
-    fn stub_responses(
-        responses: Vec<(u16, &'static str)>,
-    ) -> (String, thread::JoinHandle<Vec<Vec<u8>>>) {
+    fn stub_responses(responses: Vec<(u16, &str)>) -> (String, thread::JoinHandle<Vec<Vec<u8>>>) {
+        let responses: Vec<_> = responses
+            .into_iter()
+            .map(|(status, body)| (status, body.to_owned()))
+            .collect();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
         let server = thread::spawn(move || {
@@ -2091,7 +2165,8 @@ mod tests {
                                     "lease_token": "lease",
                                     "lease_expires_at": chrono::Utc::now() + chrono::Duration::seconds(60),
                                     "timeout_ms": 30_000,
-                                    "output_limit_bytes": 65_536
+                                    "output_limit_bytes": 65_536,
+                                    "evidence_reservation": {"id": uuid::Uuid::new_v4(), "items": 1, "bytes": 256000}
                                 });
                                 answer(&mut reader, 200, &json!({ "jobs": [job] }).to_string());
                             } else if request.contains(&format!("/api/v1/agent/jobs/{job_id}/events")) {
@@ -2107,6 +2182,9 @@ mod tests {
                                     }
                                 }
                                 answer(&mut reader, 200, r#"{"cancel_requested":false}"#);
+                            } else if request.contains(&format!("/api/v1/agent/jobs/{job_id}/evidence")) {
+                                let envelope: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                                answer(&mut reader, 202, &observation_receipt(envelope["body"].as_str().unwrap().as_bytes(), false));
                             } else if request.contains("/api/v1/observations") {
                                 answer(&mut reader, 202, &observation_receipt(&body, false));
                             } else {
@@ -2577,6 +2655,8 @@ mod tests {
         Report(&'static str, String),
         /// An observation by ID, and the status it was answered with.
         Observation(&'static str, String, u16),
+        /// Protected evidence remains unfinished when its home refuses it.
+        Evidence(&'static str, u16),
     }
 
     /// Everything heard so far, so a test waits on events instead of on the clock.
@@ -2622,6 +2702,7 @@ mod tests {
                 | Heard::SocketClosed(at)
                 | Heard::Lease(at)
                 | Heard::Report(at, _)
+                | Heard::Evidence(at, _)
                 | Heard::Observation(at, _, _) => *at == home,
             })
         }
@@ -2745,6 +2826,17 @@ mod tests {
                                     observation_receipt(&body, false)
                                 };
                                 answer(&mut reader, status, &response);
+                            } else if request.contains(&format!("/api/v1/agent/jobs/{job_id}/evidence")) {
+                                let envelope: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                                let encoded = envelope["body"].as_str().unwrap().as_bytes();
+                                let status = if moved.load(Ordering::SeqCst) { 410 } else { 202 };
+                                let _ = heard.send(Heard::Evidence(name, status));
+                                let response = if status == 410 {
+                                    gone.to_string()
+                                } else {
+                                    observation_receipt(encoded, false)
+                                };
+                                answer(&mut reader, status, &response);
                             } else if moved.load(Ordering::SeqCst) {
                                 answer(&mut reader, 410, gone);
                             } else if request.contains("/api/v1/agent/checkins") {
@@ -2767,7 +2859,8 @@ mod tests {
                                     "lease_token": "lease",
                                     "lease_expires_at": chrono::Utc::now() + chrono::Duration::seconds(60),
                                     "timeout_ms": 30_000,
-                                    "output_limit_bytes": 65_536
+                                    "output_limit_bytes": 65_536,
+                                    "evidence_reservation": {"id": uuid::Uuid::new_v4(), "items": 1, "bytes": 256000}
                                 });
                                 answer(&mut reader, 200, &json!({ "jobs": [job] }).to_string());
                             } else {
@@ -2969,11 +3062,10 @@ mod tests {
             );
             old.release.send(()).unwrap();
 
-            hearing.until("the job's outcome", |heard| {
-                heard
-                    .iter()
-                    .any(|each| matches!(each, Heard::Report("old", kind) if kind != "started"))
+            hearing.until("protected evidence refused by the moved home", |heard| {
+                heard.contains(&Heard::Evidence("old", 410))
             });
+            assert_eq!(hearing.reports("old"), ["started"]);
             assert_eq!(
                 hearing.count(&Heard::SocketOpened("old")),
                 1,
@@ -3617,7 +3709,7 @@ mod tests {
 
     #[test]
     fn inventory_job_succeeds_only_after_its_own_durable_acceptance() {
-        for case in ["accepted", "mismatched", "head_only", "blocked"] {
+        for case in ["accepted", "mismatched", "blocked"] {
             let state =
                 std::env::temp_dir().join(format!("renga-job-receipt-{}", uuid::Uuid::new_v4()));
             let queue = Arc::new(Mutex::new(DeliveryQueue::new(state.clone())));
@@ -3649,7 +3741,8 @@ mod tests {
                         "lease_token": "lease",
                         "lease_expires_at": chrono::Utc::now() + chrono::Duration::seconds(60),
                         "timeout_ms": 30_000,
-                        "output_limit_bytes": 65_536
+                        "output_limit_bytes": 65_536,
+                        "evidence_reservation": {"id": uuid::Uuid::new_v4(), "items": 1, "bytes": 256000}
                     });
                     (200, json!({ "jobs": [job] }).to_string())
                 } else if request.contains(&format!("/api/v1/agent/jobs/{job_id}/events")) {
@@ -3658,11 +3751,15 @@ mod tests {
                         .unwrap()
                         .push(serde_json::from_slice::<serde_json::Value>(body).unwrap());
                     (200, r#"{"cancel_requested":false}"#.into())
-                } else if request.contains("/api/v1/observations") {
+                } else if request.contains(&format!("/api/v1/agent/jobs/{job_id}/evidence")) {
+                    let envelope: serde_json::Value = serde_json::from_slice(body).unwrap();
+                    assert_eq!(envelope["lease_token"], "lease");
+                    assert_eq!(envelope["attempt"], 1);
+                    let body = envelope["body"].as_str().unwrap().as_bytes();
                     posted.lock().unwrap().push(body.to_vec());
-                    if case == "blocked" || (case == "head_only" && body != older) {
+                    if case == "blocked" {
                         (503, "{}".into())
-                    } else if case == "mismatched" && body != older {
+                    } else if case == "mismatched" {
                         (202, observation_receipt(&older, false))
                     } else {
                         (202, observation_receipt(body, false))
@@ -3691,17 +3788,16 @@ mod tests {
 
             assert_eq!(handled, 1, "{case}");
             let requests = requests.lock().unwrap();
-            assert_eq!(requests[0], prior, "{case}");
             assert_eq!(
                 requests.len(),
-                if case == "blocked" { 1 } else { 2 },
-                "{case}"
+                1,
+                "{case}: never deliver ordinary FIFO entries for a job"
             );
             let reports = reports.lock().unwrap();
             let outcome = reports.last().unwrap();
             if case == "accepted" {
                 // The response still says pending: canonical completion is not the job's boundary.
-                let observation: serde_json::Value = serde_json::from_slice(&requests[1]).unwrap();
+                let observation: serde_json::Value = serde_json::from_slice(&requests[0]).unwrap();
                 assert_ne!(observation["observation_id"], json!(prior_id));
                 assert_eq!(outcome["type"], "succeeded");
                 assert_eq!(
@@ -3709,27 +3805,54 @@ mod tests {
                     observation["observation_id"]
                 );
             } else {
-                assert_eq!(outcome["type"], "failed", "{case}");
+                assert_eq!(
+                    outcome["type"], "started",
+                    "{case}: uncertain acceptance retains an unfinished outcome"
+                );
                 assert!(
                     !reports.iter().any(|report| report["type"] == "succeeded"),
                     "{case}"
                 );
             }
-            let expected = match case {
-                "accepted" => 0,
-                "blocked" => 2,
-                _ => 1,
-            };
             assert_eq!(
                 lock(&queue).ready().unwrap().health().unwrap().entries,
-                expected,
+                1,
                 "{case}"
             );
-            if expected == 1 {
-                let (origin, server) = stub_server(vec![200]);
-                flush(&stub_client(&origin), &Cancellation::default(), &queue).unwrap();
-                assert_eq!(server.join().unwrap(), [requests[1].clone()], "{case}");
-                assert_eq!(lock(&queue).ready().unwrap().health().unwrap().entries, 0);
+            if case != "accepted" {
+                let saved = OutputStore::load(&state, job_id).unwrap().unwrap();
+                assert_eq!(saved.body.as_bytes(), requests[0]);
+                assert!(!saved.accepted);
+                // Restart, a new attempt, and a lost prior response: recover the
+                // exact old attempt's receipt without collecting a replacement.
+                let _store = OutputStore::open(&state).unwrap();
+                let receipt = observation_receipt(&requests[0], true);
+                let (origin, server) = stub_responses(vec![(200, &receipt)]);
+                let job: LeasedJob = serde_json::from_value(json!({
+                    "id": job_id, "capability": "inventory.collect@1", "parameters": {},
+                    "attempt": 2, "lease_token": "new-lease",
+                    "lease_expires_at": chrono::Utc::now() + chrono::Duration::seconds(60),
+                    "timeout_ms": 300000, "output_limit_bytes": 65536,
+                }))
+                .unwrap();
+                assert_eq!(
+                    send_job_inventory(
+                        &stub_client(&origin),
+                        &job,
+                        &Cancellation::default(),
+                        &BTreeMap::new(),
+                        &state
+                    )
+                    .unwrap(),
+                    saved.observation_id
+                );
+                let sent = server.join().unwrap();
+                let lookup: serde_json::Value = serde_json::from_slice(&sent[0]).unwrap();
+                assert_eq!(lookup["attempt"], 1);
+                assert_eq!(lookup["lease_token"], "lease");
+                assert_eq!(lookup["sha256"], saved.sha256);
+                assert!(lookup.get("body").is_none());
+                assert!(OutputStore::load(&state, job_id).unwrap().unwrap().accepted);
             }
             std::fs::remove_dir_all(state).unwrap();
         }
@@ -3744,7 +3867,7 @@ mod tests {
         let observation_id = uuid::Uuid::new_v4();
         let capability_queue = Arc::clone(&queue);
         let capability_client = client.clone();
-        let capability = InventoryCollect::new(Box::new(move |cancellation| {
+        let capability = InventoryCollect::new(Box::new(move |_, cancellation| {
             deliver_observation(
                 &capability_client,
                 cancellation,
@@ -3752,7 +3875,7 @@ mod tests {
                 observation_id,
                 br#"{"observation_id":"must-not-be-queued"}"#,
             )
-            .map_err(|error| error.to_string())
+            .map_err(|error| JobFailure::Failed(error.to_string()))
         }));
         let catalog = Catalog::new(vec![Arc::new(capability)]);
         let (progress_started, progress) = mpsc::channel();
@@ -3766,6 +3889,11 @@ mod tests {
                 lease_expires_at: chrono::Utc::now() + chrono::Duration::seconds(60),
                 timeout_ms: 60,
                 output_limit_bytes: 65_536,
+                evidence_reservation: Some(renga_agent::payload::EvidenceReservation {
+                    id: uuid::Uuid::new_v4(),
+                    items: 1,
+                    bytes: 256_000,
+                }),
             })),
             reports: Mutex::new(Vec::new()),
             progress_started: Mutex::new(Some(progress_started)),

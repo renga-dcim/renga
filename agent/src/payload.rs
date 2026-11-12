@@ -800,6 +800,16 @@ pub struct LeasedJob {
     pub lease_expires_at: DateTime<Utc>,
     pub timeout_ms: u64,
     pub output_limit_bytes: u64,
+    /// Missing on older servers: evidence-producing capabilities must not run.
+    #[serde(default)]
+    pub evidence_reservation: Option<EvidenceReservation>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EvidenceReservation {
+    pub id: Uuid,
+    pub items: u32,
+    pub bytes: u64,
 }
 
 impl fmt::Debug for LeasedJob {

@@ -4,7 +4,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Default)]
 pub struct Cancellation {
@@ -18,6 +18,23 @@ impl Cancellation {
             deadline: Some(deadline),
             ..Self::default()
         }
+    }
+
+    /// Adds a tighter operation budget without losing the parent's stop signal.
+    pub fn bounded(&self, deadline: Instant) -> Self {
+        Self {
+            cancelled: Arc::clone(&self.cancelled),
+            deadline: Some(
+                self.deadline
+                    .map_or(deadline, |parent| parent.min(deadline)),
+            ),
+        }
+    }
+
+    /// Blocking requests must also fit before the operation's deadline.
+    pub fn remaining(&self) -> Option<Duration> {
+        self.deadline
+            .map(|deadline| deadline.saturating_duration_since(Instant::now()))
     }
 
     pub fn cancel(&self) {

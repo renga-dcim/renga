@@ -6,6 +6,7 @@
 //! told to stop when Renga asks to cancel it or the agent shuts down.
 
 use super::{
+    evidence::OutputStore,
     record::{JobRecords, Outcome, RecordError},
     Capability, Catalog, JobFailure, JobPolicy, RetryClass,
 };
@@ -96,6 +97,7 @@ impl JobApi for HttpClient {
 #[derive(Debug)]
 pub enum PassError {
     Record(RecordError),
+    Output(std::io::Error),
     Lease(TransportError),
 }
 
@@ -103,6 +105,7 @@ impl fmt::Display for PassError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Record(error) => write!(f, "{error}"),
+            Self::Output(error) => write!(f, "cannot reserve protected job output: {error}"),
             Self::Lease(error) => write!(f, "cannot lease jobs: {error}"),
         }
     }
@@ -156,18 +159,31 @@ impl<'a, A: JobApi> Worker<'a, A> {
         }
         // Without a record the agent could run a redelivered job twice, so it
         // leases nothing until the state directory is usable again.
+        let output = OutputStore::open(self.state_directory).map_err(PassError::Output)?;
         let mut records = JobRecords::open(self.state_directory).map_err(PassError::Record)?;
         let mut handled = 0;
         while handled < MAX_JOBS_PER_PASS && !self.stopped.cancelled() && self.policy_current() {
+            records
+                .reserve_headroom(Utc::now())
+                .map_err(PassError::Record)?;
+            let pending = output.reserve().map_err(PassError::Output)?;
             let jobs = self.api.lease(&keys, 1).map_err(PassError::Lease)?;
             if !self.policy_current() {
                 break;
             }
             if jobs.is_empty() {
+                output.release(&pending).map_err(PassError::Output)?;
                 break;
             }
-            for job in jobs {
+            // One physical slot was reserved. A server violating limit=1 must
+            // not turn that into permission to start several unreserved jobs.
+            for job in jobs.into_iter().take(1) {
+                output.bind(&pending, &job).map_err(PassError::Output)?;
+                let id = job.id;
                 self.handle(job, &mut records);
+                if records.get(id).is_some_and(|record| record.confirmed) {
+                    output.confirm(id).map_err(PassError::Output)?;
+                }
                 handled += 1;
             }
         }
@@ -189,6 +205,32 @@ impl<'a, A: JobApi> Worker<'a, A> {
             );
             return;
         };
+
+        let (items, bytes) = capability.evidence_limit();
+        if job.output_limit_bytes > 65_536
+            || (items > 0
+                && !job
+                    .evidence_reservation
+                    .as_ref()
+                    .is_some_and(|reservation| {
+                        reservation.items == items && reservation.bytes == bytes
+                    }))
+        {
+            warn!(job_id = %job.id, "refusing job without compatible protected output bounds");
+            return;
+        }
+
+        match OutputStore::outcome(self.state_directory, job.id) {
+            Ok(Some(outcome)) => {
+                self.finish(records, &job, &mut reporter, outcome);
+                return;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                warn!(job_id = %job.id, %error, "cannot recover protected outcome; refusing execution");
+                return;
+            }
+        }
 
         if let Some(record) = records.get(job.id) {
             if let Some(outcome) = record.outcome.clone() {
@@ -280,9 +322,9 @@ impl<'a, A: JobApi> Worker<'a, A> {
             .policy_generation
             .if_current(self.expected_generation, || {
                 let cancellation = cancellation.clone();
-                let parameters = job.parameters.clone();
+                let job = job.clone();
                 thread::spawn(move || {
-                    let result = capability.run(&parameters, &cancellation);
+                    let result = capability.run_leased(&job, &cancellation);
                     let _ = sender.send((Instant::now(), result));
                 })
             })?;
@@ -394,8 +436,20 @@ impl<'a, A: JobApi> Worker<'a, A> {
         records: &mut JobRecords,
         job: &LeasedJob,
         reporter: &mut Reporter<'_, A>,
-        outcome: Outcome,
+        mut outcome: Outcome,
     ) {
+        if serde_json::to_vec(&outcome.payload)
+            .map_or(true, |body| body.len() as u64 > job.output_limit_bytes)
+        {
+            outcome = Outcome {
+                kind: ReportType::Failed,
+                payload: failure("capability exceeded its declared output bound"),
+            };
+        }
+        if let Err(error) = OutputStore::save_outcome(self.state_directory, job.id, &outcome) {
+            warn!(job_id = %job.id, %error, "cannot retain protected outcome; leaving lease unfinished");
+            return;
+        }
         if let Err(error) = records.finish(job.id, outcome.clone(), Utc::now()) {
             warn!(job_id = %job.id, %error, "cannot record job outcome");
         }
@@ -657,6 +711,7 @@ mod tests {
             lease_expires_at: Utc::now() + chrono::Duration::seconds(60),
             timeout_ms: 60_000,
             output_limit_bytes: 65_536,
+            evidence_reservation: None,
         }
     }
 
@@ -711,6 +766,30 @@ mod tests {
     fn conflict() -> TransportError {
         TransportError::new("conflict".into(), FailureKind::Permanent)
             .with_status(StatusCode::CONFLICT)
+    }
+
+    #[test]
+    fn protected_output_exhaustion_prevents_the_lease_request_and_execution() {
+        let capability = fake(RetryClass::Idempotent, succeeds());
+        let fixture = Fixture::new(capability.clone());
+        let store = OutputStore::open(&fixture.state).unwrap();
+        while store.reserve().is_ok() {}
+        drop(store);
+        let api = FakeApi::lease_once(leased(Uuid::new_v4()));
+        let worker = Worker::new(
+            &api,
+            &fixture.catalog,
+            &fixture.policy,
+            &fixture.state,
+            &fixture.stopped,
+            &fixture.policy_generation,
+            fixture.policy_generation.current(),
+        );
+
+        assert!(matches!(worker.run_pass(), Err(PassError::Output(_))));
+        assert_eq!(api.lease_calls.get(), 0);
+        assert_eq!(*capability.runs.lock().unwrap(), 0);
+        assert!(api.reports.borrow().is_empty());
     }
 
     #[test]

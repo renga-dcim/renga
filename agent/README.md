@@ -416,11 +416,11 @@ enabled = ["inventory.collect", "query.disk_usage", "query.packages"]
 This build has these capabilities:
 
 * `inventory.collect@1` (`observe`): runs the normal inventory collection now,
-  delivers it through the ordinary observation queue, and reports the observation
+  delivers it through protected job evidence, and reports the observation
   ID only after that exact observation receives a matching durable acceptance
-  receipt. Enqueueing it or accepting an older queue entry is not success; later
-  canonical processing is not part of job completion. An ambiguous response
-  retains the observation for replay, even if the job reports delivery failure.
+  receipt. Local persistence is not success; later canonical processing is not
+  part of job completion. An ambiguous response retains the exact observation
+  and leaves the job unfinished for receipt recovery, without recollecting.
 * Operational queries (RFD 12), each `observe` and read-only, on Linux. They
   read procfs, system calls, and package databases directly. Where one must
   run a program, the program's arguments are fixed in the agent and never
@@ -481,6 +481,21 @@ job recorded as started without an outcome runs again unless its capability is
 imperative, in which case it fails because it may have partly run. The record
 keeps the last 128 jobs for eight days. `--once` runs no jobs and advertises
 none.
+
+Before asking for a lease, the agent reserves a two-bank, 1.5 MiB output journal
+under `job-output/`, independent of ordinary queue eviction. Up to 128 journals
+retain exact evidence and bounded terminal outcomes through retries; confirmed
+jobs release their journals, and unresolved jobs expire after eight days.
+Lost lease responses retain unbound reservations for two minutes. A second
+process sharing the state directory cannot run a concurrent job pass.
+
+Protected jobs currently require Linux with an ext4 state directory and working
+`fallocate`. Other filesystems, including Btrfs, XFS, overlayfs and APFS, and
+other operating systems refuse leases before execution: preallocation alone
+does not guarantee allocation-free journal overwrites on copy-on-write storage.
+Check-ins and ordinary collection continue. Tmpfs is accepted for ephemeral
+development and allocation tests, but its contents do not survive a host reboot;
+use persistent ext4 storage for deployed agents.
 
 ### osquery
 
