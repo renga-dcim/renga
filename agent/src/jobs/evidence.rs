@@ -64,11 +64,15 @@ fn allocate_banks(file: &fs::File) -> io::Result<()> {
     if unsafe { libc::fstatfs(file.as_raw_fd(), status.as_mut_ptr()) } != 0 {
         return Err(io::Error::last_os_error());
     }
-    let kind = unsafe { status.assume_init() }.f_type;
+    // Linux libc ABIs use different types for f_type; compare without truncation.
+    let kind = i128::from(unsafe { status.assume_init() }.f_type);
     // Preallocation on COW filesystems reserves only unwritten extents, not
     // repeated journal overwrites. Keep the supported boundary explicit;
     // snapshots/reflinks must not silently turn reserved output into new allocation.
-    if !matches!(kind, libc::EXT4_SUPER_MAGIC | libc::TMPFS_MAGIC) {
+    if ![libc::EXT4_SUPER_MAGIC, libc::TMPFS_MAGIC]
+        .map(i128::from)
+        .contains(&kind)
+    {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "protected jobs require an ext4 or tmpfs state directory; COW and other filesystems are unsupported",
