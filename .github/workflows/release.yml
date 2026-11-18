@@ -103,12 +103,13 @@ jobs:
           curl --proto '=https' --tlsv1.2 -LsSf \
             https://github.com/axodotdev/cargo-dist/releases/download/v0.33.0/cargo-dist-installer.sh |
             sh
-          dist --version
 
       - name: Build Linux packages
         env:
           RENGA_AGENT_TARGET: ${{ matrix.target }}
-        run: ./agent/scripts/build-packages.sh
+        run: |
+          test "$(dist --version)" = 'cargo-dist 0.33.0'
+          ./agent/scripts/build-packages.sh
 
       - name: Verify Linux packages
         env:
@@ -237,14 +238,11 @@ jobs:
           cd artifacts
           sha256sum ./*.tar.gz ./*.deb > SHA256SUMS
 
+      - name: Install verified git-cliff
+        run: bash scripts/install-release-git-cliff.sh
+
       - name: Generate conventional release notes
-        uses: orhun/git-cliff-action@a9a95522b26fe6403f7bb24031f21fb573d0f5ff # v4.9.1
-        with:
-          config: cliff.toml
-          args: --latest --strip header
-        env:
-          OUTPUT: RELEASE_NOTES.md
-          GITHUB_REPO: ${{ github.repository }}
+        run: git-cliff --latest --strip header --output RELEASE_NOTES.md
 
       - name: Add tag comparison to release notes
         env:

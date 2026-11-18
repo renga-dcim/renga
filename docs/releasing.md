@@ -10,38 +10,55 @@ version in `mix.exs` must always equal the package version in
 
 ## One-time repository setup
 
-Create and install a GitHub App for this repository with these repository
-permissions:
+Configure the protections before adding the App secrets. Once both secrets exist,
+ordinary pushes to `main` can start preparing release PRs automatically.
 
-- Contents: read and write
-- Pull requests: read and write
+1. In the `renga-dcim` organization, go to **Settings → Developer settings →
+   GitHub Apps → New GitHub App**. Use a distinct name and the repository URL as
+   the homepage. Disable the webhook, choose **Only on this account**, and set
+   **Repository permissions → Contents** and **Pull requests** to **Read and write**.
+   Leave the other permissions at their defaults (Metadata is read-only).
+2. On the App's settings page, choose **Install App → renga-dcim → Only select
+   repositories → renga**. Under **General**, note the numeric **App ID** (not the
+   Client ID) and choose **Generate a private key**.
+3. In the repository's **Settings → Rules → Rulesets**, create active rulesets:
 
-Create a GitHub Actions environment named `RELEASE`, then store the App
-credentials as environment secrets:
+   | Target | Rules | Bypass |
+   | --- | --- | --- |
+   | `main` branch | Require a pull request and at least one approving review. Dismiss stale approvals when new commits are pushed. Require **Validate title**, **Package release gate**, and **Release image** from GitHub Actions and require the branch to be up to date. Restrict deletions and block force pushes. | None |
+   | `release/next` branch | Restrict creations, updates, and deletions; block force pushes. The workflow refreshes this branch with a lease. | Release App only, **Always allow** |
+   | Tags matching `v*` (creation ruleset) | Restrict creations. | Release App only, **Always allow** |
+   | Tags matching `v*` (immutability ruleset) | Restrict updates and deletions. | None |
 
-```text
-RELEASE_APP_ID
-RELEASE_APP_PRIVATE_KEY
-```
+   In repository **Settings → General → Pull Requests**, allow only squash
+   merging and choose **Pull request title** for the default squash commit title.
+   Merge the release PR with its generated title unchanged.
+4. In repository **Settings → Environments**, open or create `RELEASE`. Under
+   **Deployment branches and tags**, choose **Selected branches and tags**, then
+   add branch `main` and tag pattern `v*.*.*`. Under **Environment secrets**, add
+   `RELEASE_APP_ID` with the numeric App ID and `RELEASE_APP_PRIVATE_KEY` with the
+   full contents of the downloaded PEM, including the header and footer. Enter
+   the key directly in GitHub, never in a PR, commit, or chat.
 
 The workflows use an installation token because branch and tag pushes made
 with `GITHUB_TOKEN` do not trigger the downstream workflows that tag and
-publish the release.
+publish the release. The image publisher uses its own job's `GITHUB_TOKEN` with
+`packages: write`; the release App does not need registry credentials.
 
-Protect `main`, require pull requests, allow only squash merges, and configure
-the squash commit subject to use the PR title. Require branches to be current
-with `main` before merging, disallow ruleset bypasses for release PRs, and
-require the stable **Validate title** check so the resulting `main` commit is a
-Conventional Commit.
+Review pinned action commit SHAs deliberately when upgrading release
+dependencies, and verify the git-cliff archive checksum when bumping its version.
+A pinned action revision does not authenticate the binaries it downloads.
 
-Protect `release/next` so only the release App can force-push it. Refresh a
-stale release PR by running **Prepare release PR** rather than editing that
-automation-owned branch. Protect `v*` tags as immutable and allow only the
-release App to create them.
+## Rehearse without releasing
 
-Require the stable **Package release gate** check on `main`. Review pinned
-action commit SHAs deliberately when upgrading release dependencies; the SHA,
-not its version comment, is the security boundary.
+In **Actions → Prepare release PR → Run workflow**, select `main`. With no
+existing release tag, expect `chore(release): v0.1.0`. Check the changelog diff
+and notes preview, then wait for **Release image** and **Package release gate**
+to pass. Confirm both `artifacts-agent-packages-amd64` and
+`artifacts-agent-packages-arm64` in the **Release artifacts** run. This rehearsal
+creates or refreshes a real PR but does not create a tag, publish a GitHub
+Release, or push an image. Leave the PR unmerged until the release is explicitly
+approved.
 
 ## Automated flow
 
@@ -81,12 +98,23 @@ source and publishes a GitHub Release containing:
 - `SHA256SUMS`
 - generated Conventional Commit notes and a previous-tag comparison
 
+The same tag also triggers the **docker** workflow. It smoke-tests the tagged
+Linux amd64 server image, then publishes it to `ghcr.io/renga-dcim/renga` as
+`vMAJOR.MINOR.PATCH`. PRs and ordinary pushes to `main` test the image without
+publishing it. After the tag run, copy the digest reference from **Publish
+release image** in the run summary and use it for deployments, not the mutable
+registry tag:
+
 ```text
-main changes
-    -> release/next PR
-    -> vMAJOR.MINOR.PATCH tag
-    -> GitHub Release with agent packages, checksums, and notes
+docker pull ghcr.io/renga-dcim/renga@sha256:<digest>
 ```
+
+GHCR packages start private. If anonymous downloads are intended, a package
+admin must make the linked `renga` package public in **Package settings →
+Change visibility** after the first push. Otherwise grant pull access to the
+deployment identity. If the package already exists, check **Package settings →
+Manage Actions access** and grant `renga-dcim/renga` write access if it does not
+inherit access from the repository.
 
 ## Local preview
 

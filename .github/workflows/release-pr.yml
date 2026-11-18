@@ -18,6 +18,9 @@ concurrency:
 jobs:
   preflight:
     name: Check release credentials
+    if: >-
+      github.event_name != 'workflow_dispatch' ||
+      (github.ref_type == 'branch' && github.ref_name == github.event.repository.default_branch)
     runs-on: ubuntu-latest
     environment: RELEASE
     outputs:
@@ -58,7 +61,7 @@ jobs:
       - name: Detect a just-merged release
         id: release-commit
         run: |
-          if git log -1 --pretty=%s | grep -Eq '^chore\(release\): v[0-9]+\.[0-9]+\.[0-9]+$'; then
+          if git log -1 --pretty=%s | grep -Eq '^chore\(release\): v[0-9]+\.[0-9]+\.[0-9]+( \(#[0-9]+\))?$'; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -92,24 +95,22 @@ jobs:
             echo "skip=$skip"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Install verified git-cliff
+        if: steps.changes.outputs.skip == 'false'
+        run: bash scripts/install-release-git-cliff.sh
+
       - name: Compute conventional version bump
-        if: >-
-          steps.release-commit.outputs.skip != 'true' &&
-          steps.changes.outputs.skip != 'true' &&
-          steps.changes.outputs.latest_tag != ''
+        if: steps.changes.outputs.skip == 'false' && steps.changes.outputs.latest_tag != ''
         id: bumped-version
-        uses: orhun/git-cliff-action@a9a95522b26fe6403f7bb24031f21fb573d0f5ff # v4.9.1
-        with:
-          config: cliff.toml
-          args: --bumped-version
-        env:
-          GITHUB_REPO: ${{ github.repository }}
+        run: |
+          version=$(git-cliff --bumped-version)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Select release version
         if: steps.release-commit.outputs.skip != 'true' && steps.changes.outputs.skip != 'true'
         id: version
         env:
-          BUMPED_VERSION: ${{ steps.bumped-version.outputs.content }}
+          BUMPED_VERSION: ${{ steps.bumped-version.outputs.version }}
           LATEST_TAG: ${{ steps.changes.outputs.latest_tag }}
         run: |
           mix_version=$(sed -nE 's/^[[:space:]]*version:[[:space:]]*"([^"]+)",?[[:space:]]*$/\1/p' mix.exs)
@@ -158,27 +159,13 @@ jobs:
           rm -f agent/Cargo.toml.bak
           cargo check --workspace
 
-      - name: Generate changelog
+      - name: Generate changelog and release notes preview
         if: steps.version.outputs.skip != 'true' && steps.version.outputs.release_tag != ''
-        uses: orhun/git-cliff-action@a9a95522b26fe6403f7bb24031f21fb573d0f5ff # v4.9.1
-        with:
-          config: cliff.toml
-          args: --tag ${{ steps.version.outputs.release_tag }}
         env:
-          OUTPUT: CHANGELOG.md
-          GITHUB_REPO: ${{ github.repository }}
-
-      - name: Generate release notes preview
-        if: steps.version.outputs.skip != 'true' && steps.version.outputs.release_tag != ''
-        uses: orhun/git-cliff-action@a9a95522b26fe6403f7bb24031f21fb573d0f5ff # v4.9.1
-        with:
-          config: cliff.toml
-          args: >-
-            --unreleased --tag ${{ steps.version.outputs.release_tag }}
-            --strip header
-        env:
-          OUTPUT: RELEASE_NOTES.md
-          GITHUB_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
+        run: |
+          git-cliff --tag "$RELEASE_TAG" --output CHANGELOG.md
+          git-cliff --unreleased --tag "$RELEASE_TAG" --strip header --output RELEASE_NOTES.md
 
       - name: Create release app token
         if: steps.version.outputs.skip != 'true' && steps.version.outputs.release_tag != ''
