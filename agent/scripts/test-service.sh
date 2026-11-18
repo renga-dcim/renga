@@ -26,7 +26,10 @@ cleanup() {
 	systemctl stop "${unit}" >/dev/null 2>&1 || true
 	rm -rf "${dropin_dir}" "/etc/systemd/system/${unit}" /etc/renga /run/renga /var/lib/renga
 	systemctl daemon-reload || true
-	if [[ -n "${stub_pid:-}" ]]; then kill "${stub_pid}" 2>/dev/null || true; fi
+	if [[ -n "${stub_pid:-}" ]]; then
+		kill "${stub_pid}" 2>/dev/null || true
+		wait "${stub_pid}" 2>/dev/null || true
+	fi
 	rm -rf "${work_dir}"
 }
 trap cleanup EXIT
@@ -53,11 +56,15 @@ EOF
 install -o root -g renga-agent -m 0640 "${work_dir}/agent.toml" /etc/renga/agent.toml
 
 cat >"${work_dir}/stub.py" <<'EOF'
+from datetime import datetime, timezone
 import http.server
 import json
 import sys
+import uuid
 
 port, requests, observation = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+source_id = str(uuid.uuid4())
+receipts = {}
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -75,20 +82,54 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
-        if self.path == "/api/v1/observations":
-            with open(observation, "wb") as file:
-                file.write(body)
         with open(requests, "a", encoding="utf-8") as file:
             file.write(self.path + "\n")
-        self.send_response(202)
-        self.send_header("Content-Length", "0")
+        if self.path != "/api/v1/observations":
+            self.send_response(202)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+
+        submitted = json.loads(body)
+        key = submitted["observation_id"]
+        duplicate = key in receipts
+        if duplicate:
+            original, accepted = receipts[key]
+            if body != original:
+                self.send_error(409)
+                return
+        else:
+            accepted = {
+                "status": "accepted",
+                "receipt": {
+                    "id": str(uuid.uuid4()),
+                    "position": len(receipts) + 1,
+                    "accepted_at": datetime.now(timezone.utc).isoformat(),
+                },
+                "processing": {"status": "pending"},
+                "observation": {
+                    "id": str(uuid.uuid4()),
+                    "observation_id": key,
+                    "observed_at": submitted["observed_at"],
+                    "source_id": source_id,
+                },
+            }
+            with open(observation, "wb") as file:
+                file.write(body)
+            receipts[key] = (body, accepted)
+        response = json.dumps(dict(accepted, duplicate=duplicate)).encode()
+        self.send_response(200 if duplicate else 202)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(response)))
         self.end_headers()
+        self.wfile.write(response)
 
     def log_message(self, *args):
         pass
 
 
-http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+# Serialize receipt allocation and replay, like the intake's unique acceptance.
+http.server.HTTPServer(("127.0.0.1", port), Handler).serve_forever()
 EOF
 python3 "${work_dir}/stub.py" "${port}" "${requests}" "${observation}" &
 stub_pid=$!
@@ -103,26 +144,31 @@ use_prestart() {
 	systemctl daemon-reload
 }
 
-# Starts the unit and waits for a check-in and an observation; prints start seconds.
+# Starts the unit and waits for a check-in and acknowledged delivery; prints start seconds.
 start_and_check_in() {
-	local name="$1" started elapsed
+	local name="$1" started elapsed invocation
 	systemctl stop "${unit}" >/dev/null 2>&1 || true
 	rm -f "${requests}" "${observation}"
 	started=$(date +%s)
 	systemctl start "${unit}" || fail "${name}: unit did not start"
 	elapsed=$(($(date +%s) - started))
+	invocation=$(systemctl show -p InvocationID --value "${unit}")
+	# A POST on its own isn't proof of delivery. Stopping before the agent drains
+	# its queue can replay this phase's observation during the next phase.
 	for _ in $(seq 60); do
 		if grep -qx /api/v1/agent/checkins "${requests}" 2>/dev/null &&
-			[[ -s "${observation}" ]]; then
+			[[ -s "${observation}" ]] &&
+			journalctl --quiet --lines=1 --grep='"message":"observation posted"' \
+				"_SYSTEMD_INVOCATION_ID=${invocation}" >/dev/null; then
 			test "$(systemctl show -p ActiveState --value "${unit}")" = active ||
 				fail "${name}: unit is not active"
-			printf '%s: started in %ss and checked in\n' "${name}" "${elapsed}"
+			printf '%s: started in %ss, checked in and delivered an observation\n' "${name}" "${elapsed}"
 			STARTED_IN="${elapsed}"
 			return
 		fi
 		sleep 0.5
 	done
-	fail "${name}: agent did not check in"
+	fail "${name}: agent did not check in and deliver an observation"
 }
 
 no_snapshot() {
